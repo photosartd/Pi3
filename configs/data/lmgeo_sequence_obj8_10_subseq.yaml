@@ -1,0 +1,110 @@
+# @package _global_
+
+# Flexible sequence dataset for object 8 over ten LM-O train_pbr subsequences.
+# Train and validation intentionally use the same subsequences for now; this is
+# still an overfit/debug setup, not a held-out validation protocol.
+
+lmgeo:
+    data_root: /vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/lm-o
+    models_folder: models_eval
+    object_ids: [8]
+    reference_split: train
+    query_split: train_pbr
+    query_window_size: 25
+    num_reference_range: [2, 10]
+    num_query_range: [5, 20]
+    reference_rgb_masking: true
+    query_rgb_masking: false
+    depth_masking: true
+    mask_type: mask_visib
+    visibility_min: 0.1
+    reference_selection: random
+    query_selection: random
+    depth_unit_scale: 0.001
+    filter_center_crop_visibility: true
+    min_center_crop_bbox_area: 1.0
+    filter_preprocessed_query_depth: true
+    min_preprocessed_query_depth_pixels: 1
+    allow_repeat: false
+    symmetric_ids: [10, 11]
+    query_windows:
+        - {query_scene_id: 20, query_subscene_id: 29}
+        - {query_scene_id: 24, query_subscene_id: 33}
+        - {query_scene_id: 40, query_subscene_id: 29}
+        - {query_scene_id: 5, query_subscene_id: 35}
+        - {query_scene_id: 3, query_subscene_id: 5}
+        - {query_scene_id: 39, query_subscene_id: 20}
+        - {query_scene_id: 23, query_subscene_id: 37}
+        - {query_scene_id: 49, query_subscene_id: 19}
+        - {query_scene_id: 19, query_subscene_id: 38}
+        - {query_scene_id: 25, query_subscene_id: 34}
+
+# Pi3 samples this total number of frames per batch in DynamicBatchSampler.
+# LMGeoSequenceDataset then splits it into N reference + K query frames.
+train:
+    image_num_range: [10, 25]
+    max_img_per_gpu: 50
+
+test:
+    image_num_range: [25, 25]
+    iters_per_test: 10
+
+_lmgeo_sequence_base: &lmgeo_sequence_base
+    _target_: datasets.lmgeo_dataset.LMGeoSequenceDataset
+    data_root: ${lmgeo.data_root}
+    object_ids: ${lmgeo.object_ids}
+    reference_split: ${lmgeo.reference_split}
+    query_split: ${lmgeo.query_split}
+    query_windows: ${lmgeo.query_windows}
+    query_window_size: ${lmgeo.query_window_size}
+    num_reference_range: ${lmgeo.num_reference_range}
+    num_query_range: ${lmgeo.num_query_range}
+    reference_rgb_masking: ${lmgeo.reference_rgb_masking}
+    query_rgb_masking: ${lmgeo.query_rgb_masking}
+    depth_masking: ${lmgeo.depth_masking}
+    mask_type: ${lmgeo.mask_type}
+    visibility_min: ${lmgeo.visibility_min}
+    reference_selection: ${lmgeo.reference_selection}
+    query_selection: ${lmgeo.query_selection}
+    depth_unit_scale: ${lmgeo.depth_unit_scale}
+    filter_center_crop_visibility: ${lmgeo.filter_center_crop_visibility}
+    min_center_crop_bbox_area: ${lmgeo.min_center_crop_bbox_area}
+    filter_preprocessed_query_depth: ${lmgeo.filter_preprocessed_query_depth}
+    min_preprocessed_query_depth_pixels: ${lmgeo.min_preprocessed_query_depth_pixels}
+    allow_repeat: ${lmgeo.allow_repeat}
+    aug_crop: false
+    aug_focal: false
+    z_far: 0
+    transform:
+        _partial_: true
+        _target_: datasets.base.transforms.ImgToTensor
+    shuffle: false
+
+train_dataset:
+    length: 1000
+    weights:
+        LMGeoSequence: 1000
+    LMGeoSequence:
+        <<: *lmgeo_sequence_base
+        mode: train
+
+train_dataloader:
+    drop_last: true
+    shuffle: true
+
+test_dataset:
+    length: 10
+    weights:
+        LMGeoSequence: 10
+    LMGeoSequence:
+        <<: *lmgeo_sequence_base
+        # Fixed validation split for more stable curves: 5 refs + 20 queries.
+        num_reference_range: [5, 5]
+        num_query_range: [20, 20]
+        reference_selection: uniform
+        query_selection: first
+        mode: test
+
+test_dataloader:
+    drop_last: false
+    shuffle: false

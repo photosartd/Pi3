@@ -196,9 +196,14 @@ class DynamicBatchSampler(Sampler):
                 break  # End of sampler's iterator
 
     def __len__(self):
-        # Return a large dummy length
-        # return 1000000
-        return len(self.sampler) // self.image_num_range[0]            # dummy value because of dynamic batchsize
+        # Dynamic batches contain as many samples as can fit under
+        # max_img_per_gpu for the sampled sequence length. Use the smallest
+        # possible sample batch size as a conservative, non-zero length
+        # estimate for progress logging and short validation sets.
+        max_image_num = int(np.max(self.possible_nums))
+        min_sample_batch_size = int(np.floor(self.max_img_per_gpu / max_image_num))
+        min_sample_batch_size = max(1, min_sample_batch_size)
+        return max(1, int(np.ceil(len(self.sampler) / min_sample_batch_size)))
 
 
 class DynamicDistributedSampler(DistributedSampler):

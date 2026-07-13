@@ -25,6 +25,8 @@ import shutil
 from utils.basic import seed_anything, count_parameters
 
 from datasets import create_dataloader
+from pi3.metrics import MetricManager
+from pi3.visualizations import VisualManager
 # from model.network import Network
 from utils.misc import get_logger, is_logging_process, pretty_print_hydra_config, move_to_device, get_rank
 from utils.basic import seed_anything
@@ -72,6 +74,8 @@ class BaseTrainer:
         ## 2. Prepare model
         self.log_info("Preparing model...")
         self.model = self.prepare_model()
+        self.metric_manager = self.prepare_metric_manager()
+        self.visual_manager = self.prepare_visual_manager()
         self.n_learnable_parameters = get_model_param_count(
             self.model, trainable_only=True
         )
@@ -83,8 +87,9 @@ class BaseTrainer:
         ## 3. Prepare dataloader
         self.log_info("Making train dataloader...")
         self.train_loader = create_dataloader(cfg, 'train')
-        self.log_info("Making test dataloader...")
-        self.test_loader = create_dataloader(cfg, 'test')
+        self.log_info("Making validation dataloader(s)...")
+        self.val_loaders, self.val_runtime_cfgs = self.prepare_val_loaders()
+        self.test_loader = next(iter(self.val_loaders.values()))
         self.accelerator.wait_for_everyone()
 
         ## 5. Prepare optimizer and scheduler (fsdp should after preparing the model using accelerate)
@@ -103,7 +108,22 @@ class BaseTrainer:
 
         # Create the LR scheduler
         self.iters_per_epoch = self.cfg.train.iters_per_epoch if self.cfg.train.iters_per_epoch > 0 else len(self.train_loader)
-        self.iters_per_test = self.cfg.test.iters_per_test if self.cfg.test.iters_per_test > 0 else len(self.test_loader)
+        self.iters_per_val = {
+            name: (
+                runtime_cfg.iters_per_test
+                if "iters_per_test" in runtime_cfg and runtime_cfg.iters_per_test > 0
+                else len(loader)
+            )
+            for name, loader, runtime_cfg in (
+                (name, self.val_loaders[name], self.val_runtime_cfgs[name])
+                for name in self.val_loaders
+            )
+        }
+        self.iters_per_test = next(iter(self.iters_per_val.values()))
+        self.primary_val_name = str(self.cfg.get("primary_val", next(iter(self.val_loaders.keys()))))
+        if self.primary_val_name not in self.val_loaders:
+            raise ValueError(f"primary_val={self.primary_val_name!r} is not in val loaders {list(self.val_loaders)}")
+        self.latest_primary_val_stats = {}
         self.cfg.train.lr_scheduler.total_steps = self.cfg.train.num_epoch * self.iters_per_epoch
         self.log_info(f"Total step for lr scheduler: {self.cfg.train.lr_scheduler.total_steps} ({self.cfg.train.num_epoch} * {self.iters_per_epoch})")
         self.lr_scheduler = build_scheduler(
@@ -190,6 +210,39 @@ class BaseTrainer:
         model = hydra.utils.instantiate(self.cfg.model)
         count_parameters(model)
         return model
+
+    def prepare_metric_manager(self):
+        return MetricManager.from_config(self.cfg.get("metrics"))
+
+    def prepare_visual_manager(self):
+        return VisualManager.from_config(self.cfg.get("visuals"))
+
+    def prepare_val_loaders(self):
+        """Build one or more named validation dataloaders.
+
+        Existing configs with ``test_dataset`` keep the historical single
+        loader. New configs can define ``val_datasets.<name>`` entries with
+        ``dataset``, optional ``dataloader``, and optional ``runtime`` sections.
+        """
+
+        val_cfgs = self.cfg.get("val_datasets")
+        if not val_cfgs:
+            return {"default": create_dataloader(self.cfg, "test")}, {"default": self.cfg.test}
+
+        loaders = {}
+        runtime_cfgs = {}
+        for name, entry in val_cfgs.items():
+            self.log_info(f"Making validation dataloader: {name}")
+            runtime_cfg = entry.get("runtime", self.cfg.test)
+            loaders[str(name)] = create_dataloader(
+                self.cfg,
+                "test",
+                dataset_cfg=entry.dataset,
+                dataloader_cfg=entry.get("dataloader", self.cfg.test_dataloader),
+                runtime_cfg=runtime_cfg,
+            )
+            runtime_cfgs[str(name)] = runtime_cfg
+        return loaders, runtime_cfgs
     
     def before_epoch(self, epoch):
         pass
@@ -214,10 +267,10 @@ class BaseTrainer:
             train_stats = self.train_one_epoch(epoch)
 
             # Perform validation at the end of each epoch
-            val_stats = self.validate(epoch)
+            val_stats = self.validate_all(epoch)
 
-            current_val_metric = val_stats.get("loss", float('inf'))  # Replace "val_loss" with your metric key
-            if current_val_metric < best_val_metric:
+            current_val_metric = self.latest_primary_val_stats.get("loss", float('inf'))
+            if self.cfg.log.get("save_best", True) and current_val_metric < best_val_metric:
                 best_val_metric = current_val_metric
                 best_model_path = os.path.join(
                     self.cfg.log.ckpt_dir,
@@ -228,9 +281,10 @@ class BaseTrainer:
 
             self.accelerator.wait_for_everyone()
 
-            if (
-                epoch + 1
-            ) % self.cfg.log.ckpt_interval == 0 or epoch + 1 == self.cfg.train.num_epoch:
+            if self.cfg.log.get("save_checkpoints", True) and (
+                (epoch + 1) % self.cfg.log.ckpt_interval == 0
+                or epoch + 1 == self.cfg.train.num_epoch
+            ):
                 if self.accelerator.sync_gradients:
                     self.global_step = self.iters_per_epoch * (epoch + 1)
                     save_path = os.path.join(
@@ -276,24 +330,93 @@ class BaseTrainer:
         self.accelerator.wait_for_everyone()
         self.accelerator.end_training()
 
-    def validate(self, epoch):
+    def validate_all(self, epoch):
+        """Run all configured validation loaders and namespace their stats."""
+
+        if list(self.val_loaders.keys()) == ["default"]:
+            stats = self.validate(
+                epoch,
+                val_name="default",
+                loader=self.test_loader,
+                iters_per_test=self.iters_per_test,
+                runtime_cfg=self.cfg.test,
+            )
+            self.latest_primary_val_stats = stats
+            return stats
+
+        all_stats = {}
+        self.latest_primary_val_stats = {}
+        for name, loader in self.val_loaders.items():
+            stats = self.validate(
+                epoch,
+                val_name=name,
+                loader=loader,
+                iters_per_test=self.iters_per_val[name],
+                runtime_cfg=self.val_runtime_cfgs[name],
+            )
+            if name == self.primary_val_name:
+                self.latest_primary_val_stats = stats
+            for key, value in stats.items():
+                all_stats[f"{name}_{key}"] = value
+        return all_stats
+
+    def validate(
+        self,
+        epoch,
+        *,
+        val_name="default",
+        loader=None,
+        iters_per_test=None,
+        runtime_cfg=None,
+    ):
         self.model.eval()
         metric_logger = MetricLogger(delimiter="  ")
-        header = f"Validation Epoch: [{epoch}]"
+        header = f"Validation {val_name} Epoch: [{epoch}]"
+        loader = self.test_loader if loader is None else loader
+        iters_per_test = self.iters_per_test if iters_per_test is None else int(iters_per_test)
+        runtime_cfg = self.cfg.test if runtime_cfg is None else runtime_cfg
+        print_freq = runtime_cfg.print_freq if "print_freq" in runtime_cfg else self.cfg.train.print_freq
 
         val_loss = 0.0
         total_samples = 0
+        val_visuals_logged = False
+        val_visual_it = self.visual_manager.render_iteration(
+            "val",
+            epoch=epoch,
+            length=iters_per_test,
+        )
+        if self.metric_manager.should_update("val"):
+            self.metric_manager.reset()
 
-        self.log_info(f"Start validation for epoch {epoch}")
+        self.log_info(f"Start validation {val_name} for epoch {epoch}")
         with torch.no_grad():
-            for batch in metric_logger.log_every(
-                self.test_loader, self.cfg.train.print_freq, header
-            ):
+            for it, batch in enumerate(metric_logger.log_every(
+                loader, print_freq, header
+            )):
+                if it >= iters_per_test:
+                    break
+
                 batch = move_to_device(batch, self.accelerator.device)
 
                 # Forward pass
-                outputs = self.forward_batch(batch, mode='test')
-                outputs = self.calculate_loss(outputs, batch, mode='train')
+                forward_outputs = self.forward_batch(batch, mode='test')
+                if (
+                    not val_visuals_logged
+                    and val_visual_it is not None
+                    and it == val_visual_it
+                    and self.accelerator.is_main_process
+                ):
+                    val_visuals = self.visual_manager.render(forward_outputs, batch, mode="val")
+                    if val_visuals:
+                        self.log_all(val_visuals, step=self.global_step, prefix=f"val_visuals/{val_name}")
+                        self.log_info(
+                            f"Logged randomized {val_name} val visuals at iterator {it}: "
+                            f"{self.visual_manager.last_render_info}"
+                        )
+                    val_visuals_logged = True
+                if self.metric_manager.should_update("val"):
+                    self.metric_manager.update(forward_outputs, batch, mode="val")
+                outputs = self.calculate_loss(forward_outputs, batch, mode='test')
                 loss = outputs.loss
 
                 # Gather statistics
@@ -306,13 +429,23 @@ class BaseTrainer:
                 metric_logger.update(**outputs)
 
         # Average the validation loss
+        if total_samples == 0:
+            self.log_info(f"Validation {val_name} produced no samples")
+            return {"loss": float("nan")}
         val_loss /= total_samples
 
         # Gather the stats from all processes
         metric_logger.synchronize_between_processes()
-        self.log_info(f"Validation results: {metric_logger}")
+        self.log_info(f"Validation {val_name} results: {metric_logger}")
 
-        return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+        stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+        if self.metric_manager.should_update("val"):
+            metric_stats = self.metric_manager.compute()
+            if self.accelerator.is_main_process:
+                self.log_all(metric_stats, step=self.global_step, prefix=f"val_metrics/{val_name}")
+            stats.update({f"metric_{k.replace('/', '_')}": v for k, v in metric_stats.items()})
+
+        return stats
 
     def train_one_epoch(self, epoch):
         self.model.train()
@@ -346,6 +479,20 @@ class BaseTrainer:
                 batch = move_to_device(batch, device=self.accelerator.device)
                 with self.accelerator.autocast():
                     forward_output = self.forward_batch(batch, mode='train')
+                next_step = start_steps + 1
+                train_metric_stats = {}
+                if self.metric_manager.should_update("train", next_step):
+                    train_metric_stats = self.metric_manager.compute_on_batch(
+                        forward_output,
+                        batch,
+                        mode="train",
+                    )
+                train_visuals = {}
+                if (
+                    self.visual_manager.should_render("train", step=next_step)
+                    and self.accelerator.is_main_process
+                ):
+                    train_visuals = self.visual_manager.render(forward_output, batch, mode="train")
                 batch_output = self.calculate_loss(forward_output, batch, mode='train')
                 loss = batch_output.loss
                 if loss > self.cfg.train.clip_loss:
@@ -396,39 +543,44 @@ class BaseTrainer:
                 self.lr_scheduler.step()
 
             if self.accelerator.sync_gradients:
-                    start_steps += 1
+                start_steps += 1
 
-                    # Report to tensorboard
-                    batch_output.update(loss_details_dict)
-                    loss_details_dict = {}
+                # Report to tensorboard
+                batch_output.update(loss_details_dict)
+                loss_details_dict = {}
 
-                    if start_steps % 10 == 0 :
-                        self.log_all(batch_output, start_steps, prefix='train')
-                    metric_logger.update(**batch_output)
+                if start_steps % 10 == 0 :
+                    self.log_all(batch_output, start_steps, prefix='train')
+                if train_metric_stats:
+                    self.log_all(train_metric_stats, start_steps, prefix='train_metrics')
+                if train_visuals:
+                    self.log_all(train_visuals, start_steps, prefix='train_visuals')
+                    self.log_info(f"Logged randomized train visuals: {self.visual_manager.last_render_info}")
+                metric_logger.update(**batch_output)
 
-                    min_lr = 10.0
-                    max_lr = 0.0
-                    for group in self.optimizer.param_groups:
-                        min_lr = min(min_lr, group["lr"])
-                        max_lr = max(max_lr, group["lr"])
+                min_lr = 10.0
+                max_lr = 0.0
+                for group in self.optimizer.param_groups:
+                    min_lr = min(min_lr, group["lr"])
+                    max_lr = max(max_lr, group["lr"])
 
-                    metric_logger.update(lr=max_lr)
-                    metric_logger.update(min_lr=min_lr)
-                    self.accelerator.log({"lr": max_lr}, step=start_steps)
-                    self.accelerator.log({"min_lr": min_lr}, step=start_steps)
+                metric_logger.update(lr=max_lr)
+                metric_logger.update(min_lr=min_lr)
+                self.accelerator.log({"lr": max_lr}, step=start_steps)
+                self.accelerator.log({"min_lr": min_lr}, step=start_steps)
 
-                    weight_decay_value = None
-                    for group in self.optimizer.param_groups:
-                        if group["weight_decay"] > 0:
-                            weight_decay_value = group["weight_decay"]
-                    metric_logger.update(weight_decay=weight_decay_value)
-                    metric_logger.update(grad_norm=grad_norm)
-                    self.accelerator.log(
-                        {"weight_decay": weight_decay_value}, step=start_steps
-                    )
-                    self.accelerator.log({"grad_norm": grad_norm}, step=start_steps)
+                weight_decay_value = None
+                for group in self.optimizer.param_groups:
+                    if group["weight_decay"] > 0:
+                        weight_decay_value = group["weight_decay"]
+                metric_logger.update(weight_decay=weight_decay_value)
+                metric_logger.update(grad_norm=grad_norm)
+                self.accelerator.log(
+                    {"weight_decay": weight_decay_value}, step=start_steps
+                )
+                self.accelerator.log({"grad_norm": grad_norm}, step=start_steps)
 
-                    self.global_step = start_steps
+                self.global_step = start_steps
 
         # # gather the stats from all processes
         # metric_logger.synchronize_between_processes()
@@ -450,8 +602,9 @@ class BaseTrainer:
             if np.isscalar(v):
                 log_scaler[prefix+'/'+k] = v
                 continue
-            if Image.isImageType(v):
-                log_img[prefix+'/'+k] = v
+            if isinstance(v, Image.Image):
+                image = np.asarray(v.convert("RGB"))
+                log_img[prefix+'/'+k] = image.transpose(2, 0, 1)[None]
 
         self.accelerator.log(log_scaler, step)
         for tracker in self.accelerator.trackers:

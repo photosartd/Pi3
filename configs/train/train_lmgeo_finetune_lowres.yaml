@@ -1,0 +1,114 @@
+# @package _global_
+
+trainer: trainers.pi3_trainer.Pi3Trainer
+
+train:
+  image_num_range: [25, 25]
+  max_img_per_gpu: 25
+
+  resolution:
+    - [224, 224]
+
+  num_workers: 0
+  # One epoch is an artificial training chunk, not a full dataset pass.
+  # Validation runs after every epoch, so this is also the eval interval.
+  num_epoch: 30
+  iters_per_epoch: 500
+  print_freq: 1
+
+  model_dtype: bf16
+  dynamo_backend: NO
+  dynamic_compile: false
+
+  gradient_accumulation_steps: 1
+  clip_grad: 1.0
+  clip_loss: 100
+
+  optimizer:
+    # Conservative fine-tuning peak LR for 588M trainable non-encoder params.
+    lr: 5e-6
+    encoder_lr: 0.0
+
+  lr_scheduler:
+    # OneCycle warmup fraction. With 15k total steps, 0.05 is ~750 warmup steps.
+    pct_start: 0.05
+
+test:
+  image_num_range: [25, 25]
+  num_workers: 0
+  # 0 means use the full validation loader.
+  iters_per_test: 0
+  print_freq: 1
+
+model:
+  load_vggt: false
+  freeze_encoder: true
+  train_conf: false
+  ckpt: ckpts/Pi3/model.safetensors
+
+metrics:
+  enabled: true
+  train_enabled: false
+  val_enabled: true
+  train_every_n_steps: 5
+  items:
+    object_pose:
+      _target_: pi3.metrics.object_pose.ObjectPoseMetric
+      data_root: ${lmgeo.data_root}
+      models_folder: ${lmgeo.models_folder}
+      symmetric_ids: ${lmgeo.symmetric_ids}
+      solve_scale: true
+      max_model_points: 20000
+      nn_chunk_size: 2048
+      device: cuda
+    camera:
+      _target_: pi3.metrics.camera.CameraAlignmentMetric
+      solve_scale: true
+    chamfer:
+      _target_: pi3.metrics.chamfer.ReferenceChamferMetric
+      data_root: ${lmgeo.data_root}
+      models_folder: ${lmgeo.models_folder}
+      solve_scale: true
+      voxel_size_d: 0.01
+      max_pred_points: 20000
+      max_gt_points: 20000
+      chunk_size: 1024
+      device: cuda
+
+visuals:
+  enabled: true
+  train_enabled: false
+  val_enabled: true
+  train_every_n_steps: 10
+  val_every_n_epochs: 1
+  items:
+    input_reference_frames:
+      _target_: pi3.visualizations.input_frames.InputFramesVisualizer
+      role: reference
+      max_views: 6
+      thumbnail_size: 128
+      columns: 6
+    input_query_frames:
+      _target_: pi3.visualizations.input_frames.InputFramesVisualizer
+      role: query
+      max_views: 6
+      thumbnail_size: 128
+      columns: 6
+    query_pose_overlay:
+      _target_: pi3.visualizations.pose_overlay.QueryPoseOverlayVisualizer
+      data_root: ${lmgeo.data_root}
+      models_folder: ${lmgeo.models_folder}
+      solve_scale: true
+      max_model_points: 20000
+      max_query_views: 3
+    depth_panel:
+      _target_: pi3.visualizations.depth_panel.DepthPanelVisualizer
+      include_reference: true
+      include_query: true
+    reference_reconstruction:
+      _target_: pi3.visualizations.reconstruction.ReferenceReconstructionVisualizer
+      solve_scale: true
+      voxel_size: null
+      max_pred_points: 12000
+      max_gt_points: 12000
+      size: 320

@@ -5,6 +5,13 @@ Welcome to the official training code for the π³ project.
 This document provides a comprehensive guide to training the π³ model. We've strived to make this code robust and accurate, but issues may still exist. We highly appreciate any bug reports or suggestions for improvement. Please feel free to open an issue in this repository to share your feedback.
 
 
+## Environment Setup
+
+For the tested Conda installation procedure, CUDA verification commands, and
+GPU-specific notes for RTX 4090, RTX A6000, and H200, see
+[docs/conda_setup.md](docs/conda_setup.md).
+
+
 ## 💾 Data Preparation
 
 We provide three example datasets to get you started. Before you begin, **please ensure the `data_root` path in the corresponding dataloader script (located in the `datasets/` directory) is correctly set to your data's location.**

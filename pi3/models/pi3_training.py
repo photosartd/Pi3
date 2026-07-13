@@ -194,7 +194,12 @@ class Pi3(nn.Module):
         self.num_dec_blk_not_to_checkpoint = num_dec_blk_not_to_checkpoint
 
         if ckpt is not None:
-            checkpoint = torch.load(ckpt, weights_only=False, map_location='cpu')
+            if str(ckpt).endswith(".safetensors"):
+                checkpoint = load_file(ckpt)
+            else:
+                checkpoint = torch.load(ckpt, weights_only=False, map_location='cpu')
+                if isinstance(checkpoint, dict):
+                    checkpoint = checkpoint.get("model", checkpoint.get("state_dict", checkpoint))
 
             res = self.load_state_dict(checkpoint, strict=False)
             print(f'[Pi3] Load checkpoints from {ckpt}: {res}')

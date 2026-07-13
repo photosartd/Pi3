@@ -11,7 +11,7 @@ class Pi3Trainer(BaseTrainer):
         super().__init__(cfg)
 
         self.train_loss = hydra.utils.instantiate(cfg.loss.train_loss)
-        self.test_loss = hydra.utils.instantiate(cfg.loss.train_loss)
+        self.test_loss = hydra.utils.instantiate(cfg.loss.test_loss)
 
     def build_optimizer(self, cfg_optimizer, model):
         def param_group_fn(model_):
@@ -50,22 +50,10 @@ class Pi3Trainer(BaseTrainer):
         return super().build_optimizer(cfg_optimizer, model, param_group_fn=param_group_fn)
 
     def before_epoch(self, epoch):
-        if hasattr(self.train_loader, 'dataset') and hasattr(self.train_loader.dataset, 'set_epoch'):
-            self.train_loader.dataset.set_epoch(epoch, base_seed=self.cfg.train.base_seed)
-        if hasattr(self.train_loader, 'sampler') and hasattr(self.train_loader.sampler, 'set_epoch'):
-            self.train_loader.sampler.set_epoch(epoch, base_seed=self.cfg.train.base_seed)
-        if hasattr(self.train_loader, 'batch_sampler') and hasattr(self.train_loader.batch_sampler, 'batch_sampler') and hasattr(self.train_loader.batch_sampler.batch_sampler, 'sampler') and hasattr(self.train_loader.batch_sampler.batch_sampler.sampler, 'set_epoch'):       # handle acclerate warpped dataloader (more gpu)
-            self.train_loader.batch_sampler.batch_sampler.sampler.set_epoch(epoch, base_seed=self.cfg.train.base_seed)
-        if hasattr(self.train_loader, 'batch_sampler') and hasattr(self.train_loader.batch_sampler, 'set_epoch'):       # handle acclerate warpped dataloader (more gpu)
-            self.train_loader.batch_sampler.set_epoch(epoch, base_seed=self.cfg.train.base_seed)
-        
+        self._set_loader_epoch(self.train_loader, epoch)
 
-        if hasattr(self.test_loader, 'dataset') and hasattr(self.test_loader.dataset, 'set_epoch'):
-            self.test_loader.dataset.set_epoch(0, base_seed=self.cfg.train.base_seed)
-        if hasattr(self.test_loader, 'batch_sampler') and hasattr(self.test_loader.batch_sampler, 'batch_sampler') and hasattr(self.test_loader.batch_sampler.batch_sampler, 'sampler') and hasattr(self.test_loader.batch_sampler.batch_sampler.sampler, 'set_epoch'):       # handle acclerate warpped dataloader (more gpu)
-            self.test_loader.batch_sampler.batch_sampler.sampler.set_epoch(epoch, base_seed=self.cfg.train.base_seed)
-        if hasattr(self.test_loader, 'batch_sampler') and hasattr(self.train_loader.batch_sampler, 'set_epoch'):       # handle acclerate warpped dataloader (more gpu)
-            self.test_loader.batch_sampler.set_epoch(epoch, base_seed=self.cfg.train.base_seed)
+        for loader in getattr(self, "val_loaders", {"default": self.test_loader}).values():
+            self._set_loader_epoch(loader, epoch)
 
         if 'random_reslution' in self.cfg.train and self.cfg.train.random_reslution and self.cfg.train.num_resolution > 0:
             seed = epoch + self.cfg.train.base_seed
@@ -75,6 +63,16 @@ class Pi3Trainer(BaseTrainer):
             recursive_get_dataset(self.train_loader.dataset, datasets)
             for dataset in datasets:
                 dataset._set_resolutions(resolutions)
+
+    def _set_loader_epoch(self, loader, epoch):
+        if hasattr(loader, 'dataset') and hasattr(loader.dataset, 'set_epoch'):
+            loader.dataset.set_epoch(epoch, base_seed=self.cfg.train.base_seed)
+        if hasattr(loader, 'sampler') and hasattr(loader.sampler, 'set_epoch'):
+            loader.sampler.set_epoch(epoch, base_seed=self.cfg.train.base_seed)
+        if hasattr(loader, 'batch_sampler') and hasattr(loader.batch_sampler, 'batch_sampler') and hasattr(loader.batch_sampler.batch_sampler, 'sampler') and hasattr(loader.batch_sampler.batch_sampler.sampler, 'set_epoch'):       # handle acclerate warpped dataloader (more gpu)
+            loader.batch_sampler.batch_sampler.sampler.set_epoch(epoch, base_seed=self.cfg.train.base_seed)
+        if hasattr(loader, 'batch_sampler') and hasattr(loader.batch_sampler, 'set_epoch'):       # handle acclerate warpped dataloader (more gpu)
+            loader.batch_sampler.set_epoch(epoch, base_seed=self.cfg.train.base_seed)
             
     def forward_batch(self, batch, mode='train'):
         imgs = torch.stack([view['img'] for view in batch], dim=1)

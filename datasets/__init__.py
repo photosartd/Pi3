@@ -10,20 +10,27 @@ __HIGH_QUALITY_DATASETS__ = ['BlinkVision', 'Game', 'GameNew', 'DynamicStereo', 
 __MIDDLE_QUALITY_DATASETS__ = ['BlendedMVG', 'BlendedMVS', 'DTU', 'ETH3D', 'ScanNet', 'Scannetpp', 'Taskonomy']
 __INDOOR_DATASETS__ = ['Hypersim', 'ScanNet', 'Scannetpp', 'Taskonomy', 'ARKitScenes', 'Habitat']
 
-def create_dataloader(cfg, mode):
+def create_dataloader(cfg, mode, *, dataset_cfg=None, dataloader_cfg=None, runtime_cfg=None):
     data_loader = DataLoader
+    num_resolution = 1
 
     # pytorch dataset
     if mode == 'train':
-        cfg_dataset = cfg.train_dataset
-        cfg_dataloader = cfg.train_dataloader
-        batch_size = cfg.train.batch_size
-        num_workers = cfg.train.num_workers
+        cfg_dataset = cfg.train_dataset if dataset_cfg is None else dataset_cfg
+        cfg_dataloader = cfg.train_dataloader if dataloader_cfg is None else dataloader_cfg
+        cfg_runtime = cfg.train if runtime_cfg is None else runtime_cfg
+        batch_size = cfg_runtime.batch_size if 'batch_size' in cfg_runtime else cfg.train.batch_size
+        num_workers = cfg_runtime.num_workers if 'num_workers' in cfg_runtime else cfg.train.num_workers
     else:
-        cfg_dataset = cfg.test_dataset
-        cfg_dataloader = cfg.test_dataloader
-        batch_size = cfg.test.batch_size
-        num_workers = cfg.test.num_workers
+        cfg_dataset = cfg.test_dataset if dataset_cfg is None else dataset_cfg
+        cfg_dataloader = cfg.test_dataloader if dataloader_cfg is None else dataloader_cfg
+        cfg_runtime = cfg.test if runtime_cfg is None else runtime_cfg
+        batch_size = cfg_runtime.batch_size if 'batch_size' in cfg_runtime else (
+            cfg.test.batch_size if 'batch_size' in cfg.test else cfg.train.batch_size
+        )
+        num_workers = cfg_runtime.num_workers if 'num_workers' in cfg_runtime else (
+            cfg.test.num_workers if 'num_workers' in cfg.test else cfg.train.num_workers
+        )
 
     if isinstance(cfg_dataset, str):
         dataset = eval(cfg_dataset) 
@@ -71,17 +78,32 @@ def create_dataloader(cfg, mode):
     world_size = get_world_size()
     rank = get_rank()
 
-    image_num_range = cfg.train.image_num_range if mode == 'train' else [8, 8]
+    if mode == 'train':
+        image_num_range = cfg.train.image_num_range
+    else:
+        image_num_range = cfg_runtime.image_num_range if 'image_num_range' in cfg_runtime else [8, 8]
     print(f'Sampling frame number range from {image_num_range}')
     # adapte from vggt
-    max_img_per_gpu = cfg.train.max_img_per_gpu if 'max_img_per_gpu' in cfg.train else image_num_range[0]
+    if mode == 'train':
+        max_img_per_gpu = cfg.train.max_img_per_gpu if 'max_img_per_gpu' in cfg.train else image_num_range[0]
+    else:
+        max_img_per_gpu = cfg_runtime.max_img_per_gpu if 'max_img_per_gpu' in cfg_runtime else (
+            cfg.train.max_img_per_gpu if 'max_img_per_gpu' in cfg.train else image_num_range[0]
+        )
     print(f'Max frame number per rank {max_img_per_gpu}')
     if mode == 'train' and cfg.train.iters_per_epoch > 0:
         print('Needed batch number per epoch (per rank):', (max_img_per_gpu // image_num_range[0]) * cfg.train.iters_per_epoch)
         print('Dataset length per rank:', len(dataset) // world_size)
         assert (max_img_per_gpu // image_num_range[0]) * cfg.train.iters_per_epoch < len(dataset) // world_size
 
-    sampler = DynamicDistributedSampler(dataset, seed=cfg.train.base_seed, shuffle=cfg_dataloader.shuffle, rank=rank, drop_last=cfg_dataloader.drop_last)
+    sampler = DynamicDistributedSampler(
+        dataset,
+        num_replicas=world_size,
+        rank=rank,
+        seed=cfg.train.base_seed,
+        shuffle=cfg_dataloader.shuffle,
+        drop_last=cfg_dataloader.drop_last,
+    )
     batch_sampler = DynamicBatchSampler(
         sampler, 
         num_resolution, 
@@ -91,12 +113,17 @@ def create_dataloader(cfg, mode):
         rank=rank
     )
 
-    return data_loader(
+    loader_kwargs = dict(
         dataset=dataset,
         batch_sampler=batch_sampler,
         num_workers=num_workers,
         pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=2,
-        collate_fn=unified_collate_fn
+        collate_fn=unified_collate_fn,
     )
+    if num_workers > 0:
+        loader_kwargs.update(
+            persistent_workers=True,
+            prefetch_factor=2,
+        )
+
+    return data_loader(**loader_kwargs)

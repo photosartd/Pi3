@@ -1,0 +1,113 @@
+# @package _global_
+
+lmgeo:
+    data_root: /vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/lm-o
+    models_folder: models_eval
+    object_id: 1
+    reference_split: train
+    query_split: train_pbr
+    query_scene_id: 0
+    query_subscene_id: 0
+    query_window_size: 25
+    num_reference: 5
+    num_query: 20
+    reference_rgb_masking: true
+    query_rgb_masking: false
+    depth_masking: true
+    mask_type: mask_visib
+    visibility_min: 0.1
+    reference_selection: uniform
+    query_selection: first
+    depth_unit_scale: 0.001
+    filter_center_crop_visibility: true
+    min_center_crop_bbox_area: 1.0
+    filter_preprocessed_query_depth: true
+    min_preprocessed_query_depth_pixels: 1
+    allow_repeat: false
+    symmetric_ids: [10, 11]
+
+train_dataset:
+    length: 256
+
+    weights:
+        LMGeo: 256
+
+    LMGeo:
+        _target_: datasets.lmgeo_dataset.LMGeoDataset
+        data_root: ${lmgeo.data_root}
+        object_id: ${lmgeo.object_id}
+        reference_split: ${lmgeo.reference_split}
+        query_split: ${lmgeo.query_split}
+        query_scene_id: ${lmgeo.query_scene_id}
+        query_subscene_id: ${lmgeo.query_subscene_id}
+        query_window_size: ${lmgeo.query_window_size}
+        num_reference: ${lmgeo.num_reference}
+        num_query: ${lmgeo.num_query}
+        reference_rgb_masking: ${lmgeo.reference_rgb_masking}
+        query_rgb_masking: ${lmgeo.query_rgb_masking}
+        depth_masking: ${lmgeo.depth_masking}
+        mask_type: ${lmgeo.mask_type}
+        visibility_min: ${lmgeo.visibility_min}
+        reference_selection: ${lmgeo.reference_selection}
+        query_selection: ${lmgeo.query_selection}
+        depth_unit_scale: ${lmgeo.depth_unit_scale}
+        filter_center_crop_visibility: ${lmgeo.filter_center_crop_visibility}
+        min_center_crop_bbox_area: ${lmgeo.min_center_crop_bbox_area}
+        filter_preprocessed_query_depth: ${lmgeo.filter_preprocessed_query_depth}
+        min_preprocessed_query_depth_pixels: ${lmgeo.min_preprocessed_query_depth_pixels}
+        allow_repeat: ${lmgeo.allow_repeat}
+        aug_crop: false
+        aug_focal: false
+        z_far: 0
+        transform:
+            _partial_: true
+            _target_: datasets.base.transforms.ImgToTensor
+        mode: train
+        shuffle: false
+
+train_dataloader:
+    drop_last: true
+    shuffle: true
+
+test_dataset:
+    length: 32
+
+    weights:
+        LMGeo: 32
+
+    LMGeo:
+        _target_: datasets.lmgeo_dataset.LMGeoDataset
+        data_root: ${lmgeo.data_root}
+        object_id: ${lmgeo.object_id}
+        reference_split: ${lmgeo.reference_split}
+        query_split: ${lmgeo.query_split}
+        query_scene_id: ${lmgeo.query_scene_id}
+        query_subscene_id: ${lmgeo.query_subscene_id}
+        query_window_size: ${lmgeo.query_window_size}
+        num_reference: ${lmgeo.num_reference}
+        num_query: ${lmgeo.num_query}
+        reference_rgb_masking: ${lmgeo.reference_rgb_masking}
+        query_rgb_masking: ${lmgeo.query_rgb_masking}
+        depth_masking: ${lmgeo.depth_masking}
+        mask_type: ${lmgeo.mask_type}
+        visibility_min: ${lmgeo.visibility_min}
+        reference_selection: ${lmgeo.reference_selection}
+        query_selection: ${lmgeo.query_selection}
+        depth_unit_scale: ${lmgeo.depth_unit_scale}
+        filter_center_crop_visibility: ${lmgeo.filter_center_crop_visibility}
+        min_center_crop_bbox_area: ${lmgeo.min_center_crop_bbox_area}
+        filter_preprocessed_query_depth: ${lmgeo.filter_preprocessed_query_depth}
+        min_preprocessed_query_depth_pixels: ${lmgeo.min_preprocessed_query_depth_pixels}
+        allow_repeat: ${lmgeo.allow_repeat}
+        aug_crop: false
+        aug_focal: false
+        z_far: 0
+        transform:
+            _partial_: true
+            _target_: datasets.base.transforms.ImgToTensor
+        mode: test
+        shuffle: false
+
+test_dataloader:
+    drop_last: false
+    shuffle: false
