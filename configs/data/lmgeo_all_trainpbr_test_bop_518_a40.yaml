@@ -1,0 +1,132 @@
+# @package _global_
+
+# LM-O object-centric training for the 518x518 A40 profile.
+#
+# Training samples use one sequence per GPU batch with 24 total high-resolution
+# views: 5 reference frames + 19 query frames. Official BOP validation remains
+# 5 reference frames + 1 real query frame.
+
+lmgeo:
+    data_root: /vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/lm-o
+    models_folder: models_eval
+    object_ids: all
+    reference_split: train
+    train_query_split: train_pbr
+    test_query_split: test
+    query_target_file: lmo/test_targets_bop19.json
+    query_scene_ids: all
+    query_subscene_ids: all
+    query_window_size: 25
+    num_reference_range: [5, 5]
+    num_query_range: [19, 19]
+    reference_rgb_masking: true
+    query_rgb_masking: false
+    depth_masking: true
+    mask_type: mask_visib
+    visibility_min: 0.1
+    reference_selection: random
+    query_selection: random
+    depth_unit_scale: 0.001
+    filter_center_crop_visibility: true
+    min_center_crop_bbox_area: 1.0
+    # This scan costs startup time, but it avoids high-resolution samples that
+    # become empty after Pi3's center crop/resize. That matters more at 19 query
+    # frames per sample, where one bad query frame can invalidate the batch.
+    filter_preprocessed_query_depth: true
+    min_preprocessed_query_depth_pixels: 1
+    allow_repeat: false
+    symmetric_ids: [10, 11]
+
+train:
+    image_num_range: [24, 24]
+    max_img_per_gpu: 24
+
+test:
+    image_num_range: [6, 6]
+    max_img_per_gpu: 6
+    iters_per_test: 0
+
+_lmgeo_sequence_train_base: &lmgeo_sequence_train_base
+    _target_: datasets.lmgeo_dataset.LMGeoSequenceDataset
+    data_root: ${lmgeo.data_root}
+    object_ids: ${lmgeo.object_ids}
+    reference_split: ${lmgeo.reference_split}
+    query_split: ${lmgeo.train_query_split}
+    query_scene_ids: ${lmgeo.query_scene_ids}
+    query_subscene_ids: ${lmgeo.query_subscene_ids}
+    query_window_size: ${lmgeo.query_window_size}
+    query_source: auto
+    num_reference_range: ${lmgeo.num_reference_range}
+    num_query_range: ${lmgeo.num_query_range}
+    reference_rgb_masking: ${lmgeo.reference_rgb_masking}
+    query_rgb_masking: ${lmgeo.query_rgb_masking}
+    depth_masking: ${lmgeo.depth_masking}
+    mask_type: ${lmgeo.mask_type}
+    visibility_min: ${lmgeo.visibility_min}
+    reference_selection: ${lmgeo.reference_selection}
+    query_selection: ${lmgeo.query_selection}
+    depth_unit_scale: ${lmgeo.depth_unit_scale}
+    filter_center_crop_visibility: ${lmgeo.filter_center_crop_visibility}
+    min_center_crop_bbox_area: ${lmgeo.min_center_crop_bbox_area}
+    filter_preprocessed_query_depth: ${lmgeo.filter_preprocessed_query_depth}
+    min_preprocessed_query_depth_pixels: ${lmgeo.min_preprocessed_query_depth_pixels}
+    allow_repeat: ${lmgeo.allow_repeat}
+    aug_crop: false
+    aug_focal: false
+    z_far: 0
+    transform:
+        _partial_: true
+        _target_: datasets.base.transforms.ImgToTensor
+    shuffle: false
+
+train_dataset:
+    length: 10000
+    weights:
+        LMGeoSequence: 10000
+    LMGeoSequence:
+        <<: *lmgeo_sequence_train_base
+        mode: train
+
+train_dataloader:
+    drop_last: true
+    shuffle: true
+
+test_dataset:
+    _target_: datasets.lmgeo_dataset.LMGeoSequenceDataset
+    data_root: ${lmgeo.data_root}
+    object_ids: ${lmgeo.object_ids}
+    reference_split: ${lmgeo.reference_split}
+    query_split: ${lmgeo.test_query_split}
+    query_target_file: ${lmgeo.query_target_file}
+    query_window_size: ${lmgeo.query_window_size}
+    query_source: auto
+    num_reference_range: [5, 5]
+    num_query_range: [1, 1]
+    reference_rgb_masking: ${lmgeo.reference_rgb_masking}
+    query_rgb_masking: ${lmgeo.query_rgb_masking}
+    depth_masking: ${lmgeo.depth_masking}
+    mask_type: ${lmgeo.mask_type}
+    visibility_min: 0.0
+    reference_selection: uniform
+    query_selection: first
+    depth_unit_scale: ${lmgeo.depth_unit_scale}
+    filter_center_crop_visibility: ${lmgeo.filter_center_crop_visibility}
+    min_center_crop_bbox_area: ${lmgeo.min_center_crop_bbox_area}
+    filter_preprocessed_query_depth: false
+    filter_target_center_crop_visibility: true
+    filter_target_preprocessed_depth: true
+    min_preprocessed_query_depth_pixels: ${lmgeo.min_preprocessed_query_depth_pixels}
+    allow_repeat: ${lmgeo.allow_repeat}
+    aug_crop: false
+    aug_focal: false
+    z_far: 0
+    resolution: ${train.resolution}
+    transform:
+        _partial_: true
+        _target_: datasets.base.transforms.ImgToTensor
+    shuffle: false
+    mode: test
+
+test_dataloader:
+    drop_last: false
+    shuffle: false

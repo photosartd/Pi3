@@ -1,0 +1,107 @@
+# @package _global_
+
+# 518x518 LMGeo fine-tuning profile sized for one 46 GB A40 per rank.
+#
+# This is the high-utilization profile:
+# - Dynamic total views from 3 to 32.
+# - Dataset split constraints allow 2-7 reference renders and 1-25 queries.
+# - The worst case, 7 refs + 25 queries = 32 total views, is one sample per GPU.
+# - Smaller sampled view counts may pack multiple sequences per GPU through the
+#   existing DynamicBatchSampler: floor(max_img_per_gpu / sampled_views).
+#
+# Memory probe on the local RTX PRO 6000 with PyTorch 2.7.1+cu128:
+# - 32 fixed 518x518 views peaked at ~40.7 GB allocated.
+# - 36 fixed 518x518 views peaked at ~45.2 GB, too close to a 46 GB A40.
+# - 38 fixed 518x518 views exceeded 46 GB allocated.
+
+trainer: trainers.pi3_trainer.Pi3Trainer
+
+train:
+  # Total views per sample. The LMGeo dataset then chooses a valid split inside
+  # lmgeo.num_reference_range and lmgeo.num_query_range.
+  image_num_range: [3, 32]
+  max_img_per_gpu: 32
+
+  # Keep the Pi3 high-res native square in both the fixed validation resolution
+  # and the random training pool. The code spelling is historical.
+  resolution:
+    - [518, 518]
+  random_reslution: true
+  aspect_ratio_range: [0.5, 2.0]
+  pixel_count_range: [100000, 268324]
+  patch_size: 14
+  num_resolution: 16
+  base_resolution:
+    - [518, 518]
+
+  num_workers: 0
+  num_epoch: 30
+  iters_per_epoch: 500
+  print_freq: 1
+
+  model_dtype: bf16
+  dynamo_backend: NO
+  dynamic_compile: false
+
+  gradient_accumulation_steps: 1
+  clip_grad: 1.0
+  clip_loss: 100
+
+  optimizer:
+    lr: 5e-6
+    encoder_lr: 0.0
+
+  lr_scheduler:
+    pct_start: 0.05
+
+test:
+  # The per-validation-set runtime sections in the data config override these.
+  image_num_range: [6, 6]
+  max_img_per_gpu: 512
+  num_workers: 0
+  iters_per_test: 0
+  print_freq: 1
+
+model:
+  load_vggt: false
+  freeze_encoder: true
+  train_conf: false
+  ckpt: ckpts/Pi3/model.safetensors
+
+metrics:
+  enabled: true
+  train_enabled: false
+  val_enabled: true
+  train_every_n_steps: 5
+  items:
+    object_pose:
+      _target_: pi3.metrics.object_pose.ObjectPoseMetric
+      data_root: ${lmgeo.data_root}
+      models_folder: ${lmgeo.models_folder}
+      symmetric_ids: ${lmgeo.symmetric_ids}
+      solve_scale: true
+      max_model_points: 20000
+      nn_chunk_size: 2048
+      device: cuda
+    camera:
+      _target_: pi3.metrics.camera.CameraAlignmentMetric
+      solve_scale: true
+    chamfer:
+      _target_: pi3.metrics.chamfer.ReferenceChamferMetric
+      data_root: ${lmgeo.data_root}
+      models_folder: ${lmgeo.models_folder}
+      solve_scale: true
+      voxel_size_d: 0.01
+      max_pred_points: 20000
+      max_gt_points: 20000
+      chunk_size: 1024
+      device: cuda
+
+visuals:
+  # Keep visual logging off for the A40 memory target. The metric validation
+  # loaders are the first thing to turn on; visuals can be enabled afterwards.
+  enabled: false
+  train_enabled: false
+  val_enabled: false
+  train_every_n_steps: 10
+  val_every_n_epochs: 1

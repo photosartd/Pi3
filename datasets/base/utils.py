@@ -388,7 +388,7 @@ def sample_resolutions(aspect_ratio_range=(0.5, 2.0), pixel_count_range=(250000,
         list of (int, int): A list of (width, height) tuples representing the sampled resolutions.
     """
     rng = np.random.default_rng(seed=seed)
-    resolutions = set(base_resolution)  # Use a set to ensure uniqueness
+    resolutions = {tuple(map(int, res)) for res in base_resolution}  # Use a set to ensure uniqueness
 
     if num_resolutions == -1:
         all_res = _find_all_resolutions(aspect_ratio_range, pixel_count_range, patch_size)

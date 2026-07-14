@@ -47,10 +47,18 @@ def create_dataloader(cfg, mode, *, dataset_cfg=None, dataloader_cfg=None, runti
 
         datasets_all = []
 
-        num_resolution = cfg.train.num_resolution if 'num_resolution' in cfg.train and mode == 'train' else 1
         if mode == 'train' and 'random_reslution' in cfg.train and cfg.train.random_reslution:
+            num_resolution = cfg.train.num_resolution if 'num_resolution' in cfg.train else 1
             seed = 777 + 0
-            resolutions = sample_resolutions(aspect_ratio_range=cfg.train.aspect_ratio_range, pixel_count_range=cfg.train.pixel_count_range, patch_size=cfg.train.patch_size, num_resolutions=num_resolution, seed=seed)
+            base_resolution = cfg.train.base_resolution if 'base_resolution' in cfg.train else []
+            resolutions = sample_resolutions(
+                aspect_ratio_range=cfg.train.aspect_ratio_range,
+                pixel_count_range=cfg.train.pixel_count_range,
+                patch_size=cfg.train.patch_size,
+                num_resolutions=num_resolution,
+                seed=seed,
+                base_resolution=base_resolution,
+            )
             print('Initialized resolution', resolutions)
             num_resolution = len(resolutions)
             for dataset_name, weight in weights.items():
@@ -60,6 +68,7 @@ def create_dataloader(cfg, mode, *, dataset_cfg=None, dataloader_cfg=None, runti
         elif 'resolution' in cfg.train:
             resolutions = cfg.train.resolution
             print('Setting dataset resolution', resolutions)
+            num_resolution = len(resolutions) if mode == 'train' else 1
             for dataset_name, weight in weights.items():
                 dataset_i = hydra.utils.instantiate(cfg_dataset[dataset_name], resolution=resolutions)
                 dataset_i.convert_attributes()

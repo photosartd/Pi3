@@ -57,7 +57,15 @@ class Pi3Trainer(BaseTrainer):
 
         if 'random_reslution' in self.cfg.train and self.cfg.train.random_reslution and self.cfg.train.num_resolution > 0:
             seed = epoch + self.cfg.train.base_seed
-            resolutions = sample_resolutions(aspect_ratio_range=self.cfg.train.aspect_ratio_range, pixel_count_range=self.cfg.train.pixel_count_range, patch_size=self.cfg.train.patch_size, num_resolutions=self.cfg.train.num_resolution, seed=seed)
+            base_resolution = self.cfg.train.base_resolution if 'base_resolution' in self.cfg.train else []
+            resolutions = sample_resolutions(
+                aspect_ratio_range=self.cfg.train.aspect_ratio_range,
+                pixel_count_range=self.cfg.train.pixel_count_range,
+                patch_size=self.cfg.train.patch_size,
+                num_resolutions=self.cfg.train.num_resolution,
+                seed=seed,
+                base_resolution=base_resolution,
+            )
             print('[Pi3 Trainer] Sampled new resolutions:', resolutions)
             datasets = []
             recursive_get_dataset(self.train_loader.dataset, datasets)

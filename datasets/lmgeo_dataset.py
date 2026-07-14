@@ -333,6 +333,10 @@ class LMGeoDataset(BaseDataset):
                     f"Requested {count} records but only {len(records)} are available. "
                     "Lower num_reference/num_query or set allow_repeat=true."
                 )
+            if strategy == "random":
+                rng = self._rng if rng is None else rng
+                indices = rng.choice(len(records), size=count, replace=True)
+                return [records[int(idx)] for idx in indices]
             repeats = int(np.ceil(count / len(records)))
             return (records * repeats)[:count]
 
@@ -659,6 +663,8 @@ class LMGeoSequenceDataset(LMGeoDataset):
                 )
             except (FileNotFoundError, ValueError):
                 continue
+            if not records:
+                continue
             if len(records) < self.min_query_records and not self.allow_repeat:
                 continue
             for record in records:
@@ -778,6 +784,8 @@ class LMGeoSequenceDataset(LMGeoDataset):
                 dropped_preprocessed_depth += dropped_here
                 if dropped_here:
                     windows_with_preprocessed_depth_drop += 1
+                if not records:
+                    continue
                 if len(records) < self.min_query_records and not self.allow_repeat:
                     continue
             samples.append(
