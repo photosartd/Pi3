@@ -33,6 +33,7 @@ class Pi3(nn.Module):
             use_global_points=False,
             train_conf=False,
             num_dec_blk_not_to_checkpoint=4,
+            dino_output_layers=None,
             ckpt=None,
         ):
         super().__init__()
@@ -43,6 +44,7 @@ class Pi3(nn.Module):
         self.encoder = dinov2_vitl14_reg(pretrained=False)
         self.patch_size = 14
         del self.encoder.mask_token
+        self.dino_output_layers = [] if dino_output_layers is None else [int(layer) for layer in dino_output_layers]
 
         # ----------------------
         #  Positonal Encoding
@@ -251,6 +253,24 @@ class Pi3(nn.Module):
 
         return torch.cat([final_output[0], final_output[1]], dim=-1), pos.reshape(B*N, hw, -1)
     
+    def _encode_with_optional_dino_outputs(self, imgs):
+        if not self.dino_output_layers:
+            hidden = self.encoder(imgs, is_training=True)
+            if isinstance(hidden, dict):
+                hidden = hidden["x_norm_patchtokens"]
+            return hidden, {}
+
+        final_layer = len(self.encoder.blocks) - 1
+        layers = sorted(set(self.dino_output_layers + [final_layer]))
+        outputs = self.encoder.get_intermediate_layers(imgs, n=layers, norm=True)
+        layer_to_tokens = {int(layer): output for layer, output in zip(layers, outputs)}
+        hidden = layer_to_tokens[final_layer]
+        dino_features = {
+            str(layer): layer_to_tokens[int(layer)].detach()
+            for layer in self.dino_output_layers
+        }
+        return hidden, dino_features
+
     def forward(self, imgs):
         imgs = (imgs - self.image_mean) / self.image_std
 
@@ -259,10 +279,7 @@ class Pi3(nn.Module):
         
         # encode by dinov2
         imgs = imgs.reshape(B*N, _, H, W)
-        hidden = self.encoder(imgs, is_training=True)
-
-        if isinstance(hidden, dict):
-            hidden = hidden["x_norm_patchtokens"]
+        hidden, dino_features = self._encode_with_optional_dino_outputs(imgs)
 
         hidden, pos = self.decode(hidden, N, H, W)
 
@@ -303,10 +320,16 @@ class Pi3(nn.Module):
             # unproject local points using camera poses
             points = torch.einsum('bnij, bnhwj -> bnhwi', camera_poses, homogenize_points(local_points))[..., :3]
 
-        return dict(
+        output = dict(
             points=points,
             local_points=local_points,
             conf=conf,
             camera_poses=camera_poses,
             global_points=global_points
         )
+        if dino_features:
+            output["dino_features"] = {
+                layer: features.reshape(B, N, patch_h * patch_w, -1)
+                for layer, features in dino_features.items()
+            }
+        return output

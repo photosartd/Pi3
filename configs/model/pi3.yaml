@@ -9,16 +9,45 @@ model:
     use_global_points: false
     train_conf: false
     num_dec_blk_not_to_checkpoint: 4
+    dino_output_layers: []
     ckpt: null # <path-to-your-pretrain-checkpoint>
 
 loss:
     train_loss: 
         _target_: pi3.models.loss.Pi3Loss
         train_conf: false
+        correspondence_weight: 0.0
+        correspondence_patch_size: 14
+        correspondence_max_reference_per_query: 1
+        correspondence_reference_selection: uniform
+        correspondence_max_pairs: 512
+        correspondence_pair_subsample: uniform
+        correspondence_depth_abs_tol: 0.01
+        correspondence_depth_rel_tol: 0.05
+        correspondence_huber_beta: 0.01
+        correspondence_use_dino_weights: false
+        correspondence_dino_layer: 17
+        correspondence_dino_center: 0.2
+        correspondence_dino_temperature: 0.1
+        correspondence_min_dino_weight: 0.05
 
     test_loss:
         _target_: pi3.models.loss.Pi3Loss
         train_conf: false
+        correspondence_weight: 0.0
+        correspondence_patch_size: 14
+        correspondence_max_reference_per_query: 1
+        correspondence_reference_selection: uniform
+        correspondence_max_pairs: 512
+        correspondence_pair_subsample: uniform
+        correspondence_depth_abs_tol: 0.01
+        correspondence_depth_rel_tol: 0.05
+        correspondence_huber_beta: 0.01
+        correspondence_use_dino_weights: false
+        correspondence_dino_layer: 17
+        correspondence_dino_center: 0.2
+        correspondence_dino_temperature: 0.1
+        correspondence_min_dino_weight: 0.05
 
 train:
     num_workers: 16

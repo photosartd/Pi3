@@ -34,7 +34,11 @@ lmgeo:
     depth_unit_scale: 0.001
     filter_center_crop_visibility: true
     min_center_crop_bbox_area: 1.0
-    filter_preprocessed_query_depth: true
+    # Keep this off for long training runs. The preprocessed-depth check scans
+    # every candidate RGB/depth/mask through Pi3 preprocessing during dataset
+    # construction, which can stall startup for many minutes. The previous
+    # successful 30-epoch run also used this as false.
+    filter_preprocessed_query_depth: false
     min_preprocessed_query_depth_pixels: 1
     allow_repeat: false
     symmetric_ids: [10, 11]

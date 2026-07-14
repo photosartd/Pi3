@@ -14,8 +14,7 @@ handlers:
   file:
     class: logging.FileHandler
     formatter: detailed
-    # filename: ${work_dir}/outputs/${name}-${now:%Y-%m-%d_%H-%M-%S}/log.log
-    filename: ${work_dir}/outputs/${name}/log.log
+    filename: ${hydra:run.dir}/log.log
 root:
   level: INFO
   handlers: [console, file]

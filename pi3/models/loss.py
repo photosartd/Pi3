@@ -6,6 +6,7 @@ import math
 
 from ..utils.geometry import homogenize_points, se3_inverse, depth_edge
 from ..utils.alignment import align_points_scale
+from .correspondence import build_query_reference_correspondences
 
 from datasets import __HIGH_QUALITY_DATASETS__, __MIDDLE_QUALITY_DATASETS__
 
@@ -242,6 +243,154 @@ class CameraLoss(nn.Module):
         return total_loss, dict(trans_loss=trans_loss, rot_loss=rot_loss)
 
 # ---------------------------------------------------------------------------
+# CorrespondenceConsistencyLoss: GT-corresponding object patches agree in 3D
+# ---------------------------------------------------------------------------
+
+class CorrespondenceConsistencyLoss(nn.Module):
+    """Cross-view consistency over GT query-to-reference correspondences.
+
+    The correspondence indices are built from GT object depth, intrinsics, and
+    BOP object-to-camera poses. The loss itself is applied to Pi3's predicted
+    shared-frame pointmaps, so gradients flow only through the prediction.
+    Optional DINO weights are detached and act only as correspondence
+    confidence.
+    """
+
+    def __init__(
+        self,
+        patch_size: int = 14,
+        max_reference_per_query: int = 1,
+        reference_selection: str = "uniform",
+        max_pairs: int = 512,
+        pair_subsample: str = "uniform",
+        depth_abs_tol: float = 0.01,
+        depth_rel_tol: float = 0.05,
+        huber_beta: float = 0.01,
+        use_dino_weights: bool = False,
+        dino_layer: int = 17,
+        dino_center: float = 0.2,
+        dino_temperature: float = 0.1,
+        min_dino_weight: float = 0.05,
+    ):
+        super().__init__()
+        self.patch_size = int(patch_size)
+        self.max_reference_per_query = int(max_reference_per_query)
+        self.reference_selection = str(reference_selection)
+        self.max_pairs = int(max_pairs)
+        self.pair_subsample = str(pair_subsample)
+        self.depth_abs_tol = float(depth_abs_tol)
+        self.depth_rel_tol = float(depth_rel_tol)
+        self.huber_beta = float(huber_beta)
+        self.use_dino_weights = bool(use_dino_weights)
+        self.dino_layer = int(dino_layer)
+        self.dino_center = float(dino_center)
+        self.dino_temperature = max(float(dino_temperature), 1e-6)
+        self.min_dino_weight = float(min_dino_weight)
+
+    def _global_points_from_normalized_prediction(self, pred: dict[str, torch.Tensor]) -> torch.Tensor:
+        return torch.einsum(
+            'bnij, bnhwj -> bnhwi',
+            pred['camera_poses'],
+            homogenize_points(pred['local_points']),
+        )[..., :3]
+
+    def _dino_features(self, pred: dict[str, torch.Tensor]) -> torch.Tensor | None:
+        features = pred.get('dino_features', None)
+        if features is None:
+            return None
+        if isinstance(features, dict):
+            return features.get(str(self.dino_layer), features.get(self.dino_layer, None))
+        return features
+
+    def forward(self, pred: dict[str, torch.Tensor], gt_raw: list[dict]) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        pred_points = self._global_points_from_normalized_prediction(pred)
+        device = pred_points.device
+        zero = pred_points.mean() * 0.0
+
+        correspondences = build_query_reference_correspondences(
+            gt_raw,
+            patch_size=self.patch_size,
+            max_reference_per_query=self.max_reference_per_query,
+            reference_selection=self.reference_selection,
+            max_pairs=self.max_pairs,
+            pair_subsample=self.pair_subsample,
+            depth_abs_tol=self.depth_abs_tol,
+            depth_rel_tol=self.depth_rel_tol,
+            device=device,
+        )
+        if correspondences.num_pairs == 0:
+            return zero, {
+                'correspondence_num_pairs': torch.zeros((), device=device),
+                'correspondence_depth_error': torch.zeros((), device=device),
+                'correspondence_dino_similarity': torch.zeros((), device=device),
+                'correspondence_dino_weight': torch.zeros((), device=device),
+                'correspondence_num_pairs_loss_stat': torch.zeros((), device=device),
+                'correspondence_depth_error_loss_stat': torch.zeros((), device=device),
+                'correspondence_dino_similarity_loss_stat': torch.zeros((), device=device),
+                'correspondence_dino_weight_loss_stat': torch.zeros((), device=device),
+            }
+
+        q_points = pred_points[
+            correspondences.batch_indices,
+            correspondences.query_view_indices,
+            correspondences.query_y,
+            correspondences.query_x,
+        ]
+        r_points = pred_points[
+            correspondences.batch_indices,
+            correspondences.reference_view_indices,
+            correspondences.reference_y,
+            correspondences.reference_x,
+        ]
+        per_pair_loss = F.smooth_l1_loss(
+            q_points.float(),
+            r_points.float(),
+            reduction='none',
+            beta=self.huber_beta,
+        ).mean(dim=-1)
+
+        weights = torch.ones_like(per_pair_loss)
+        dino_similarity = torch.zeros_like(per_pair_loss)
+        dino = self._dino_features(pred)
+        if self.use_dino_weights and dino is not None:
+            dino = dino.to(device=device, dtype=torch.float32)
+            q_feat = dino[
+                correspondences.batch_indices,
+                correspondences.query_view_indices,
+                correspondences.query_token_indices,
+            ]
+            r_feat = dino[
+                correspondences.batch_indices,
+                correspondences.reference_view_indices,
+                correspondences.reference_token_indices,
+            ]
+            q_feat = F.normalize(q_feat, dim=-1)
+            r_feat = F.normalize(r_feat, dim=-1)
+            dino_similarity = (q_feat * r_feat).sum(dim=-1).detach()
+            weights = torch.sigmoid((dino_similarity - self.dino_center) / self.dino_temperature)
+            weights = weights.clamp_min(self.min_dino_weight).detach()
+
+        loss = (per_pair_loss * weights).sum() / weights.sum().clamp_min(1e-6)
+        details = {
+            'correspondence_num_pairs': torch.as_tensor(float(correspondences.num_pairs), device=device),
+            'correspondence_depth_error': correspondences.depth_errors.float().mean(),
+            'correspondence_dino_similarity': dino_similarity.mean(),
+            'correspondence_dino_weight': weights.mean(),
+        }
+        details.update(
+            {
+                # The current trainer scalarizes/gathers values whose key
+                # contains "loss"; keep aliases so these diagnostics reach
+                # TensorBoard without widening trainer behavior.
+                'correspondence_num_pairs_loss_stat': details['correspondence_num_pairs'],
+                'correspondence_depth_error_loss_stat': details['correspondence_depth_error'],
+                'correspondence_dino_similarity_loss_stat': details['correspondence_dino_similarity'],
+                'correspondence_dino_weight_loss_stat': details['correspondence_dino_weight'],
+            }
+        )
+        return loss, details
+
+# ---------------------------------------------------------------------------
 # Final Loss
 # ---------------------------------------------------------------------------
 
@@ -249,10 +398,40 @@ class Pi3Loss(nn.Module):
     def __init__(
         self,
         train_conf=False,
+        correspondence_weight: float = 0.0,
+        correspondence_patch_size: int = 14,
+        correspondence_max_reference_per_query: int = 1,
+        correspondence_reference_selection: str = "uniform",
+        correspondence_max_pairs: int = 512,
+        correspondence_pair_subsample: str = "uniform",
+        correspondence_depth_abs_tol: float = 0.01,
+        correspondence_depth_rel_tol: float = 0.05,
+        correspondence_huber_beta: float = 0.01,
+        correspondence_use_dino_weights: bool = False,
+        correspondence_dino_layer: int = 17,
+        correspondence_dino_center: float = 0.2,
+        correspondence_dino_temperature: float = 0.1,
+        correspondence_min_dino_weight: float = 0.05,
     ):
         super().__init__()
         self.point_loss = PointLoss(train_conf=train_conf)
         self.camera_loss = CameraLoss()
+        self.correspondence_weight = float(correspondence_weight)
+        self.correspondence_loss = CorrespondenceConsistencyLoss(
+            patch_size=correspondence_patch_size,
+            max_reference_per_query=correspondence_max_reference_per_query,
+            reference_selection=correspondence_reference_selection,
+            max_pairs=correspondence_max_pairs,
+            pair_subsample=correspondence_pair_subsample,
+            depth_abs_tol=correspondence_depth_abs_tol,
+            depth_rel_tol=correspondence_depth_rel_tol,
+            huber_beta=correspondence_huber_beta,
+            use_dino_weights=correspondence_use_dino_weights,
+            dino_layer=correspondence_dino_layer,
+            dino_center=correspondence_dino_center,
+            dino_temperature=correspondence_dino_temperature,
+            min_dino_weight=correspondence_min_dino_weight,
+        )
 
     def prepare_gt(self, gt):
         gt_pts = torch.stack([view['pts3d'] for view in gt], dim=1)
@@ -335,5 +514,11 @@ class Pi3Loss(nn.Module):
         final_loss += camera_loss * 0.1
         details.update(camera_loss_details)
 
-        return final_loss, details
+        if self.correspondence_weight > 0:
+            correspondence_loss, correspondence_details = self.correspondence_loss(pred, gt_raw)
+            final_loss += correspondence_loss * self.correspondence_weight
+            details['correspondence_loss'] = correspondence_loss
+            details['correspondence_weighted_loss'] = correspondence_loss * self.correspondence_weight
+            details.update(correspondence_details)
 
+        return final_loss, details
