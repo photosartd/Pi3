@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, Iterator, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+from omegaconf import OmegaConf
 
 from utils.pylogger import RankedLogger
 from utils.registry import Registry
@@ -26,6 +27,24 @@ _DEFAULT_FOREACH = {
 }
 
 MATCH_PREV_GROUP = (99999,)
+_LOCAL_OPTIMIZER_KEYS = {
+    "type",
+    "lr",
+    "weight_decay",
+    "layer_decay",
+    "filter_bias_and_bn",
+    "verbose",
+    "encoder_lr",
+    "foreach",
+}
+
+
+def _plain_optimizer_value(key, value):
+    if OmegaConf.is_config(value):
+        value = OmegaConf.to_container(value, resolve=True)
+    if key == "betas" and isinstance(value, list):
+        return tuple(value)
+    return value
 
 
 def group_with_matcher(
@@ -258,6 +277,11 @@ def build_optimizer(
             parameters = model_or_params.parameters()
 
     opt_args = dict(weight_decay=weight_decay, **kwargs)
+
+    for key, value in cfg.items():
+        if key in _LOCAL_OPTIMIZER_KEYS or value is None:
+            continue
+        opt_args.setdefault(key, _plain_optimizer_value(key, value))
 
     if cfg.get("lr") is not None:
         opt_args.setdefault("lr", cfg.lr)

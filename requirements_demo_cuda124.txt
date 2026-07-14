@@ -1,0 +1,2 @@
+-r requirements_torch_cuda124.txt
+-r requirements_demo_common.txt

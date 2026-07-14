@@ -7,8 +7,8 @@ This document provides a comprehensive guide to training the π³ model. We've s
 
 ## Environment Setup
 
-For the tested Conda installation procedure, CUDA verification commands, and
-GPU-specific notes for RTX 4090, RTX A6000, and H200, see
+For the Conda installation procedure, CUDA verification commands, and
+GPU-specific notes for RTX 4090, RTX A6000, RTX PRO 6000 Blackwell, and H200, see
 [docs/conda_setup.md](docs/conda_setup.md).
 
 
