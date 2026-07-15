@@ -226,12 +226,18 @@ conda:      /homes/dtrofimov/miniconda3
 env:        pi3-lmgeo
 data:       /vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/lm-o
 runs/logs:  /vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3
+ckpt:       /vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/model.safetensors
 mail:       dmitrii.trofimov@uni-bielefeld.de, BEGIN,END,FAIL
 ```
 
 The production command writes Hydra outputs and checkpoints under
 `/vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3/<run-name>/`, not under the
 login-node repo checkout.
+
+Download the Pi3 base checkpoint before submitting GPU jobs. See
+[checkpoints.md](checkpoints.md). The CITEc script first looks for the shared
+checkpoint path above, then falls back to `ckpts/Pi3/model.safetensors` inside
+the repo.
 
 The CITEc examples do not require a Slurm account, so the submit helper does not
 set `--account` by default. If the scheduler rejects a job with an account/QoS
@@ -245,11 +251,26 @@ Optional overrides:
 
 ```bash
 PI3_WALLTIME=72:00:00 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
+PI3_TRAIN_GPUS=2 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
+PI3_TRAIN_GPUS=2 PI3_RUN_NAME=lmgeo_518_a40_dynamic_2xa40 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_RUN_NAME=my_run scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_CKPT=/vol/coro/.../model.safetensors scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh smoke
 PI3_MAIL_TYPE=END,FAIL scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_MAIL_USER= scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh smoke
 ```
+
+For `train` mode, `PI3_TRAIN_GPUS` can be `1`, `2`, `3`, or `4`. The helper
+scales the default CPU, RAM, and local tmp requests as `8 CPUs`, `100G RAM`, and
+`25G tmp` per requested A40. Override those separately if needed:
+
+```bash
+PI3_TRAIN_GPUS=2 PI3_TRAIN_MEM=240G PI3_TRAIN_TMP=80G \
+  scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
+```
+
+The per-GPU memory profile is unchanged. A 2xA40 run still allows up to 32 views
+per sample per GPU, but the effective number of views per optimizer step is
+about half of the 4xA40 run unless you increase gradient accumulation.
 
 ## Avoiding Queue Repeats
 

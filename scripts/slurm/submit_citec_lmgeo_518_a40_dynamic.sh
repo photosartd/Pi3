@@ -10,7 +10,13 @@ LOG_DIR="${PI3_SLURM_LOG_DIR:-$RUNS_ROOT/slurm_logs}"
 MAIL_USER="${PI3_MAIL_USER:-dmitrii.trofimov@uni-bielefeld.de}"
 MAIL_TYPE="${PI3_MAIL_TYPE:-BEGIN,END,FAIL}"
 ACCOUNT="${PI3_SLURM_ACCOUNT:-${SLURM_ACCOUNT:-}}"
+TRAIN_GPUS="${PI3_TRAIN_GPUS:-4}"
 mkdir -p "$LOG_DIR"
+
+if ! [[ "$TRAIN_GPUS" =~ ^[1-4]$ ]]; then
+  echo "ERROR: PI3_TRAIN_GPUS must be an integer from 1 to 4, got: $TRAIN_GPUS" >&2
+  exit 2
+fi
 
 case "$MODE" in
   preflight)
@@ -36,15 +42,18 @@ case "$MODE" in
     EXPECT_GPUS=1
     ;;
   train)
+    TRAIN_CPUS="${PI3_TRAIN_CPUS:-$((TRAIN_GPUS * 8))}"
+    TRAIN_MEM="${PI3_TRAIN_MEM:-$((TRAIN_GPUS * 100))G}"
+    TRAIN_TMP="${PI3_TRAIN_TMP:-$((TRAIN_GPUS * 25))G}"
     SBATCH_OPTS=(
       --job-name=pi3-lmgeo-518
-      --gres=gpu:a40:4
-      --cpus-per-task=32
-      --mem=400G
-      --tmp=100G
+      --gres=gpu:a40:"$TRAIN_GPUS"
+      --cpus-per-task="$TRAIN_CPUS"
+      --mem="$TRAIN_MEM"
+      --tmp="$TRAIN_TMP"
       --time="${PI3_WALLTIME:-48:00:00}"
     )
-    EXPECT_GPUS=4
+    EXPECT_GPUS="$TRAIN_GPUS"
     ;;
   *)
     echo "Usage: $0 [preflight|smoke|train]" >&2

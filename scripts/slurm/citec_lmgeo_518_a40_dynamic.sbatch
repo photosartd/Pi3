@@ -17,6 +17,7 @@ CONDA_ENV="${PI3_CONDA_ENV:-pi3-lmgeo}"
 DATA_ROOT="${PI3_DATA_ROOT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/lm-o}"
 RUNS_ROOT="${PI3_RUNS_ROOT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3}"
 RUN_MODE="${PI3_RUN_MODE:-train}"
+SHARED_CKPT="${PI3_SHARED_CKPT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/model.safetensors}"
 
 cd "$REPO_DIR"
 
@@ -43,10 +44,17 @@ if [[ ! -d "$DATA_ROOT" ]]; then
   exit 2
 fi
 
-PI3_CKPT="${PI3_CKPT:-$REPO_DIR/ckpts/Pi3/model.safetensors}"
+if [[ -z "${PI3_CKPT:-}" ]]; then
+  if [[ -f "$SHARED_CKPT" ]]; then
+    PI3_CKPT="$SHARED_CKPT"
+  else
+    PI3_CKPT="$REPO_DIR/ckpts/Pi3/model.safetensors"
+  fi
+fi
+
 if [[ ! -f "$PI3_CKPT" ]]; then
   echo "ERROR: Pi3 checkpoint not found: $PI3_CKPT" >&2
-  echo "Set PI3_CKPT=/path/to/model.safetensors or place it at ckpts/Pi3/model.safetensors." >&2
+  echo "Set PI3_CKPT=/path/to/model.safetensors, place it at $SHARED_CKPT, or place it at ckpts/Pi3/model.safetensors." >&2
   exit 2
 fi
 

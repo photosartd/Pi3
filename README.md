@@ -17,6 +17,9 @@ A40-class GPU, see [docs/lmgeo_518_a40.md](docs/lmgeo_518_a40.md).
 For Slurm installation, preflight, and 4xA40 launch notes, see
 [docs/slurm_a40.md](docs/slurm_a40.md).
 
+For downloading and placing the Pi3 base checkpoint, see
+[docs/checkpoints.md](docs/checkpoints.md).
+
 
 ## 💾 Data Preparation
 
