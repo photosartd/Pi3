@@ -274,6 +274,10 @@ The per-GPU memory profile is unchanged. A 2xA40 run still allows up to 32 views
 per sample per GPU, but the effective number of views per optimizer step is
 about half of the 4xA40 run unless you increase gradient accumulation.
 
+The dynamic training config uses a virtual train dataset length of `50000`. This
+is intentionally larger than one epoch needs so the sampler has enough indices
+for 2xA40 and 4xA40 runs even when it draws the smallest 3-view samples.
+
 ## Avoiding Queue Repeats
 
 Recommended sequence:

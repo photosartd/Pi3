@@ -86,9 +86,13 @@ _lmgeo_sequence_train_base: &lmgeo_sequence_train_base
     shuffle: false
 
 train_dataset:
-    length: 10000
+    # Virtual epoch pool for the dynamic batch sampler. With
+    # image_num_range=[3, 32], max_img_per_gpu=32, and iters_per_epoch=500,
+    # each rank can reserve floor(32 / 3) * 500 = 5000 sample indices. Keep the
+    # virtual length comfortably above that after division by world size.
+    length: 50000
     weights:
-        LMGeoSequence: 10000
+        LMGeoSequence: 50000
     LMGeoSequence:
         <<: *lmgeo_sequence_train_base
         mode: train
