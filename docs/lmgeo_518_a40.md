@@ -133,8 +133,9 @@ For Slurm, use [slurm_a40.md](slurm_a40.md).
 ## Fast Smoke Overrides
 
 The production dynamic data config keeps `lmgeo.filter_preprocessed_query_depth:
-true`. This is safer for queued runs because invalid high-res samples are
-filtered before training, but it can make startup slow on the full train split.
+true`. This is safer because invalid high-res samples are filtered before
+training, but it can make startup slow on the full train split. The CITEc Slurm
+script overrides this to `false` by default to save allocated GPU time.
 
 For a fast memory smoke, override it:
 

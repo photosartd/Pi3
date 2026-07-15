@@ -18,6 +18,7 @@ DATA_ROOT="${PI3_DATA_ROOT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/
 RUNS_ROOT="${PI3_RUNS_ROOT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3}"
 RUN_MODE="${PI3_RUN_MODE:-train}"
 SHARED_CKPT="${PI3_SHARED_CKPT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/model.safetensors}"
+FILTER_PREPROCESSED_QUERY_DEPTH="${PI3_FILTER_PREPROCESSED_QUERY_DEPTH:-false}"
 
 cd "$REPO_DIR"
 
@@ -69,6 +70,7 @@ echo "Repo: $REPO_DIR"
 echo "Data: $DATA_ROOT"
 echo "Output: $RUN_DIR"
 echo "Conda env: $CONDA_ENV at $CONDA_ROOT"
+echo "filter_preprocessed_query_depth=$FILTER_PREPROCESSED_QUERY_DEPTH"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 echo "SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-unset}"
 echo "SLURM_JOB_TMP=${SLURM_JOB_TMP:-unset}"
@@ -119,6 +121,7 @@ COMMON_OVERRIDES=(
   data=lmgeo_trainpbr45_real_and_new_val_518_a40_dynamic
   "name=$RUN_NAME"
   "lmgeo.data_root=$DATA_ROOT"
+  "lmgeo.filter_preprocessed_query_depth=$FILTER_PREPROCESSED_QUERY_DEPTH"
   "model.ckpt=$PI3_CKPT"
   "log.output_dir=$RUN_DIR"
   "log.ckpt_dir=$RUN_DIR/ckpts"
@@ -136,7 +139,6 @@ if [[ "$RUN_MODE" == "smoke" ]]; then
     train.max_img_per_gpu=32 \
     'lmgeo.num_reference_range=[7,7]' \
     'lmgeo.num_query_range=[25,25]' \
-    lmgeo.filter_preprocessed_query_depth=false \
     train.num_epoch=1 \
     train.iters_per_epoch=1 \
     val_datasets.real_test.runtime.iters_per_test=1 \

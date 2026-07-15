@@ -227,6 +227,7 @@ env:        pi3-lmgeo
 data:       /vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/lm-o
 runs/logs:  /vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3
 ckpt:       /vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/model.safetensors
+filter:     lmgeo.filter_preprocessed_query_depth=false
 mail:       dmitrii.trofimov@uni-bielefeld.de, BEGIN,END,FAIL
 ```
 
@@ -255,6 +256,7 @@ PI3_TRAIN_GPUS=2 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_TRAIN_GPUS=2 PI3_RUN_NAME=lmgeo_518_a40_dynamic_2xa40 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_RUN_NAME=my_run scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_CKPT=/vol/coro/.../model.safetensors scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh smoke
+PI3_FILTER_PREPROCESSED_QUERY_DEPTH=true scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_MAIL_TYPE=END,FAIL scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_MAIL_USER= scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh smoke
 ```
@@ -282,10 +284,11 @@ Recommended sequence:
 4. Run the one-step 32-view training smoke on one A40.
 5. Submit the 4xA40 production job.
 
-The production data config keeps `lmgeo.filter_preprocessed_query_depth: true`.
-That can make startup slower, but it avoids invalid high-res samples appearing
-mid-run. The fast preflight override turns it off only to avoid spending queue
-time on a full preprocessing scan.
+The production data config keeps `lmgeo.filter_preprocessed_query_depth: true`,
+but the CITEc Slurm script overrides it to `false` by default to avoid spending
+allocated GPU time on a full `/vol` preprocessing scan. Set
+`PI3_FILTER_PREPROCESSED_QUERY_DEPTH=true` for a slower but more conservative
+run that filters invalid high-res samples before training.
 
 ## References
 
