@@ -266,11 +266,22 @@ class BaseTrainer:
 
             train_stats = self.train_one_epoch(epoch)
 
-            # Perform validation at the end of each epoch
-            val_stats = self.validate_all(epoch)
+            val_every_n_epochs = max(1, int(self.cfg.train.get("val_every_n_epochs", 1)))
+            should_validate = (
+                (epoch + 1) % val_every_n_epochs == 0
+                or epoch + 1 == self.cfg.train.num_epoch
+            )
+            if should_validate:
+                val_stats = self.validate_all(epoch)
+            else:
+                val_stats = {}
+                self.log_info(
+                    f"Skipping validation at epoch {epoch}; "
+                    f"train.val_every_n_epochs={val_every_n_epochs}"
+                )
 
             current_val_metric = self.latest_primary_val_stats.get("loss", float('inf'))
-            if self.cfg.log.get("save_best", True) and current_val_metric < best_val_metric:
+            if val_stats and self.cfg.log.get("save_best", True) and current_val_metric < best_val_metric:
                 best_val_metric = current_val_metric
                 best_model_path = os.path.join(
                     self.cfg.log.ckpt_dir,
@@ -387,26 +398,34 @@ class BaseTrainer:
         )
         if self.metric_manager.should_update("val"):
             self.metric_manager.reset()
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats(self.accelerator.device)
 
         self.log_info(f"Start validation {val_name} for epoch {epoch}")
         with torch.no_grad():
+            val_iterable = itertools.islice(loader, iters_per_test)
             for it, batch in enumerate(metric_logger.log_every(
-                loader, print_freq, header
+                val_iterable, print_freq, header, total=iters_per_test
             )):
-                if it >= iters_per_test:
-                    break
-
+                move_start = time.time()
                 batch = move_to_device(batch, self.accelerator.device)
+                move_time = time.time() - move_start
 
-                # Forward pass
-                forward_outputs = self.forward_batch(batch, mode='test')
+                forward_start = time.time()
+                with self.accelerator.autocast():
+                    forward_outputs = self.forward_batch(batch, mode='test')
+                forward_time = time.time() - forward_start
+
+                visual_time = 0.0
                 if (
                     not val_visuals_logged
                     and val_visual_it is not None
                     and it == val_visual_it
                     and self.accelerator.is_main_process
                 ):
+                    visual_start = time.time()
                     val_visuals = self.visual_manager.render(forward_outputs, batch, mode="val")
+                    visual_time = time.time() - visual_start
                     if val_visuals:
                         self.log_all(val_visuals, step=self.global_step, prefix=f"val_visuals/{val_name}")
                         self.log_info(
@@ -414,9 +433,18 @@ class BaseTrainer:
                             f"{self.visual_manager.last_render_info}"
                         )
                     val_visuals_logged = True
+                metric_time = 0.0
                 if self.metric_manager.should_update("val"):
+                    metric_start = time.time()
                     self.metric_manager.update(forward_outputs, batch, mode="val")
+                    metric_time = time.time() - metric_start
+                metric_timing_stats = {
+                    f"metric_{name}": value
+                    for name, value in getattr(self.metric_manager, "last_update_times", {}).items()
+                }
+                loss_start = time.time()
                 outputs = self.calculate_loss(forward_outputs, batch, mode='test')
+                loss_eval_time = time.time() - loss_start
                 loss = outputs.loss
 
                 # Gather statistics
@@ -427,6 +455,14 @@ class BaseTrainer:
                 # self.log_all(outputs, self.global_step, prefix='val')
 
                 metric_logger.update(**outputs)
+                metric_logger.update(
+                    move=move_time,
+                    forward=forward_time,
+                    metric=metric_time,
+                    visual=visual_time,
+                    loss_eval_time=loss_eval_time,
+                    **metric_timing_stats,
+                )
 
         # Average the validation loss
         if total_samples == 0:
@@ -468,12 +504,10 @@ class BaseTrainer:
             )
         )
 
+        train_iterable = itertools.islice(self.train_loader, self.iters_per_epoch)
         for it, batch in enumerate(metric_logger.log_every(
-            self.train_loader, self.cfg.train.print_freq, header
+            train_iterable, self.cfg.train.print_freq, header, total=self.iters_per_epoch
         )):
-            if it >= self.iters_per_epoch:
-                break
-
             with self.accelerator.accumulate(self.model):
                 # Perform the forward using the accerlate
                 batch = move_to_device(batch, device=self.accelerator.device)

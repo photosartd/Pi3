@@ -196,8 +196,13 @@ Each GPU keeps the same per-rank memory budget. With 4 GPUs and no gradient
 accumulation, the maximum effective view count per optimizer update is:
 
 ```text
-32 views/rank * 4 ranks = 128 views/update
+up to 32 views/sample/rank * 4 ranks = 128 views/update
 ```
+
+The A40 dynamic config keeps `train.max_img_per_gpu: 28` while still allowing
+32-view samples. Values above 28 can pack more low-view sequences into one GPU
+batch; a local `max_img_per_gpu=32` run reached about `45.6 GiB` of PyTorch
+allocated memory, before allocator reserve/driver overhead.
 
 ## CITEc GPU Cluster Scripts
 
@@ -271,12 +276,15 @@ PI3_TRAIN_GPUS=2 PI3_TRAIN_MEM=240G PI3_TRAIN_TMP=80G \
 ```
 
 The per-GPU memory profile is unchanged. A 2xA40 run still allows up to 32 views
-per sample per GPU, but the effective number of views per optimizer step is
-about half of the 4xA40 run unless you increase gradient accumulation.
+per sample per GPU, but uses `train.max_img_per_gpu: 28` for packed smaller-view
+batches. The effective number of views per optimizer step is about half of the
+4xA40 run unless you increase gradient accumulation.
 
-The dynamic training config uses a virtual train dataset length of `50000`. This
-is intentionally larger than one epoch needs so the sampler has enough indices
-for 2xA40 and 4xA40 runs even when it draws the smallest 3-view samples.
+The dynamic training config uses `train_dataset.length: auto`. At dataloader
+construction time it resolves the virtual dataset length from the real indexed
+LMGeo sample count, current Slurm/Accelerate world size, and the configured
+sampler runway. This keeps the same config valid for 1xA40, 2xA40, and 4xA40
+without hardcoding a huge local epoch length.
 
 ## Avoiding Queue Repeats
 

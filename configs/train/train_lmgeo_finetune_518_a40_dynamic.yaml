@@ -6,11 +6,14 @@
 # - Dynamic total views from 3 to 32.
 # - Dataset split constraints allow 2-7 reference renders and 1-25 queries.
 # - The worst case, 7 refs + 25 queries = 32 total views, is one sample per GPU.
-# - Smaller sampled view counts may pack multiple sequences per GPU through the
-#   existing DynamicBatchSampler: floor(max_img_per_gpu / sampled_views).
+# - Smaller sampled view counts pack multiple sequences per GPU through the
+#   existing DynamicBatchSampler: floor(max_img_per_gpu / sampled_views). Keep
+#   max_img_per_gpu below 32 because packed small-view batches can use more
+#   memory than the single 32-view sequence.
 #
 # Memory probe on the local RTX PRO 6000 with PyTorch 2.7.1+cu128:
 # - 32 fixed 518x518 views peaked at ~40.7 GB allocated.
+# - Dynamic packed batches with max_img_per_gpu=32 reached ~45.6 GB allocated.
 # - 36 fixed 518x518 views peaked at ~45.2 GB, too close to a 46 GB A40.
 # - 38 fixed 518x518 views exceeded 46 GB allocated.
 
@@ -20,7 +23,7 @@ train:
   # Total views per sample. The LMGeo dataset then chooses a valid split inside
   # lmgeo.num_reference_range and lmgeo.num_query_range.
   image_num_range: [3, 32]
-  max_img_per_gpu: 32
+  max_img_per_gpu: 28
 
   # Keep the Pi3 high-res native square in both the fixed validation resolution
   # and the random training pool. The code spelling is historical.
@@ -37,6 +40,7 @@ train:
   num_workers: 0
   num_epoch: 30
   iters_per_epoch: 500
+  val_every_n_epochs: 1
   print_freq: 1
 
   model_dtype: bf16
@@ -57,7 +61,7 @@ train:
 test:
   # The per-validation-set runtime sections in the data config override these.
   image_num_range: [6, 6]
-  max_img_per_gpu: 512
+  max_img_per_gpu: 256
   num_workers: 0
   iters_per_test: 0
   print_freq: 1
@@ -91,6 +95,9 @@ metrics:
       data_root: ${lmgeo.data_root}
       models_folder: ${lmgeo.models_folder}
       solve_scale: true
+      # High-res training-time validation uses a fast CUDA-only approximation:
+      # mask/subsample reference point clouds on GPU and skip CPU voxelization.
+      use_gpu_fast_path: true
       voxel_size_d: 0.01
       max_pred_points: 20000
       max_gt_points: 20000

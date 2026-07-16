@@ -13,6 +13,8 @@ __INDOOR_DATASETS__ = ['Hypersim', 'ScanNet', 'Scannetpp', 'Taskonomy', 'ARKitSc
 def create_dataloader(cfg, mode, *, dataset_cfg=None, dataloader_cfg=None, runtime_cfg=None):
     data_loader = DataLoader
     num_resolution = 1
+    world_size = get_world_size()
+    rank = get_rank()
 
     # pytorch dataset
     if mode == 'train':
@@ -32,19 +34,33 @@ def create_dataloader(cfg, mode, *, dataset_cfg=None, dataloader_cfg=None, runti
             cfg.test.num_workers if 'num_workers' in cfg.test else cfg.train.num_workers
         )
 
+    if mode == 'train':
+        image_num_range = cfg.train.image_num_range
+    else:
+        image_num_range = cfg_runtime.image_num_range if 'image_num_range' in cfg_runtime else [8, 8]
+    print(f'Sampling frame number range from {image_num_range}')
+    # adapte from vggt
+    if mode == 'train':
+        max_img_per_gpu = cfg.train.max_img_per_gpu if 'max_img_per_gpu' in cfg.train else image_num_range[0]
+    else:
+        max_img_per_gpu = cfg_runtime.max_img_per_gpu if 'max_img_per_gpu' in cfg_runtime else (
+            cfg.train.max_img_per_gpu if 'max_img_per_gpu' in cfg.train else image_num_range[0]
+        )
+    print(f'Max frame number per rank {max_img_per_gpu}')
+
+    def _needed_train_indices_per_rank():
+        if mode != 'train' or cfg.train.iters_per_epoch <= 0:
+            return 0
+        min_image_num = int(image_num_range[0])
+        return (int(max_img_per_gpu) // min_image_num) * int(cfg.train.iters_per_epoch)
+
+    def _is_auto_length(value):
+        return isinstance(value, str) and value.lower() == 'auto'
+
     if isinstance(cfg_dataset, str):
         dataset = eval(cfg_dataset) 
     elif 'weights' in cfg_dataset:
         weights = cfg_dataset.weights
-        if 'length' in cfg_dataset:
-            dataset_length = cfg_dataset.length
-            weight_sum = sum([v for k, v in weights.items()])
-            new_weights = {}
-            for dataset_name, weight in weights.items():
-                new_weights[dataset_name] = max(int(weight / weight_sum * dataset_length), 1)
-            weights = new_weights
-            print(f'New weights for dataset (adjusting to dataset length {dataset_length}): {new_weights}')
-
         datasets_all = []
 
         if mode == 'train' and 'random_reslution' in cfg.train and cfg.train.random_reslution:
@@ -64,7 +80,7 @@ def create_dataloader(cfg, mode, *, dataset_cfg=None, dataloader_cfg=None, runti
             for dataset_name, weight in weights.items():
                 dataset_i = hydra.utils.instantiate(cfg_dataset[dataset_name], resolution=resolutions)
                 dataset_i.convert_attributes()
-                datasets_all.append(weight @ dataset_i)
+                datasets_all.append((dataset_name, weight, dataset_i))
         elif 'resolution' in cfg.train:
             resolutions = cfg.train.resolution
             print('Setting dataset resolution', resolutions)
@@ -72,38 +88,44 @@ def create_dataloader(cfg, mode, *, dataset_cfg=None, dataloader_cfg=None, runti
             for dataset_name, weight in weights.items():
                 dataset_i = hydra.utils.instantiate(cfg_dataset[dataset_name], resolution=resolutions)
                 dataset_i.convert_attributes()
-                datasets_all.append(weight @ dataset_i)
+                datasets_all.append((dataset_name, weight, dataset_i))
         else:
             for dataset_name, weight in weights.items():
                 dataset_i = hydra.utils.instantiate(cfg_dataset[dataset_name])
                 dataset_i.convert_attributes()
-                datasets_all.append(weight @ dataset_i)
+                datasets_all.append((dataset_name, weight, dataset_i))
+
+        if 'length' in cfg_dataset:
+            dataset_length_cfg = cfg_dataset.length
+            if _is_auto_length(dataset_length_cfg):
+                natural_length = sum(len(dataset_i) for _, _, dataset_i in datasets_all)
+                needed_total = (_needed_train_indices_per_rank() + 1) * world_size
+                dataset_length = max(natural_length, needed_total)
+                print(
+                    f'Auto dataset length resolved to {dataset_length} '
+                    f'(natural={natural_length}, needed_total={needed_total}, world_size={world_size})'
+                )
+            else:
+                dataset_length = int(dataset_length_cfg)
+            weight_sum = sum([v for k, v in weights.items()])
+            new_weights = {}
+            for dataset_name, weight in weights.items():
+                new_weights[dataset_name] = max(int(weight / weight_sum * dataset_length), 1)
+            weights = new_weights
+            print(f'New weights for dataset (adjusting to dataset length {dataset_length}): {new_weights}')
+
+        datasets_all = [weights[dataset_name] @ dataset_i for dataset_name, _, dataset_i in datasets_all]
         dataset = datasets_all[0]
         for dataset_ in datasets_all[1:]:
             dataset += dataset_
     else:
         dataset = hydra.utils.instantiate(cfg_dataset)
         dataset.convert_attributes()
-    world_size = get_world_size()
-    rank = get_rank()
 
-    if mode == 'train':
-        image_num_range = cfg.train.image_num_range
-    else:
-        image_num_range = cfg_runtime.image_num_range if 'image_num_range' in cfg_runtime else [8, 8]
-    print(f'Sampling frame number range from {image_num_range}')
-    # adapte from vggt
-    if mode == 'train':
-        max_img_per_gpu = cfg.train.max_img_per_gpu if 'max_img_per_gpu' in cfg.train else image_num_range[0]
-    else:
-        max_img_per_gpu = cfg_runtime.max_img_per_gpu if 'max_img_per_gpu' in cfg_runtime else (
-            cfg.train.max_img_per_gpu if 'max_img_per_gpu' in cfg.train else image_num_range[0]
-        )
-    print(f'Max frame number per rank {max_img_per_gpu}')
     if mode == 'train' and cfg.train.iters_per_epoch > 0:
-        print('Needed batch number per epoch (per rank):', (max_img_per_gpu // image_num_range[0]) * cfg.train.iters_per_epoch)
+        print('Needed batch number per epoch (per rank):', _needed_train_indices_per_rank())
         print('Dataset length per rank:', len(dataset) // world_size)
-        assert (max_img_per_gpu // image_num_range[0]) * cfg.train.iters_per_epoch < len(dataset) // world_size
+        assert _needed_train_indices_per_rank() < len(dataset) // world_size
 
     sampler = DynamicDistributedSampler(
         dataset,

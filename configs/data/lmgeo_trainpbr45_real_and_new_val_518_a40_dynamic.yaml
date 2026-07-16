@@ -45,11 +45,11 @@ lmgeo:
 
 train:
     image_num_range: [3, 32]
-    max_img_per_gpu: 32
+    max_img_per_gpu: 28
 
 test:
     image_num_range: [6, 6]
-    max_img_per_gpu: 512
+    max_img_per_gpu: 256
     iters_per_test: 0
 
 _lmgeo_sequence_train_base: &lmgeo_sequence_train_base
@@ -80,19 +80,22 @@ _lmgeo_sequence_train_base: &lmgeo_sequence_train_base
     aug_crop: false
     aug_focal: false
     z_far: 0
+    # With the Slurm fast path using filter_preprocessed_query_depth=false,
+    # occasional windows can still produce empty valid masks after Pi3
+    # preprocessing. Refetch instead of failing after only the base default.
+    max_refetch: 50
     transform:
         _partial_: true
         _target_: datasets.base.transforms.ImgToTensor
     shuffle: false
 
 train_dataset:
-    # Virtual epoch pool for the dynamic batch sampler. With
-    # image_num_range=[3, 32], max_img_per_gpu=32, and iters_per_epoch=500,
-    # each rank can reserve floor(32 / 3) * 500 = 5000 sample indices. Keep the
-    # virtual length comfortably above that after division by world size.
-    length: 50000
+    # Resolved in create_dataloader from the actual world size and sampler
+    # runway. This keeps the same config valid for 1, 2, or 4 GPUs without
+    # making local 1-GPU epochs look like 50k-step epochs.
+    length: auto
     weights:
-        LMGeoSequence: 50000
+        LMGeoSequence: 10000
     LMGeoSequence:
         <<: *lmgeo_sequence_train_base
         mode: train
@@ -183,7 +186,7 @@ val_datasets:
         dataloader: *default_test_dataloader
         runtime:
             image_num_range: [6, 6]
-            max_img_per_gpu: 512
+            max_img_per_gpu: 256
             iters_per_test: 0
             num_workers: ${test.num_workers}
             print_freq: ${test.print_freq}
@@ -192,7 +195,7 @@ val_datasets:
         dataloader: *default_test_dataloader
         runtime:
             image_num_range: [6, 6]
-            max_img_per_gpu: 512
+            max_img_per_gpu: 256
             iters_per_test: 0
             num_workers: ${test.num_workers}
             print_freq: ${test.print_freq}
@@ -205,7 +208,7 @@ val_datasets:
         dataloader: *default_test_dataloader
         runtime:
             image_num_range: [10, 10]
-            max_img_per_gpu: 512
+            max_img_per_gpu: 256
             iters_per_test: 0
             num_workers: ${test.num_workers}
             print_freq: ${test.print_freq}
@@ -218,7 +221,7 @@ val_datasets:
         dataloader: *default_test_dataloader
         runtime:
             image_num_range: [15, 15]
-            max_img_per_gpu: 512
+            max_img_per_gpu: 208
             iters_per_test: 0
             num_workers: ${test.num_workers}
             print_freq: ${test.print_freq}

@@ -36,13 +36,18 @@ The two counts are not independently drawn by the current sampler; total views
 are sampled first, then the reference/query split is sampled from the valid
 choices. The worst case is 7 references + 25 queries = 32 views.
 
-With `train.max_img_per_gpu: 32`, the 32-view case is one sample per GPU. For
-smaller sampled view counts, the existing dynamic batch sampler packs more
-sequences per GPU using:
+With `train.max_img_per_gpu: 28`, the 32-view case is still allowed as one
+sample per GPU because the dynamic batch sampler uses a minimum sample batch
+size of one. For smaller sampled view counts, it packs more sequences per GPU
+using:
 
 ```text
-floor(train.max_img_per_gpu / sampled_total_views)
+max(1, floor(train.max_img_per_gpu / sampled_total_views))
 ```
+
+The value is intentionally below 32. A local dynamic run with
+`max_img_per_gpu=32` reached about `45.6 GiB` of PyTorch allocated memory on a
+packed small-view batch, which is too close to the A40 target.
 
 ## Dynamic Pixel Range
 
@@ -79,22 +84,64 @@ Training, fixed 518x518, metrics/visuals disabled:
 | 36 | repeated-query stress | 45.2 GB |
 | 38 | repeated-query stress | 47.4 GB |
 
-The dynamic A40 config uses 32 as the practical maximum. It fits the target
-with useful headroom; 36 is too close to a 46 GB card, and 38 is over the
-target.
+The dynamic A40 config allows 32-view samples but uses
+`train.max_img_per_gpu: 28` as the packing budget. The 32-view case still runs
+as one sample per GPU, while smaller sampled view counts are packed more
+conservatively. A local dynamic run with the old 32-image packing budget reached
+about 45.6 GiB allocated, which is too close to the A40 target.
 
-Validation, fixed 518x518, metrics enabled and visuals disabled:
+Validation, fixed 518x518, metrics enabled and visuals disabled. The table uses
+PyTorch peak reserved memory, which is closer to the `nvidia-smi` process value
+than peak allocated tensor memory.
 
-| Validation loader | Views/sample | `max_img_per_gpu` | Peak allocated |
+| Validation loader | Views/sample | `max_img_per_gpu` | Peak reserved |
 | --- | ---: | ---: | ---: |
-| `real_test` | 6 | 512 | 39.2 GB |
-| `pbr_new_val_k5_subset` | 10 | 512 | 39.2 GB |
-| `pbr_new_val_k10_subset` | 15 | 512 | 39.2 GB |
-| `pbr_new_val_k5_subset` | 10 | 768 | 54.0 GB |
+| `real_test` | 6 | 256 | 39.1 GB |
+| `pbr_new_val` | 6 | 256 | 39.1 GB |
+| `pbr_new_val_k5_subset` | 10 | 256 | 39.1 GB |
+| `pbr_new_val_k10_subset` | 15 | 208 | 39.1 GB |
 
-So the dynamic data config uses `max_img_per_gpu: 512` for all inherited
-validation loaders. The measured 768-view-budget probe is deliberately not used
-because it exceeds the A40 target.
+The old validation budget of 512 packed about 85 six-view sequences into one
+batch and killed a local run immediately after epoch 0 began validation. The
+dynamic data config now uses `max_img_per_gpu: 256` for the 6- and 10-view
+validation loaders and `208` for the 15-view loader. A 256 budget for the
+15-view loader reached 47.3 GB reserved and is deliberately not used.
+
+Validation timing diagnostic, 2026-07-15, local RTX PRO 6000 Blackwell,
+one train step plus one validation batch per loader, visuals disabled:
+
+| Profile | Validation budget | Loader | Forward | Metrics | Total batch |
+| --- | ---: | --- | ---: | ---: | ---: |
+| 224px baseline | 96 | `real_test` | 0.36 s | 0.94 s | 2.99 s |
+| 224px baseline | 96 | `pbr_new_val` | 0.35 s | 0.76 s | 3.44 s |
+| 518px dynamic | 96 | `real_test` | 2.36 s | 4.08 s | 9.99 s |
+| 518px dynamic | 96 | `pbr_new_val` | 2.29 s | 3.78 s | 8.58 s |
+| 518px dynamic | 256 | `real_test` | 5.99 s | 9.53 s | 22.98 s |
+| 518px dynamic | 256 | `pbr_new_val` | 6.02 s | 9.03 s | 22.05 s |
+
+So the high-resolution path is active and substantially slower. It can look
+less dramatic in logs because the 518px validation profile intentionally packs
+many more sequences into each logged batch: about 42 six-view sequences with a
+budget of 256, versus about 16 with the 224px budget of 96. The object-pose
+metric also evaluates fixed sampled CAD points, and the Chamfer metric
+now uses the fast GPU path in the dynamic 518px profile: reference clouds stay
+on CUDA, are deterministically capped to 20k points, and skip the old CPU voxel
+downsampling path. Metric values are therefore a fast validation approximation;
+override `metrics.items.chamfer.use_gpu_fast_path=false` to recover the old
+CPU-voxelized Chamfer behavior.
+
+Synthetic validation-shaped Chamfer timing on the local RTX PRO 6000 Blackwell
+after this change, with `B=42`, 6 views/sample, 5 reference views/sample,
+518x518 resolution, 10% valid-mask density, and 20k point caps:
+
+| Chamfer path | Time |
+| --- | ---: |
+| Old CPU voxel prep + GPU nearest-neighbor | 12.53 s |
+| New GPU mask/subsample + GPU nearest-neighbor | 1.32 s |
+
+That is a 9.5x Chamfer speedup for this case. Higher valid-mask density should
+favor the GPU path even more because the old path spends more time in CPU
+voxelization and dense GPU-to-CPU transfers.
 
 ## Commands
 
@@ -168,12 +215,12 @@ train=train_lmgeo_finetune_518_a40
 data=lmgeo_all_trainpbr_test_bop_518_a40
 ```
 
-If validation runs out of memory before training, reduce validation runtime
+If validation reserved memory is too high on an A40 node, lower the runtime
 budgets:
 
 ```bash
-val_datasets.real_test.runtime.max_img_per_gpu=384
-val_datasets.pbr_new_val.runtime.max_img_per_gpu=384
-val_datasets.pbr_new_val_k5_subset.runtime.max_img_per_gpu=384
-val_datasets.pbr_new_val_k10_subset.runtime.max_img_per_gpu=384
+val_datasets.real_test.runtime.max_img_per_gpu=128
+val_datasets.pbr_new_val.runtime.max_img_per_gpu=128
+val_datasets.pbr_new_val_k5_subset.runtime.max_img_per_gpu=128
+val_datasets.pbr_new_val_k10_subset.runtime.max_img_per_gpu=128
 ```

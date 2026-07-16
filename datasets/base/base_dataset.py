@@ -226,7 +226,8 @@ class BaseDataset(EasyDataset):
 
                     view['depthmap'][~view['valid_mask']] = 0.0
 
-                    assert view['valid_mask'].sum() > 0
+                    valid_count = int(view['valid_mask'].sum())
+                    assert valid_count > 0, f"empty valid_mask after preprocessing for view {view_name(view)}"
 
                     if 'normal' not in view:
                         view['normal'] = None
@@ -303,4 +304,3 @@ class BaseDataset(EasyDataset):
         np.save(save_path, save_dict)
 
         print(f'Saved cache to {save_path}.', flush=True)
-

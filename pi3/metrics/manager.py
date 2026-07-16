@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import hydra
@@ -25,6 +26,7 @@ class MetricManager:
         self.train_enabled = bool(train_enabled)
         self.val_enabled = bool(val_enabled)
         self.train_every_n_steps = max(1, int(train_every_n_steps))
+        self.last_update_times: dict[str, float] = {}
 
     @classmethod
     def from_config(cls, cfg: DictConfig | dict | None) -> "MetricManager":
@@ -81,8 +83,11 @@ class MetricManager:
 
         if not self.enabled:
             return
+        self.last_update_times = {}
         for metric in self.metrics:
+            start = time.perf_counter()
             metric.update(prediction, batch, loss_output, mode=mode)
+            self.last_update_times[metric.name] = time.perf_counter() - start
 
     def compute(self) -> dict[str, float]:
         """Compute and merge scalar outputs from all metrics."""

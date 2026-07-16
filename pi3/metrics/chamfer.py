@@ -11,6 +11,7 @@ from .utils import (
     chamfer_components,
     estimate_world_to_object_sim3,
     extract_prediction,
+    nearest_distances_torch,
     safe_mean,
     sample_points,
     stack_view_tensor,
@@ -41,6 +42,7 @@ class ReferenceChamferMetric(BaseMetric):
         max_gt_points: int = 20000,
         chunk_size: int = 1024,
         device: str = "cpu",
+        use_gpu_fast_path: bool = False,
     ):
         self.model_cache = BopModelCache(data_root, models_folder=models_folder, unit_scale=unit_scale)
         self.solve_scale = bool(solve_scale)
@@ -50,6 +52,7 @@ class ReferenceChamferMetric(BaseMetric):
         self.max_gt_points = int(max_gt_points)
         self.chunk_size = int(chunk_size)
         self.device = str(device)
+        self.use_gpu_fast_path = bool(use_gpu_fast_path)
         self.reset()
 
     def reset(self) -> None:
@@ -66,6 +69,19 @@ class ReferenceChamferMetric(BaseMetric):
         prediction: Any,
         batch: list[dict[str, Any]],
         loss_output: Any | None = None,
+        *,
+        mode: str = "train",
+    ) -> None:
+        if self.use_gpu_fast_path:
+            self._update_gpu_fast(prediction, batch, mode=mode)
+            return
+
+        self._update_cpu_voxel(prediction, batch, mode=mode)
+
+    def _update_cpu_voxel(
+        self,
+        prediction: Any,
+        batch: list[dict[str, Any]],
         *,
         mode: str = "train",
     ) -> None:
@@ -120,6 +136,122 @@ class ReferenceChamferMetric(BaseMetric):
             self.chamfer_d.append(float(chamfer / diameter) if np.isfinite(chamfer) else float("nan"))
             self.pred_counts.append(float(len(pred_cloud)))
             self.gt_counts.append(float(len(gt_cloud)))
+
+    def _update_gpu_fast(
+        self,
+        prediction: Any,
+        batch: list[dict[str, Any]],
+        *,
+        mode: str = "train",
+    ) -> None:
+        pred = extract_prediction(prediction)
+        pred_points = pred["points"].detach().float()
+        if not pred_points.is_cuda or str(self.device) == "cpu":
+            self._update_cpu_voxel(prediction, batch, mode=mode)
+            return
+
+        device = pred_points.device
+        pred_T_W_C = pred["camera_poses"].detach().float().cpu().numpy()
+        gt_T_C_O = self._stack_views(batch, "T_C_O", device=device).detach().cpu().numpy().astype(np.float64)
+        ref_mask = self._stack_views(batch, "is_reference", device=device).bool()
+        obj_ids = self._stack_views(batch, "object_id", device=device)[:, 0].detach().cpu().numpy().astype(np.int64)
+
+        for batch_idx, obj_id in enumerate(obj_ids):
+            refs = ref_mask[batch_idx]
+            if not bool(refs.any()):
+                continue
+
+            refs_cpu = refs.detach().cpu().numpy().astype(bool)
+            alignment = estimate_world_to_object_sim3(
+                pred_T_W_C[batch_idx, refs_cpu],
+                gt_T_C_O[batch_idx, refs_cpu],
+                solve_scale=self.solve_scale,
+            )
+
+            ref_indices = torch.where(refs)[0]
+            ref_indices_list = ref_indices.detach().cpu().tolist()
+            pred_ref_points = pred_points[batch_idx, ref_indices]
+            pred_ref_masks = torch.stack(
+                [batch[view_idx]["valid_mask"][batch_idx].to(device=device, non_blocking=True) for view_idx in ref_indices_list],
+                dim=0,
+            ).bool()
+            gt_ref_points = torch.stack(
+                [
+                    batch[view_idx]["pts3d"][batch_idx].to(device=device, dtype=torch.float32, non_blocking=True)
+                    for view_idx in ref_indices_list
+                ],
+                dim=0,
+            )
+
+            pred_cloud_world = pred_ref_points[pred_ref_masks]
+            gt_cloud_object = gt_ref_points[pred_ref_masks]
+            pred_cloud_object = self._transform_points_torch(pred_cloud_world, alignment)
+            pred_cloud = self._sample_points_torch(pred_cloud_object, self.max_pred_points)
+            gt_cloud = self._sample_points_torch(gt_cloud_object, self.max_gt_points)
+            pred_to_gt, gt_to_pred, chamfer = self._chamfer_components_torch(pred_cloud, gt_cloud)
+
+            diameter = self.model_cache.diameter(int(obj_id))
+            self.pred_to_gt_m.append(pred_to_gt)
+            self.gt_to_pred_m.append(gt_to_pred)
+            self.chamfer_m.append(chamfer)
+            self.chamfer_d.append(float(chamfer / diameter) if np.isfinite(chamfer) else float("nan"))
+            self.pred_counts.append(float(len(pred_cloud)))
+            self.gt_counts.append(float(len(gt_cloud)))
+
+    @staticmethod
+    def _stack_views(
+        batch: list[dict[str, Any]],
+        key: str,
+        *,
+        device: torch.device,
+    ) -> torch.Tensor:
+        values = []
+        for view in batch:
+            value = view[key]
+            if torch.is_tensor(value):
+                values.append(value.detach().to(device=device, non_blocking=True))
+            else:
+                values.append(torch.as_tensor(value, device=device))
+        return torch.stack(values, dim=1)
+
+    @staticmethod
+    def _transform_points_torch(points_world: torch.Tensor, alignment) -> torch.Tensor:
+        rotation = torch.as_tensor(alignment.rotation, dtype=points_world.dtype, device=points_world.device)
+        translation = torch.as_tensor(alignment.translation, dtype=points_world.dtype, device=points_world.device)
+        return float(alignment.scale) * (points_world @ rotation.T) + translation
+
+    @staticmethod
+    def _sample_points_torch(points: torch.Tensor, max_points: int) -> torch.Tensor:
+        if points.numel() == 0:
+            return points.reshape(0, 3)
+        points = points[torch.isfinite(points).all(dim=-1)]
+        max_points = int(max_points)
+        if max_points <= 0 or len(points) <= max_points:
+            return points
+        indices = torch.linspace(
+            0,
+            len(points) - 1,
+            steps=max_points,
+            device=points.device,
+            dtype=torch.float32,
+        ).long()
+        return points.index_select(0, indices)
+
+    def _chamfer_components_torch(self, pred_points: torch.Tensor, gt_points: torch.Tensor) -> tuple[float, float, float]:
+        if pred_points.numel() == 0 or gt_points.numel() == 0:
+            return float("nan"), float("nan"), float("nan")
+        pred_to_gt = nearest_distances_torch(
+            pred_points.float(),
+            gt_points.float(),
+            chunk_size=self.chunk_size,
+        ).mean()
+        gt_to_pred = nearest_distances_torch(
+            gt_points.float(),
+            pred_points.float(),
+            chunk_size=self.chunk_size,
+        ).mean()
+        chamfer = 0.5 * (pred_to_gt + gt_to_pred)
+        return float(pred_to_gt.cpu()), float(gt_to_pred.cpu()), float(chamfer.cpu())
 
     def _resolved_voxel_size(self, diameter: float) -> float | None:
         if self.voxel_size is not None:
