@@ -1,7 +1,8 @@
 # Slurm A40 Setup
 
-This note is for running the 518px LMGeo dynamic profile on one Slurm node with
-4 NVIDIA A40 GPUs.
+This note is for running the fixed 560x420 LMGeo profile on one Slurm node with
+4 NVIDIA A40 GPUs. The Slurm filenames retain `518_a40_dynamic` only for
+backward compatibility.
 
 ## Environment Choice
 
@@ -111,28 +112,33 @@ For an A40, `torch.cuda.get_device_capability()` should be `(8, 6)`.
 ## One-Step Training Smoke
 
 This is the queue-safe smoke I would run before a long job. It forces the
-largest 32-view 518px case, disables the expensive startup filter, and keeps
+largest 32-view 560x420 case, disables the expensive startup filter, and keeps
 validation tiny.
 
 ```bash
 accelerate launch --config_file configs/accelerate/ddp.yaml \
   --num_processes 1 --num_machines 1 \
   scripts/train_pi3.py \
-  train=train_lmgeo_finetune_518_a40_dynamic \
-  data=lmgeo_trainpbr45_real_and_new_val_518_a40_dynamic \
-  name=preflight_lmgeo_518_a40_32view \
+  train=train_lmgeo_finetune_a40_46gb \
+  data=lmgeo_trainpbr45_real_and_new_val \
+  name=preflight_lmgeo_560x420_a40_32view \
+  model.ckpt=/vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/model.safetensors \
   train.random_reslution=false \
   'train.image_num_range=[32,32]' \
   train.max_img_per_gpu=32 \
-  'lmgeo.num_reference_range=[7,7]' \
-  'lmgeo.num_query_range=[25,25]' \
+  'lmgeo_profile.num_reference_range=[7,7]' \
+  'lmgeo_profile.num_query_range=[25,25]' \
   lmgeo.filter_preprocessed_query_depth=false \
   train.num_epoch=1 \
   train.iters_per_epoch=1 \
   val_datasets.real_test.runtime.iters_per_test=1 \
   val_datasets.real_test.runtime.max_img_per_gpu=6 \
+  val_datasets.real_test_ref16.runtime.iters_per_test=1 \
+  val_datasets.real_test_ref16.runtime.max_img_per_gpu=17 \
   val_datasets.pbr_new_val.runtime.iters_per_test=1 \
   val_datasets.pbr_new_val.runtime.max_img_per_gpu=6 \
+  val_datasets.pbr_new_val_ref16.runtime.iters_per_test=1 \
+  val_datasets.pbr_new_val_ref16.runtime.max_img_per_gpu=17 \
   val_datasets.pbr_new_val_k5_subset.runtime.iters_per_test=1 \
   val_datasets.pbr_new_val_k5_subset.runtime.max_img_per_gpu=10 \
   val_datasets.pbr_new_val_k10_subset.runtime.iters_per_test=1 \
@@ -144,8 +150,9 @@ accelerate launch --config_file configs/accelerate/ddp.yaml \
   log.save_checkpoints=false
 ```
 
-On the local PRO 6000, this peaked at `40692 MB`. On an A40 it should fit, but
-it is close enough that this smoke is worth running once.
+On the local PRO 6000, this training shape reached 36,262 MiB allocated and
+36,634 MiB reserved. The production combined train/validation acceptance peak
+was 38,246 MiB reserved under a 38 GiB allocator cap.
 
 ## Production 4xA40 Job
 
@@ -155,7 +162,7 @@ normally be one task with four GPUs allocated, not four independent
 
 ```bash
 #!/usr/bin/env bash
-#SBATCH --job-name=lmgeo-518-a40
+#SBATCH --job-name=lmgeo-560x420-a40
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:a40:4
@@ -187,9 +194,10 @@ PY
 accelerate launch --config_file configs/accelerate/ddp.yaml \
   --num_processes 4 --num_machines 1 \
   scripts/train_pi3.py \
-  train=train_lmgeo_finetune_518_a40_dynamic \
-  data=lmgeo_trainpbr45_real_and_new_val_518_a40_dynamic \
-  name=lmgeo_518_a40_dynamic_4xa40
+  train=train_lmgeo_finetune_a40_46gb \
+  data=lmgeo_trainpbr45_real_and_new_val \
+  name=lmgeo_a40_46gb_4xa40 \
+  model.ckpt=/vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/model.safetensors
 ```
 
 Each GPU keeps the same per-rank memory budget. With 4 GPUs and no gradient
@@ -199,10 +207,10 @@ accumulation, the maximum effective view count per optimizer update is:
 up to 32 views/sample/rank * 4 ranks = 128 views/update
 ```
 
-The A40 dynamic config keeps `train.max_img_per_gpu: 28` while still allowing
-32-view samples. Values above 28 can pack more low-view sequences into one GPU
-batch; a local `max_img_per_gpu=32` run reached about `45.6 GiB` of PyTorch
-allocated memory, before allocator reserve/driver overhead.
+The A40 config uses `train.max_img_per_gpu: 32`. A 32-view sequence uses one
+sample per rank; the current packed small-view edge is five sequences x six
+views (5 references + 1 query each) and reached 34,281 MiB allocated / 34,716
+MiB reserved locally.
 
 ## CITEc GPU Cluster Scripts
 
@@ -216,7 +224,7 @@ cd /homes/dtrofimov/repositories/Pi3
 # 1. Check conda, CUDA visibility, A40 arch support, and BF16 matmul.
 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh preflight
 
-# 2. Run one worst-case 32-view 518px training step on one A40.
+# 2. Run one worst-case 32-view 560x420 training step on one A40.
 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh smoke
 
 # 3. Submit the production 4xA40 training run.
@@ -235,6 +243,11 @@ ckpt:       /vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/mode
 filter:     lmgeo.filter_preprocessed_query_depth=false
 mail:       dmitrii.trofimov@uni-bielefeld.de, BEGIN,END,FAIL
 ```
+
+The job selects `train=train_lmgeo_finetune_a40_46gb` by default and always uses
+the canonical `data=lmgeo_trainpbr45_real_and_new_val`. Set `PI3_TRAIN_CONFIG`
+to select another A40 train profile. The submit script keeps its historical
+filename so existing commands continue to work.
 
 The production command writes Hydra outputs and checkpoints under
 `/vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3/<run-name>/`, not under the
@@ -258,13 +271,59 @@ Optional overrides:
 ```bash
 PI3_WALLTIME=72:00:00 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_TRAIN_GPUS=2 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
-PI3_TRAIN_GPUS=2 PI3_RUN_NAME=lmgeo_518_a40_dynamic_2xa40 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
+PI3_TRAIN_GPUS=2 PI3_RUN_NAME=lmgeo_a40_46gb_2xa40 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
+PI3_TRAIN_CONFIG=train_lmgeo_finetune_a40_46gb_corr PI3_RUN_NAME=lmgeo_a40_corr_lambda0p3 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_RUN_NAME=my_run scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_CKPT=/vol/coro/.../model.safetensors scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh smoke
 PI3_FILTER_PREPROCESSED_QUERY_DEPTH=true scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_MAIL_TYPE=END,FAIL scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_MAIL_USER= scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh smoke
 ```
+
+All path overrides accepted by the job are:
+
+| Variable | Meaning |
+| --- | --- |
+| `PI3_REPO_DIR` | Repository checkout on the compute node |
+| `PI3_CONDA_ROOT` | Conda installation directory |
+| `PI3_CONDA_ENV` | Conda environment name |
+| `PI3_TRAIN_CONFIG` | Train YAML name without `.yaml`; defaults to the A40 baseline |
+| `PI3_DATA_ROOT` | LM-O dataset root |
+| `PI3_CKPT` | Exact Pi3 base `model.safetensors`; highest checkpoint precedence |
+| `PI3_SHARED_CKPT` | Alternative automatic shared-checkpoint location |
+| `PI3_RUNS_ROOT` | Parent directory for default run directories and Slurm logs |
+| `PI3_RUN_DIR` | Exact output directory for this run |
+| `PI3_SLURM_LOG_DIR` | Directory for Slurm `.out` and `.err` files |
+
+Example with explicit paths:
+
+```bash
+PI3_CKPT=/shared/checkpoints/pi3/model.safetensors \
+PI3_DATA_ROOT=/shared/datasets/lm-o \
+PI3_RUN_DIR=/shared/runs/pi3/my_a40_run \
+PI3_RUN_NAME=my_a40_run \
+  scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
+```
+
+Submit the baseline and correspondence-loss comparison as two independent
+jobs with distinct output names:
+
+```bash
+PI3_TRAIN_CONFIG=train_lmgeo_finetune_a40_46gb \
+PI3_RUN_NAME=lmgeo_a40_baseline \
+  scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
+
+PI3_TRAIN_CONFIG=train_lmgeo_finetune_a40_46gb_corr \
+PI3_RUN_NAME=lmgeo_a40_corr_lambda0p3 \
+  scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
+```
+
+The correspondence profile inherits the fixed 560x420 A40 profile and changes
+only the layer-17 DINO output and correspondence-loss settings. Its train and
+validation correspondence lambda is `0.3`. A constrained 32-view training step
+completed at 36,417 MiB allocated / 36,784 MiB reserved under a 38 GiB
+allocator cap; the logged raw/weighted correspondence losses were 0.5030 and
+0.1509, respectively.
 
 For `train` mode, `PI3_TRAIN_GPUS` can be `1`, `2`, `3`, or `4`. The helper
 scales the default CPU, RAM, and local tmp requests as `8 CPUs`, `100G RAM`, and
@@ -276,11 +335,11 @@ PI3_TRAIN_GPUS=2 PI3_TRAIN_MEM=240G PI3_TRAIN_TMP=80G \
 ```
 
 The per-GPU memory profile is unchanged. A 2xA40 run still allows up to 32 views
-per sample per GPU, but uses `train.max_img_per_gpu: 28` for packed smaller-view
+per sample per GPU and uses `train.max_img_per_gpu: 32` for packed smaller-view
 batches. The effective number of views per optimizer step is about half of the
 4xA40 run unless you increase gradient accumulation.
 
-The dynamic training config uses `train_dataset.length: auto`. At dataloader
+The fixed-resolution training config uses `train_dataset.length: auto`. At dataloader
 construction time it resolves the virtual dataset length from the real indexed
 LMGeo sample count, current Slurm/Accelerate world size, and the configured
 sampler runway. This keeps the same config valid for 1xA40, 2xA40, and 4xA40

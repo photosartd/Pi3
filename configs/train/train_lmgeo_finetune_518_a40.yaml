@@ -1,15 +1,14 @@
 # @package _global_
 
-# 518x518 LMGeo fine-tuning profile sized for a single 46 GB A40-class GPU.
+# Conservative fixed-view LMGeo profile sized for a 46 GB A40-class GPU.
 #
-# Pi3/DINOv2 uses a 14 px patch size, so 518 = 37 * 14 is the native high
-# resolution used by the upstream model.
+# The filename is historical. This profile now uses the same single 560x420
+# resolution as every other high-resolution LMGeo profile. Both dimensions are
+# divisible by Pi3/DINOv2's patch size 14 and the 4:3 target retains much more
+# of LM-O's native 640x480 image than a square crop.
 #
 # Memory probe on the local RTX PRO 6000 with PyTorch 2.7.1+cu128:
-# - 24 total views at 518x518 peaked at ~31.6 GB allocated.
-# - 32 total views peaked at ~40.7 GB, but required repeated query views.
-# - 36 total views peaked at ~45.2 GB, too close to a 46 GB A40 for comfort.
-# - 38 total views exceeded 46 GB allocated.
+# - 24 total views at 560x420 peaked at 28,287 MiB allocated.
 #
 # This config uses the practical unique-view setting: 5 reference renders + 19
 # query images = 24 total views. It leaves meaningful headroom under 46 GB while
@@ -17,12 +16,20 @@
 
 trainer: trainers.pi3_trainer.Pi3Trainer
 
+lmgeo_profile:
+  num_reference_range: [5, 5]
+  num_query_range: [19, 19]
+  filter_preprocessed_query_depth: true
+  allow_repeat: false
+  max_refetch: 3
+
 train:
   image_num_range: [24, 24]
   max_img_per_gpu: 24
 
   resolution:
-    - [518, 518]
+    - [560, 420]
+  random_reslution: false
 
   num_workers: 0
   num_epoch: 30
@@ -48,7 +55,7 @@ test:
   # Validation keeps the 5-reference + 1-query BOP protocol. No backward pass
   # is run during validation, so this remains much cheaper than training.
   image_num_range: [6, 6]
-  max_img_per_gpu: 6
+  max_img_per_gpu: 128
   num_workers: 0
   iters_per_test: 0
   print_freq: 1

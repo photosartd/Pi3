@@ -11,8 +11,12 @@ For the Conda installation procedure, CUDA verification commands, and
 GPU-specific notes for RTX 4090, RTX A6000, RTX PRO 6000 Blackwell, and H200, see
 [docs/conda_setup.md](docs/conda_setup.md).
 
-For the 518x518 LMGeo high-resolution fine-tuning profile sized for a 46 GB
+For the fixed 560x420 LMGeo high-resolution fine-tuning profile sized for a 46 GB
 A40-class GPU, see [docs/lmgeo_518_a40.md](docs/lmgeo_518_a40.md).
+
+For the canonical LMGeo data definition and named RTX 4090, A40, and RTX PRO
+6000 Blackwell profiles, see
+[docs/lmgeo_hardware_profiles.md](docs/lmgeo_hardware_profiles.md).
 
 For Slurm installation, preflight, and 4xA40 launch notes, see
 [docs/slurm_a40.md](docs/slurm_a40.md).

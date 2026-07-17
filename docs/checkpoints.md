@@ -51,7 +51,7 @@ ckpts/Pi3/model.safetensors
 ```
 
 That is the default path used by the LMGeo configs, for example
-`configs/train/train_lmgeo_finetune_518_a40_dynamic.yaml`.
+`configs/train/train_lmgeo_finetune_a40_46gb.yaml`.
 
 ## Shared CITEc Copy
 
@@ -110,7 +110,7 @@ PY
 
 The current Pi3 checkpoint used here reports `tensor count: 1210`.
 
-Checksum for the copy used during the 518px A40 probes:
+Checksum for the copy used during the A40 memory probes:
 
 ```bash
 sha256sum ckpts/Pi3/model.safetensors

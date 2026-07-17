@@ -1,0 +1,8 @@
+# @package _global_
+
+# Named NVIDIA A40 46 GB profile. The historical A40 config filename remains
+# the implementation source so existing commands resolve identically. The
+# resolved LMGeo training and validation resolution is fixed 560x420, with
+# 6-32 total views, 5-31 references, and 1-25 queries.
+defaults:
+  - train_lmgeo_finetune_518_a40_dynamic

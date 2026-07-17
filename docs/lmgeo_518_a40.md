@@ -1,159 +1,180 @@
-# LMGeo 518x518 A40 Training
+# LMGeo 560x420 A40 Training
 
-This repo now has two 518px LMGeo profiles for a 46 GB A40-class GPU.
+> The filename is retained for backward-compatible links. The current LMGeo
+> high-resolution target is fixed 560x420, not 518x518.
 
-## Profiles
-
-Conservative fixed-view profile:
-
-```bash
-train=train_lmgeo_finetune_518_a40
-data=lmgeo_all_trainpbr_test_bop_518_a40
-```
-
-This uses 24 total views: 5 reference renders + 19 query images. It was chosen
-to avoid repeated query frames and leaves strong A40 memory margin.
-
-High-utilization dynamic profile:
-
-```bash
-train=train_lmgeo_finetune_518_a40_dynamic
-data=lmgeo_trainpbr45_real_and_new_val_518_a40_dynamic
-```
-
-This is the profile to use for the bigger run. It inherits the
-`trainpbr45_real_and_new_val` validation structure:
-
-- `real_test`
-- `pbr_new_val`
-- `pbr_new_val_k5_subset`
-- `pbr_new_val_k10_subset`
-
-Training samples draw a total view count from `train.image_num_range: [3, 32]`.
-The LMGeo dataset then chooses a valid split inside
-`lmgeo.num_reference_range: [2, 7]` and `lmgeo.num_query_range: [1, 25]`.
-The two counts are not independently drawn by the current sampler; total views
-are sampled first, then the reference/query split is sampled from the valid
-choices. The worst case is 7 references + 25 queries = 32 views.
-
-With `train.max_img_per_gpu: 28`, the 32-view case is still allowed as one
-sample per GPU because the dynamic batch sampler uses a minimum sample batch
-size of one. For smaller sampled view counts, it packs more sequences per GPU
-using:
+Use the named A40 profile with the canonical dataset:
 
 ```text
-max(1, floor(train.max_img_per_gpu / sampled_total_views))
+train=train_lmgeo_finetune_a40_46gb
+data=lmgeo_trainpbr45_real_and_new_val
 ```
 
-The value is intentionally below 32. A local dynamic run with
-`max_img_per_gpu=32` reached about `45.6 GiB` of PyTorch allocated memory on a
-packed small-view batch, which is too close to the A40 target.
+The historical `train_lmgeo_finetune_518_a40_dynamic` and
+`lmgeo_trainpbr45_real_and_new_val_518_a40_dynamic` names remain aliases, but
+new commands should use the names above.
 
-## Dynamic Pixel Range
+## Why 560x420
 
-The dynamic profile enables the existing Pi3 high-resolution mechanism:
+LM-O images are natively 640x480. The 560x420 target has the same 4:3 aspect
+ratio and a 40x30 DINO patch grid because both dimensions are divisible by 14.
+Under the existing Pi3 crop/resize preprocessing, the rectangular target keeps
+roughly 97% of the original image area. A square 224x224 or 518x518 target keeps
+roughly 74%, mostly because it removes the left and right borders.
+
+This change only selects a different target resolution. It does not implement
+the separate proposed `full_resize` preprocessing mode; intrinsics, RGB, depth,
+and masks continue through the current geometrically consistent crop/resize
+path.
+
+Training and every validation loader use exactly:
 
 ```yaml
 train:
-  random_reslution: true
-  aspect_ratio_range: [0.5, 2.0]
-  pixel_count_range: [100000, 268324]
-  patch_size: 14
-  num_resolution: 16
-  base_resolution:
-    - [518, 518]
+  resolution:
+    - [560, 420]
+  random_reslution: false
 ```
 
-`518 * 518 = 268324`, so the largest sampled pixel count is the Pi3 native
-518px square. `base_resolution` forces `[518, 518]` to remain in the random
-resolution pool every epoch.
+There is no generated resolution pool for LMGeo A40 or Blackwell runs.
 
-## Memory Probes
+## Views And Packing
 
-Measured on the local NVIDIA RTX PRO 6000 Blackwell with PyTorch
-`2.7.1+cu128`, BF16, frozen encoder, and checkpoint
-`ckpts/Pi3/model.safetensors`.
+Training samples 6-32 views per sequence, with 5-31 references and 1-25
+queries. The constraints are applied jointly: a sampled total gets only splits
+that satisfy all three ranges. Consequently, the 6-view minimum is always 5
+references plus 1 query. At 32 views, the valid splits range from 7 references
++ 25 queries through 31 references + 1 query. This covers the main validation
+shape (5 references + 1 query) during training.
 
-Training, fixed 518x518, metrics/visuals disabled:
+`train.max_img_per_gpu: 32` is a packing budget, not a hard per-sequence view
+limit. The sample batch size is:
 
-| Total views | Reference + query | Peak allocated |
-| --- | --- | --- |
-| 24 | 5 + 19 | 31.6 GB |
-| 28 | 5 + 23 | 36.2 GB |
-| 32 | 7 + 25 | 40.7 GB |
-| 36 | repeated-query stress | 45.2 GB |
-| 38 | repeated-query stress | 47.4 GB |
+```text
+max(1, floor(max_img_per_gpu / sampled_total_views))
+```
 
-The dynamic A40 config allows 32-view samples but uses
-`train.max_img_per_gpu: 28` as the packing budget. The 32-view case still runs
-as one sample per GPU, while smaller sampled view counts are packed more
-conservatively. A local dynamic run with the old 32-image packing budget reached
-about 45.6 GiB allocated, which is too close to the A40 target.
+Thus a 32-view iteration contains one sequence, while a 6-view iteration packs
+5 sequences, or 30 images, on each GPU.
 
-Validation, fixed 518x518, metrics enabled and visuals disabled. The table uses
-PyTorch peak reserved memory, which is closer to the `nvidia-smi` process value
-than peak allocated tensor memory.
+The total count is sampled uniformly from the 27 integers in 6-32. Conditional
+on that total, the reference count is sampled uniformly from its valid splits.
+At the two relevant edges:
 
-| Validation loader | Views/sample | `max_img_per_gpu` | Peak reserved |
+- `5 refs + 1 query` occurs whenever total views is 6: about 1/27 of training
+  iterations. Because that iteration packs five sequences, a 500-step epoch
+  contains about 18.5 such batches, or 92.6 such sequences, in expectation.
+- `31 refs + 1 query` is one of 25 valid splits at total views 32: about 1/675
+  of iterations, or 0.74 occurrences per 500-step epoch in expectation.
+
+The query maximum remains 25 so a single LMGeo source window never needs more
+than its configured query candidates. `allow_repeat` still governs individual
+samples whose object/scene pools are smaller than the requested count.
+
+Validation budgets are fixed to 128 for K=1, K=5, K=10, and the new
+16-reference/1-query ablation. Their actual per-rank batches contain:
+
+| Loader | Views/sequence | Sequences/batch | Images/batch |
 | --- | ---: | ---: | ---: |
-| `real_test` | 6 | 256 | 39.1 GB |
-| `pbr_new_val` | 6 | 256 | 39.1 GB |
-| `pbr_new_val_k5_subset` | 10 | 256 | 39.1 GB |
-| `pbr_new_val_k10_subset` | 15 | 208 | 39.1 GB |
+| `real_test` | 6 | 21 | 126 |
+| `real_test_ref16` | 17 | 7 | 119 |
+| `pbr_new_val` | 6 | 21 | 126 |
+| `pbr_new_val_ref16` | 17 | 7 | 119 |
+| `pbr_new_val_k5_subset` | 10 | 12 | 120 |
+| `pbr_new_val_k10_subset` | 15 | 8 | 120 |
 
-The old validation budget of 512 packed about 85 six-view sequences into one
-batch and killed a local run immediately after epoch 0 began validation. The
-dynamic data config now uses `max_img_per_gpu: 256` for the 6- and 10-view
-validation loaders and `208` for the 15-view loader. A 256 budget for the
-15-view loader reached 47.3 GB reserved and is deliberately not used.
+The two `ref16` loaders keep exactly one query and reuse the same real/PBR query
+sets as their corresponding 5-reference loaders. They therefore test more
+object keyframes rather than more query context. Each configured LM-O object
+has 1,313 eligible reference renders, so selecting 16 does not require repeated
+keyframes. `primary_val` remains `real_test`, so checkpoint selection behavior
+does not change.
 
-Validation timing diagnostic, 2026-07-15, local RTX PRO 6000 Blackwell,
-one train step plus one validation batch per loader, visuals disabled:
+The training sampler can produce the exact 16+1 shape, but it is uncommon:
+total views 17 is sampled with probability 1/27, and 16+1 is one of 12 valid
+splits at that total. Its per-iteration probability is therefore 1/324, or
+about 1.54 occurrences per 500-step epoch in expectation.
 
-| Profile | Validation budget | Loader | Forward | Metrics | Total batch |
-| --- | ---: | --- | ---: | ---: | ---: |
-| 224px baseline | 96 | `real_test` | 0.36 s | 0.94 s | 2.99 s |
-| 224px baseline | 96 | `pbr_new_val` | 0.35 s | 0.76 s | 3.44 s |
-| 518px dynamic | 96 | `real_test` | 2.36 s | 4.08 s | 9.99 s |
-| 518px dynamic | 96 | `pbr_new_val` | 2.29 s | 3.78 s | 8.58 s |
-| 518px dynamic | 256 | `real_test` | 5.99 s | 9.53 s | 22.98 s |
-| 518px dynamic | 256 | `pbr_new_val` | 6.02 s | 9.03 s | 22.05 s |
+Interpret this comparison carefully: object-pose evaluation estimates its
+reference-only Sim(3) alignment from every reference view. A better `ref16`
+score can therefore come from better model context, a more stable alignment,
+or both. It is not a pure context-only ablation unless both predictions are
+also scored with a common fixed alignment subset.
 
-So the high-resolution path is active and substantially slower. It can look
-less dramatic in logs because the 518px validation profile intentionally packs
-many more sequences into each logged batch: about 42 six-view sequences with a
-budget of 256, versus about 16 with the 224px budget of 96. The object-pose
-metric also evaluates fixed sampled CAD points, and the Chamfer metric
-now uses the fast GPU path in the dynamic 518px profile: reference clouds stay
-on CUDA, are deterministically capped to 20k points, and skip the old CPU voxel
-downsampling path. Metric values are therefore a fast validation approximation;
-override `metrics.items.chamfer.use_gpu_fast_path=false` to recover the old
-CPU-voxelized Chamfer behavior.
+## 40 GB-Constrained Probe
 
-Synthetic validation-shaped Chamfer timing on the local RTX PRO 6000 Blackwell
-after this change, with `B=42`, 6 views/sample, 5 reference views/sample,
-518x518 resolution, 10% valid-mask density, and 20k point caps:
+Measured on 2026-07-17 on the local RTX PRO 6000 Blackwell with only about
+40 GB free. PyTorch was capped at 38 GiB. Runs used BF16, the frozen encoder,
+the Pi3 base checkpoint, one indexed LM-O object/scene for fast startup, and
+the same tensor shapes and production metrics as the full config.
 
-| Chamfer path | Time |
-| --- | ---: |
-| Old CPU voxel prep + GPU nearest-neighbor | 12.53 s |
-| New GPU mask/subsample + GPU nearest-neighbor | 1.32 s |
+Fixed one-sequence training:
 
-That is a 9.5x Chamfer speedup for this case. Higher valid-mask density should
-favor the GPU path even more because the old path spends more time in CPU
-voxelization and dense GPU-to-CPU transfers.
+| Views | Reference + query | Allocated | Reserved |
+| ---: | --- | ---: | ---: |
+| 24 | 7 + 17 | 28,287 MiB | 28,830 MiB |
+| 28 | 7 + 21 | 32,276 MiB | 32,764 MiB |
+| 32 | 7 + 25 | 36,262 MiB | 36,634 MiB |
+| 32 | 31 + 1 | 36,262 MiB | 36,634 MiB |
+
+Memory rose by about 997 MiB per additional view over this interval.
+
+Current minimum-view packing:
+
+| `max_img_per_gpu` | Packed shape | Reference + query per sequence | Allocated | Reserved |
+| ---: | --- | --- | ---: | ---: |
+| 32 | 5 x 6 views | 5 + 1 | 34,281 MiB | 34,716 MiB |
+
+Both current sampling boundaries completed a training step and a small 5+1
+inference batch under the 38 GiB allocator cap. Changing the 32-view role split
+from 7+25 to 31+1 did not change measured peak tensor memory.
+
+The earlier 3-view packing probes below are retained as historical allocator
+measurements; 3-view sequences are no longer sampled by the named A40 or
+Blackwell profiles.
+
+Packed 3-view training (historical):
+
+| `max_img_per_gpu` | Packed shape | Allocated | Reserved |
+| ---: | --- | ---: | ---: |
+| 28 | 9 x 3 views | 31,326 MiB | 31,858 MiB |
+| 32 | 10 x 3 views | 34,273 MiB | 34,722 MiB |
+
+Production validation was exercised at budgets 64 and 128 after a 32-view
+training step. The four loaders that existed before the Ref16 addition
+completed with object-pose, camera, correspondence, and Chamfer metrics enabled.
+
+| Validation budget | Approx. images/batch | Largest allocated | Combined peak reserved |
+| ---: | ---: | ---: | ---: |
+| 64 | 60 | 12,139 MiB | 38,190 MiB |
+| 128 | 120-126 | 15,564 MiB | 38,246 MiB |
+
+Across the comparable loaders, doubling the validation budget added about
+3.1-3.4 GiB for 60-66 additional images, or approximately 52 MiB per added
+inference image. Forward time rose from roughly 3.0 seconds at budget 64 to
+6.3-6.9 seconds at budget 128. Training is much steeper because activations and
+gradients are retained: the 24/28/32-view measurements add about 997 MiB per
+view.
+
+The full-production-validation acceptance run exited successfully and a
+0.2-second `nvidia-smi` sampler observed a 37,370 MiB process peak.
+
+The combined reserve is dominated by allocator state retained from the
+preceding 32-view backward pass. Budget 128 is the largest validation setting
+tested under the current 40 GB availability and retains about 2.6 GiB below a
+40 GiB process-memory target before ordinary CUDA-context variation.
 
 ## Commands
 
-Single GPU dynamic profile:
+Single GPU:
 
 ```bash
-accelerate launch --config_file configs/accelerate/ddp.yaml \
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file configs/accelerate/ddp.yaml \
   --num_processes 1 --num_machines 1 \
   scripts/train_pi3.py \
-  train=train_lmgeo_finetune_518_a40_dynamic \
-  data=lmgeo_trainpbr45_real_and_new_val_518_a40_dynamic \
-  name=lmgeo_518_a40_dynamic
+  train=train_lmgeo_finetune_a40_46gb \
+  data=lmgeo_trainpbr45_real_and_new_val \
+  name=lmgeo_a40_560x420
 ```
 
 Four GPUs on one machine:
@@ -162,65 +183,26 @@ Four GPUs on one machine:
 accelerate launch --config_file configs/accelerate/ddp.yaml \
   --num_processes 4 --num_machines 1 \
   scripts/train_pi3.py \
-  train=train_lmgeo_finetune_518_a40_dynamic \
-  data=lmgeo_trainpbr45_real_and_new_val_518_a40_dynamic \
-  name=lmgeo_518_a40_dynamic_4xa40
+  train=train_lmgeo_finetune_a40_46gb \
+  data=lmgeo_trainpbr45_real_and_new_val \
+  name=lmgeo_a40_560x420_4xa40
 ```
 
-No config change is needed for ordinary data-parallel multi-GPU training. Each
-GPU keeps its own per-rank view budget. The maximum effective views per
-optimizer update are:
+Each GPU retains the same local resolution and packing budget. Different ranks
+receive different sample indices, but no rank selects a different resolution.
 
-```text
-32 * num_gpus * train.gradient_accumulation_steps
-```
+For CITEc submission, paths, and checkpoint overrides, see
+[slurm_a40.md](slurm_a40.md). For all local profile commands, see
+[lmgeo_hardware_profiles.md](lmgeo_hardware_profiles.md).
 
-For Slurm, use [slurm_a40.md](slurm_a40.md).
+Failure-mode diagnostics for size, occlusion, and object class remain
+documented in [failure_modes.md](failure_modes.md). The A40 profile writes raw
+ADD/ADD-S prediction rows to `${log.output_dir}/predictions.parquet`.
 
-## Fast Smoke Overrides
+## Blackwell Status
 
-The production dynamic data config keeps `lmgeo.filter_preprocessed_query_depth:
-true`. This is safer because invalid high-res samples are filtered before
-training, but it can make startup slow on the full train split. The CITEc Slurm
-script overrides this to `false` by default to save allocated GPU time.
-
-For a fast memory smoke, override it:
-
-```bash
-lmgeo.filter_preprocessed_query_depth=false
-```
-
-For a worst-case 32-view fixed-resolution smoke:
-
-```bash
-train.random_reslution=false \
-train.image_num_range=[32,32] train.max_img_per_gpu=32 \
-lmgeo.num_reference_range=[7,7] lmgeo.num_query_range=[25,25]
-```
-
-The measured worst-case command with those overrides peaked at `40692 MB`.
-
-## If An A40 Runs Out Of Memory
-
-Drop total training views first:
-
-```bash
-train.image_num_range=[3,28] train.max_img_per_gpu=28
-```
-
-For a fixed 24-view fallback:
-
-```bash
-train=train_lmgeo_finetune_518_a40
-data=lmgeo_all_trainpbr_test_bop_518_a40
-```
-
-If validation reserved memory is too high on an A40 node, lower the runtime
-budgets:
-
-```bash
-val_datasets.real_test.runtime.max_img_per_gpu=128
-val_datasets.pbr_new_val.runtime.max_img_per_gpu=128
-val_datasets.pbr_new_val_k5_subset.runtime.max_img_per_gpu=128
-val_datasets.pbr_new_val_k10_subset.runtime.max_img_per_gpu=128
-```
+The RTX PRO 6000 profile inherits fixed 560x420 training and evaluation. Its
+existing train/validation budgets remain 56 and 384/384/320. Those budgets were
+validated at the larger 518x518 square and therefore remain conservative at the
+smaller 560x420 token count. They were not re-maximized in this pass because
+only about 40 GB was free on the device.

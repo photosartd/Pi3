@@ -43,7 +43,6 @@ lmgeo:
 # LMGeoSequenceDataset then splits it into N reference + K query frames.
 train:
     image_num_range: [10, 25]
-    max_img_per_gpu: 50
 
 test:
     image_num_range: [25, 25]

@@ -18,8 +18,8 @@ lmgeo:
     query_scene_ids: all
     query_subscene_ids: all
     query_window_size: 25
-    num_reference_range: [5, 6]
-    num_query_range: [1, 20]
+    num_reference_range: ${lmgeo_profile.num_reference_range}
+    num_query_range: ${lmgeo_profile.num_query_range}
     reference_rgb_masking: true
     query_rgb_masking: false
     depth_masking: true
@@ -36,18 +36,6 @@ lmgeo:
     min_preprocessed_query_depth_pixels: 1
     allow_repeat: false
     symmetric_ids: [10, 11]
-
-train:
-    # The dataset splits the sampled total into N_ref + K_query.
-    # With ranges below: min 5+1=6, max 6+20=26.
-    image_num_range: [6, 26]
-    max_img_per_gpu: 50
-
-test:
-    # Official BOP validation: 5 uniform reference renders + 1 real query.
-    image_num_range: [6, 6]
-    max_img_per_gpu: 96
-    iters_per_test: 0
 
 _lmgeo_sequence_train_base: &lmgeo_sequence_train_base
     _target_: datasets.lmgeo_dataset.LMGeoSequenceDataset
@@ -83,7 +71,7 @@ _lmgeo_sequence_train_base: &lmgeo_sequence_train_base
     shuffle: false
 
 train_dataset:
-    length: 10000
+    length: auto
     weights:
         LMGeoSequence: 10000
     LMGeoSequence:

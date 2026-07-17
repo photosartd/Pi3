@@ -7,7 +7,7 @@
 #SBATCH --mem=400G
 #SBATCH --tmp=100G
 #SBATCH --time=48:00:00
-#SBATCH --job-name=pi3-lmgeo-518
+#SBATCH --job-name=pi3-lmgeo-560x420
 
 set -euo pipefail
 
@@ -19,9 +19,19 @@ RUNS_ROOT="${PI3_RUNS_ROOT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3}
 RUN_MODE="${PI3_RUN_MODE:-train}"
 SHARED_CKPT="${PI3_SHARED_CKPT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/model.safetensors}"
 FILTER_PREPROCESSED_QUERY_DEPTH="${PI3_FILTER_PREPROCESSED_QUERY_DEPTH:-false}"
+TRAIN_CONFIG="${PI3_TRAIN_CONFIG:-train_lmgeo_finetune_a40_46gb}"
+DATA_CONFIG="lmgeo_trainpbr45_real_and_new_val"
 
 cd "$REPO_DIR"
 
+if ! [[ "$TRAIN_CONFIG" =~ ^[A-Za-z0-9_]+$ ]] || [[ ! -f "configs/train/$TRAIN_CONFIG.yaml" ]]; then
+  echo "ERROR: invalid or missing train config: $TRAIN_CONFIG" >&2
+  echo "Expected configs/train/$TRAIN_CONFIG.yaml inside $REPO_DIR." >&2
+  exit 2
+fi
+
+# The Conda root is intentionally configurable.
+# shellcheck disable=SC1091
 source "$CONDA_ROOT/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
 
@@ -60,7 +70,7 @@ if [[ ! -f "$PI3_CKPT" ]]; then
   exit 2
 fi
 
-RUN_NAME="${PI3_RUN_NAME:-lmgeo_518_a40_dynamic_${RUN_MODE}_${SLURM_JOB_ID}}"
+RUN_NAME="${PI3_RUN_NAME:-lmgeo_a40_46gb_${RUN_MODE}_${SLURM_JOB_ID}}"
 RUN_DIR="${PI3_RUN_DIR:-$RUNS_ROOT/$RUN_NAME}"
 mkdir -p "$RUN_DIR/ckpts"
 
@@ -69,8 +79,11 @@ echo "Node: $(hostname)"
 echo "Run mode: $RUN_MODE"
 echo "Repo: $REPO_DIR"
 echo "Data: $DATA_ROOT"
+echo "Checkpoint: $PI3_CKPT"
 echo "Output: $RUN_DIR"
 echo "Conda env: $CONDA_ENV at $CONDA_ROOT"
+echo "Train config: $TRAIN_CONFIG"
+echo "Data config: $DATA_CONFIG"
 echo "filter_preprocessed_query_depth=$FILTER_PREPROCESSED_QUERY_DEPTH"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 echo "SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-unset}"
@@ -118,8 +131,8 @@ if [[ "$NUM_GPUS" -lt 1 ]]; then
 fi
 
 COMMON_OVERRIDES=(
-  train=train_lmgeo_finetune_518_a40_dynamic
-  data=lmgeo_trainpbr45_real_and_new_val_518_a40_dynamic
+  "train=$TRAIN_CONFIG"
+  "data=$DATA_CONFIG"
   "name=$RUN_NAME"
   "lmgeo.data_root=$DATA_ROOT"
   "lmgeo.filter_preprocessed_query_depth=$FILTER_PREPROCESSED_QUERY_DEPTH"
@@ -130,22 +143,25 @@ COMMON_OVERRIDES=(
 )
 
 if [[ "$RUN_MODE" == "smoke" ]]; then
-  echo "Running one-step worst-case 32-view smoke."
+  echo "Running one-step worst-case 32-view 560x420 smoke."
   accelerate launch --config_file configs/accelerate/ddp.yaml \
     --num_processes "$NUM_GPUS" --num_machines 1 \
     scripts/train_pi3.py \
     "${COMMON_OVERRIDES[@]}" \
-    train.random_reslution=false \
     'train.image_num_range=[32,32]' \
     train.max_img_per_gpu=32 \
-    'lmgeo.num_reference_range=[7,7]' \
-    'lmgeo.num_query_range=[25,25]' \
+    'lmgeo_profile.num_reference_range=[7,7]' \
+    'lmgeo_profile.num_query_range=[25,25]' \
     train.num_epoch=1 \
     train.iters_per_epoch=1 \
     val_datasets.real_test.runtime.iters_per_test=1 \
     val_datasets.real_test.runtime.max_img_per_gpu=6 \
+    val_datasets.real_test_ref16.runtime.iters_per_test=1 \
+    val_datasets.real_test_ref16.runtime.max_img_per_gpu=17 \
     val_datasets.pbr_new_val.runtime.iters_per_test=1 \
     val_datasets.pbr_new_val.runtime.max_img_per_gpu=6 \
+    val_datasets.pbr_new_val_ref16.runtime.iters_per_test=1 \
+    val_datasets.pbr_new_val_ref16.runtime.max_img_per_gpu=17 \
     val_datasets.pbr_new_val_k5_subset.runtime.iters_per_test=1 \
     val_datasets.pbr_new_val_k5_subset.runtime.max_img_per_gpu=10 \
     val_datasets.pbr_new_val_k10_subset.runtime.iters_per_test=1 \
@@ -157,7 +173,7 @@ if [[ "$RUN_MODE" == "smoke" ]]; then
     log.save_checkpoints=false \
     extras.print_config=false
 elif [[ "$RUN_MODE" == "train" ]]; then
-  echo "Running production 518px dynamic training on $NUM_GPUS GPU(s)."
+  echo "Running production fixed 560x420 training on $NUM_GPUS GPU(s)."
   accelerate launch --config_file configs/accelerate/ddp.yaml \
     --num_processes "$NUM_GPUS" --num_machines 1 \
     scripts/train_pi3.py \

@@ -2,9 +2,18 @@
 
 trainer: trainers.pi3_trainer.Pi3Trainer
 
+# Sampling values historically supplied by the data config. They live with the
+# GPU profile now so the canonical LMGeo data definition has one source.
+lmgeo_profile:
+  num_reference_range: [5, 6]
+  num_query_range: [1, 20]
+  filter_preprocessed_query_depth: false
+  allow_repeat: false
+  max_refetch: 3
+
 train:
-  image_num_range: [25, 25]
-  max_img_per_gpu: 25
+  image_num_range: [6, 26]
+  max_img_per_gpu: 50
 
   resolution:
     - [224, 224]
@@ -34,7 +43,11 @@ train:
     pct_start: 0.05
 
 test:
-  image_num_range: [25, 25]
+  image_num_range: [6, 6]
+  max_img_per_gpu: 96
+  max_img_per_gpu_k5: 96
+  max_img_per_gpu_k10: 96
+  max_img_per_gpu_ref16: 96
   num_workers: 0
   # 0 means use the full validation loader.
   iters_per_test: 0

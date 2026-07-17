@@ -1,12 +1,12 @@
 # @package _global_
 
-# LM-O object-centric training with two validation splits:
-# 1. real_test: official BOP19 real-image LM-O test targets.
-# 2. pbr_new_val: held-out PBR folders moved from train_pbr/000045-000049
-#    to new_val/000045-000049.
+# Canonical LM-O train_pbr/new_val/real-test dataset definition.
 #
 # References/keyframes always come from train/<object_id> render views.
 # Training queries come from train_pbr, which now excludes scenes 45-49.
+# The selected LMGeo train profile owns resolution, view sampling, and all
+# max_img_per_gpu values. Keeping those values out of this file makes the same
+# dataset definition usable by the RTX 4090, A40, and RTX PRO 6000 profiles.
 
 primary_val: real_test
 
@@ -22,8 +22,8 @@ lmgeo:
     query_scene_ids: all
     query_subscene_ids: all
     query_window_size: 25
-    num_reference_range: [5, 6]
-    num_query_range: [1, 20]
+    num_reference_range: ${lmgeo_profile.num_reference_range}
+    num_query_range: ${lmgeo_profile.num_query_range}
     reference_rgb_masking: true
     query_rgb_masking: false
     depth_masking: true
@@ -34,26 +34,10 @@ lmgeo:
     depth_unit_scale: 0.001
     filter_center_crop_visibility: true
     min_center_crop_bbox_area: 1.0
-    # Keep this off for long training runs. The preprocessed-depth check scans
-    # every candidate RGB/depth/mask through Pi3 preprocessing during dataset
-    # construction, which can stall startup for many minutes. The previous
-    # successful 30-epoch run also used this as false.
-    filter_preprocessed_query_depth: false
+    filter_preprocessed_query_depth: ${lmgeo_profile.filter_preprocessed_query_depth}
     min_preprocessed_query_depth_pixels: 1
-    allow_repeat: false
+    allow_repeat: ${lmgeo_profile.allow_repeat}
     symmetric_ids: [10, 11]
-
-train:
-    # The dataset splits the sampled total into N_ref + K_query.
-    # With ranges below: min 5+1=6, max 6+20=26.
-    image_num_range: [6, 26]
-    max_img_per_gpu: 50
-
-test:
-    # Validation baseline: 5 uniform reference renders + 1 query.
-    image_num_range: [6, 6]
-    max_img_per_gpu: 96
-    iters_per_test: 0
 
 _lmgeo_sequence_train_base: &lmgeo_sequence_train_base
     _target_: datasets.lmgeo_dataset.LMGeoSequenceDataset
@@ -83,13 +67,16 @@ _lmgeo_sequence_train_base: &lmgeo_sequence_train_base
     aug_crop: false
     aug_focal: false
     z_far: 0
+    max_refetch: ${lmgeo_profile.max_refetch}
     transform:
         _partial_: true
         _target_: datasets.base.transforms.ImgToTensor
     shuffle: false
 
 train_dataset:
-    length: 10000
+    # Resolve enough sampler runway per rank for 1-4 GPU jobs while preserving
+    # the natural indexed dataset length when it is already larger.
+    length: auto
     weights:
         LMGeoSequence: 10000
     LMGeoSequence:
@@ -184,7 +171,19 @@ val_datasets:
         dataloader: *default_test_dataloader
         runtime:
             image_num_range: [6, 6]
-            max_img_per_gpu: 96
+            max_img_per_gpu: ${test.max_img_per_gpu}
+            iters_per_test: 0
+            num_workers: ${test.num_workers}
+            print_freq: ${test.print_freq}
+    real_test_ref16:
+        dataset:
+            <<: *real_test_dataset
+            # Same BOP query targets as real_test, but 16 object keyframes.
+            num_reference_range: [16, 16]
+        dataloader: *default_test_dataloader
+        runtime:
+            image_num_range: [17, 17]
+            max_img_per_gpu: ${test.max_img_per_gpu_ref16}
             iters_per_test: 0
             num_workers: ${test.num_workers}
             print_freq: ${test.print_freq}
@@ -193,7 +192,19 @@ val_datasets:
         dataloader: *default_test_dataloader
         runtime:
             image_num_range: [6, 6]
-            max_img_per_gpu: 96
+            max_img_per_gpu: ${test.max_img_per_gpu}
+            iters_per_test: 0
+            num_workers: ${test.num_workers}
+            print_freq: ${test.print_freq}
+    pbr_new_val_ref16:
+        dataset:
+            <<: *pbr_new_val_dataset
+            # Same held-out PBR queries as pbr_new_val, but 16 keyframes.
+            num_reference_range: [16, 16]
+        dataloader: *default_test_dataloader
+        runtime:
+            image_num_range: [17, 17]
+            max_img_per_gpu: ${test.max_img_per_gpu_ref16}
             iters_per_test: 0
             num_workers: ${test.num_workers}
             print_freq: ${test.print_freq}
@@ -207,7 +218,7 @@ val_datasets:
         runtime:
             # 5 reference renders + 5 query frames from the same 25-frame window.
             image_num_range: [10, 10]
-            max_img_per_gpu: 96
+            max_img_per_gpu: ${test.max_img_per_gpu_k5}
             iters_per_test: 0
             num_workers: ${test.num_workers}
             print_freq: ${test.print_freq}
@@ -221,7 +232,7 @@ val_datasets:
         runtime:
             # 5 reference renders + 10 query frames from the same 25-frame window.
             image_num_range: [15, 15]
-            max_img_per_gpu: 96
+            max_img_per_gpu: ${test.max_img_per_gpu_k10}
             iters_per_test: 0
             num_workers: ${test.num_workers}
             print_freq: ${test.print_freq}

@@ -397,6 +397,19 @@ class BaseTrainer:
             length=iters_per_test,
         )
         if self.metric_manager.should_update("val"):
+            split_name = self._validation_split_name(loader, val_name)
+            self.metric_manager.set_context(
+                mode="val",
+                val_name=val_name,
+                split=split_name,
+                epoch=int(epoch),
+                global_step=int(self.global_step),
+                checkpoint_step=int(self.global_step),
+                run_id=str(self.cfg.name),
+                output_dir=str(self.cfg.log.output_dir),
+                keyframe_seed=int(self.cfg.train.base_seed),
+                masked=bool(OmegaConf.select(self.cfg, "lmgeo.reference_rgb_masking", default=False)),
+            )
             self.metric_manager.reset()
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats(self.accelerator.device)
@@ -476,12 +489,38 @@ class BaseTrainer:
 
         stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
         if self.metric_manager.should_update("val"):
-            metric_stats = self.metric_manager.compute()
+            metric_stats = self.metric_manager.compute(accelerator=self.accelerator)
             if self.accelerator.is_main_process:
                 self.log_all(metric_stats, step=self.global_step, prefix=f"val_metrics/{val_name}")
             stats.update({f"metric_{k.replace('/', '_')}": v for k, v in metric_stats.items()})
 
         return stats
+
+    def _validation_split_name(self, loader, fallback):
+        dataset = getattr(loader, "dataset", None)
+        visited = set()
+
+        def find_query_split(obj):
+            if obj is None:
+                return None
+            obj_id = id(obj)
+            if obj_id in visited:
+                return None
+            visited.add(obj_id)
+            if hasattr(obj, "query_split"):
+                return str(getattr(obj, "query_split"))
+            if hasattr(obj, "dataset"):
+                value = find_query_split(getattr(obj, "dataset"))
+                if value is not None:
+                    return value
+            if hasattr(obj, "datasets"):
+                for child in getattr(obj, "datasets"):
+                    value = find_query_split(child)
+                    if value is not None:
+                        return value
+            return None
+
+        return find_query_split(dataset) or str(fallback)
 
     def train_one_epoch(self, epoch):
         self.model.train()

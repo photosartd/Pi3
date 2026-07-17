@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 
 from .base import BaseMetric
+from .failure_modes import aggregate_failure_modes, append_prediction_rows
 from .utils import (
     BopModelCache,
     add_error,
@@ -47,6 +49,16 @@ class ObjectPoseMetric(BaseMetric):
         max_model_points: int = 20000,
         nn_chunk_size: int = 2048,
         device: str = "cpu",
+        raw_predictions_path: str | None = None,
+        run_id: str | None = None,
+        masked: bool | None = None,
+        keyframe_seed: int | None = None,
+        checkpoint_step: int | None = None,
+        split: str | None = None,
+        covariates_path: str | None = None,
+        analysis_dir: str | None = None,
+        coarse_analysis: bool = False,
+        hard_object_ids: list[int] | tuple[int, ...] | None = None,
     ):
         self.model_cache = BopModelCache(
             data_root,
@@ -58,6 +70,17 @@ class ObjectPoseMetric(BaseMetric):
         self.solve_scale = bool(solve_scale)
         self.nn_chunk_size = int(nn_chunk_size)
         self.device = str(device)
+        self.raw_predictions_path = raw_predictions_path
+        self.run_id = run_id
+        self.masked = None if masked is None else bool(masked)
+        self.keyframe_seed = keyframe_seed
+        self.checkpoint_step = checkpoint_step
+        self.split = split
+        self.covariates_path = covariates_path
+        self.analysis_dir = analysis_dir
+        self.coarse_analysis = bool(coarse_analysis)
+        self.hard_object_ids = [int(obj_id) for obj_id in (hard_object_ids or [])]
+        self.context: dict[str, Any] = {}
         self.reset()
 
     def reset(self) -> None:
@@ -74,6 +97,73 @@ class ObjectPoseMetric(BaseMetric):
         self.trans_m_by_obj: dict[int, list[float]] = defaultdict(list)
         self.num_underconstrained = 0
         self.num_predictions = 0
+        self.raw_prediction_rows: list[dict[str, Any]] = []
+
+    def set_context(self, **context: Any) -> None:
+        self.context.update({key: value for key, value in context.items() if value is not None})
+
+    def _context_value(self, name: str, default: Any = None) -> Any:
+        if name in self.context:
+            return self.context[name]
+        return getattr(self, name, default)
+
+    def _resolve_path(self, value: str | None) -> Path | None:
+        if not value:
+            return None
+        format_context = {
+            "run_id": self._context_value("run_id", self.run_id),
+            "split": self._context_value("split", self.split),
+            "val_name": self._context_value("val_name", self.split),
+            "checkpoint_step": self._context_value("checkpoint_step", self.checkpoint_step),
+            "global_step": self._context_value("global_step", self.checkpoint_step),
+            "output_dir": self._context_value("output_dir", None),
+        }
+        try:
+            resolved = str(value).format(**format_context)
+        except KeyError:
+            resolved = str(value)
+        return Path(resolved)
+
+    def _append_raw_row(
+        self,
+        *,
+        mode: str,
+        batch_idx: int,
+        view_idx: int,
+        obj_id: int,
+        add: float,
+        adds: float,
+        used: float,
+        diameter: float,
+        scene_ids: np.ndarray | None,
+        im_ids: np.ndarray | None,
+        gt_ids: np.ndarray | None,
+        n_keyframes: int,
+        n_queries: int,
+    ) -> None:
+        if not self.raw_predictions_path:
+            return
+        split = self._context_value("split", None) or self._context_value("val_name", None) or mode
+        metric_type = "ADD-S" if int(obj_id) in self.symmetric_ids else "ADD"
+        self.raw_prediction_rows.append(
+            {
+                "scene_id": int(scene_ids[batch_idx, view_idx]) if scene_ids is not None else -1,
+                "im_id": int(im_ids[batch_idx, view_idx]) if im_ids is not None else -1,
+                "gt_id": int(gt_ids[batch_idx, view_idx]) if gt_ids is not None else -1,
+                "obj_id": int(obj_id),
+                "add_err": finite_float(used),
+                "add_err_norm": finite_float(used / diameter),
+                "metric_type": metric_type,
+                "n_keyframes": int(n_keyframes),
+                "n_queries": int(n_queries),
+                "keyframe_seed": self._context_value("keyframe_seed", self.keyframe_seed),
+                "checkpoint_step": self._context_value("checkpoint_step", self.checkpoint_step),
+                "split": split,
+                "val_name": self._context_value("val_name", split),
+                "masked": self._context_value("masked", self.masked),
+                "run_id": self._context_value("run_id", self.run_id),
+            }
+        )
 
     @torch.no_grad()
     def update(
@@ -90,6 +180,9 @@ class ObjectPoseMetric(BaseMetric):
         ref_mask = view_bool_mask(batch, "is_reference")
         query_mask = view_bool_mask(batch, "is_query")
         obj_ids = batch_object_ids(batch)
+        scene_ids = stack_view_tensor(batch, "scene_id").astype(np.int64) if "scene_id" in batch[0] else None
+        im_ids = stack_view_tensor(batch, "im_id").astype(np.int64) if "im_id" in batch[0] else None
+        gt_ids = stack_view_tensor(batch, "gt_id").astype(np.int64) if "gt_id" in batch[0] else None
 
         for batch_idx, obj_id in enumerate(obj_ids):
             refs = ref_mask[batch_idx]
@@ -109,8 +202,11 @@ class ObjectPoseMetric(BaseMetric):
             gt_T_C_O_query = gt_T_C_O[batch_idx, queries]
             points = self.model_cache.points(int(obj_id))
             diameter = self.model_cache.diameter(int(obj_id))
+            query_indices = np.flatnonzero(queries)
+            n_keyframes = int(refs.sum())
+            n_queries = int(queries.sum())
 
-            for T_pred, T_gt in zip(pred_T_C_O_query, gt_T_C_O_query):
+            for view_idx, T_pred, T_gt in zip(query_indices, pred_T_C_O_query, gt_T_C_O_query):
                 add = add_error(T_pred, T_gt, points)
                 adds = adds_error(
                     T_pred,
@@ -131,6 +227,21 @@ class ObjectPoseMetric(BaseMetric):
                 self.rot_deg_by_obj[int(obj_id)].append(self.rot_deg[-1])
                 self.trans_m_by_obj[int(obj_id)].append(self.trans_m[-1])
                 self.num_predictions += 1
+                self._append_raw_row(
+                    mode=mode,
+                    batch_idx=batch_idx,
+                    view_idx=int(view_idx),
+                    obj_id=int(obj_id),
+                    add=add,
+                    adds=adds,
+                    used=used,
+                    diameter=diameter,
+                    scene_ids=scene_ids,
+                    im_ids=im_ids,
+                    gt_ids=gt_ids,
+                    n_keyframes=n_keyframes,
+                    n_queries=n_queries,
+                )
 
     def compute(self) -> dict[str, float]:
         output = {
@@ -173,3 +284,55 @@ class ObjectPoseMetric(BaseMetric):
                 output[f"{prefix}_query_rot_median_deg"] = safe_median(self.rot_deg_by_obj[obj_id])
                 output[f"{prefix}_query_trans_median_m"] = safe_median(self.trans_m_by_obj[obj_id])
         return output
+
+    def flush_artifacts(self, accelerator: Any | None = None) -> dict[str, float]:
+        if not self.raw_predictions_path:
+            return {}
+
+        rows = list(self.raw_prediction_rows)
+        self.raw_prediction_rows = []
+        if accelerator is not None and getattr(accelerator, "num_processes", 1) > 1:
+            from accelerate.utils import gather_object
+
+            gathered = gather_object(rows)
+            if gathered and all(isinstance(item, dict) for item in gathered):
+                rows = list(gathered)
+            else:
+                rows = [
+                    row
+                    for rank_rows in gathered
+                    if isinstance(rank_rows, list)
+                    for row in rank_rows
+                ]
+
+        is_main = True if accelerator is None else bool(accelerator.is_main_process)
+        if not is_main:
+            return {}
+
+        predictions_path = self._resolve_path(self.raw_predictions_path)
+        if predictions_path is None:
+            return {}
+        append_prediction_rows(predictions_path, rows)
+
+        if not (self.coarse_analysis and self.covariates_path and self.analysis_dir):
+            return {}
+
+        covariates_path = self._resolve_path(self.covariates_path)
+        analysis_dir = self._resolve_path(self.analysis_dir)
+        if covariates_path is None or analysis_dir is None:
+            return {}
+        split = self._context_value("split", None)
+        val_name = self._context_value("val_name", self._context_value("split", "val"))
+        checkpoint_step = self._context_value("checkpoint_step", self.checkpoint_step)
+        out_dir = analysis_dir / str(val_name) / f"step_{int(checkpoint_step):08d}" if checkpoint_step is not None else analysis_dir / str(val_name)
+        return aggregate_failure_modes(
+            predictions_path,
+            covariates_path,
+            out_dir,
+            coarse=True,
+            plot=False,
+            checkpoint_step=checkpoint_step,
+            split=split,
+            val_name=val_name,
+            hard_object_ids=self.hard_object_ids,
+        )

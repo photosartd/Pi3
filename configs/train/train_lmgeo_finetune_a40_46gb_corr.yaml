@@ -1,0 +1,47 @@
+# @package _global_
+
+# A40 560x420 correspondence-loss variant. All hardware, data-sampling,
+# validation, metric, and visualization settings come from the named A40
+# baseline; this file changes only the DINO feature output and loss settings.
+# A constrained 32-view training smoke used 36,417 MiB allocated / 36,784 MiB
+# reserved under a 38 GiB allocator cap.
+defaults:
+  - train_lmgeo_finetune_a40_46gb
+  - _self_
+
+model:
+  # Exposes frozen DINO layer-17 tokens from the existing encoder pass for the
+  # detached correspondence confidence weights.
+  dino_output_layers: [17]
+
+loss:
+  train_loss:
+    correspondence_weight: 0.3
+    correspondence_patch_size: 14
+    correspondence_max_reference_per_query: 2
+    correspondence_reference_selection: uniform
+    correspondence_max_pairs: 512
+    correspondence_pair_subsample: uniform
+    correspondence_depth_abs_tol: 0.01
+    correspondence_depth_rel_tol: 0.05
+    correspondence_huber_beta: 0.01
+    correspondence_use_dino_weights: true
+    correspondence_dino_layer: 17
+    correspondence_dino_center: 0.2
+    correspondence_dino_temperature: 0.1
+    correspondence_min_dino_weight: 0.05
+  test_loss:
+    correspondence_weight: 0.3
+    correspondence_patch_size: 14
+    correspondence_max_reference_per_query: 2
+    correspondence_reference_selection: uniform
+    correspondence_max_pairs: 512
+    correspondence_pair_subsample: uniform
+    correspondence_depth_abs_tol: 0.01
+    correspondence_depth_rel_tol: 0.05
+    correspondence_huber_beta: 0.01
+    correspondence_use_dino_weights: true
+    correspondence_dino_layer: 17
+    correspondence_dino_center: 0.2
+    correspondence_dino_temperature: 0.1
+    correspondence_min_dino_weight: 0.05

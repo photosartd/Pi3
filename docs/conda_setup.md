@@ -124,8 +124,8 @@ training run:
 
 ```bash
 python scripts/train_pi3.py --cfg job \
-  train=train_lmgeo_finetune_lowres \
-  data=lmgeo_all_trainpbr_test_bop
+  train=train_lmgeo_finetune_rtx4090_24gb \
+  data=lmgeo_trainpbr45_real_and_new_val
 ```
 
 ## GPU compatibility and launch settings
@@ -137,7 +137,7 @@ Blackwell while remaining compatible with the previous RTX 4090 setup.
 | GPU | CUDA compute capability | Recommended requirements | Runtime/configuration notes |
 | --- | --- | --- | --- |
 | GeForce RTX 4090 (24 GB) | 8.9 | `requirements.txt` by default; `requirements_cuda124.txt` only for reproducing the old CUDA 12.4 install | Use BF16 as configured. On a single-GPU workstation, pass `--num_processes 1`. Reduce the image budget if a workload runs out of memory. |
-| NVIDIA A40 (46 GB, Ampere) | 8.6 | `requirements.txt` / `requirements_torch_cuda128.txt` | This is the target GPU for the 518x518 LMGeo A40 profiles. The same default environment also supports Blackwell, so prefer it over the legacy CUDA 12.4 environment on shared clusters. |
+| NVIDIA A40 (46 GB, Ampere) | 8.6 | `requirements.txt` / `requirements_torch_cuda128.txt` | This is the target GPU for the fixed 560x420 LMGeo A40 profile. The same default environment also supports Blackwell, so prefer it over the legacy CUDA 12.4 environment on shared clusters. |
 | NVIDIA RTX PRO 6000 Blackwell Workstation Edition | 12.0 | `requirements.txt` / `requirements_torch_cuda128.txt` | Requires CUDA 12.8 PyTorch wheels. PyTorch 2.5.1+cu124 cannot launch kernels on this GPU and fails with `no kernel image is available for execution on the device`. |
 | NVIDIA RTX A6000 (48 GB, Ampere) | 8.6 | `requirements.txt`; legacy CUDA 12.4 is also usable if Blackwell support is not needed | BF16 is supported. The same settings should fit because it has more memory than the 4090, although its performance characteristics differ. Do not confuse it with the newer RTX 6000 Ada. |
 | NVIDIA H200 (141 GB, Hopper) | 9.0 | `requirements.txt`; legacy CUDA 12.4 is also usable if Blackwell support is not needed | Keep BF16 unless the training code is explicitly changed to support another precision. For multi-GPU H200 nodes, use one Accelerate process per GPU and set `--num_processes`/`--num_machines` to match the allocation. NVSwitch/Fabric Manager and cluster drivers are system-administrator concerns, not Conda packages. |

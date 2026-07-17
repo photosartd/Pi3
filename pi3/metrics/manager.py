@@ -71,6 +71,13 @@ class MetricManager:
         for metric in self.metrics:
             metric.reset()
 
+    def set_context(self, **context: Any) -> None:
+        """Pass trainer/runtime metadata to metrics that can use it."""
+
+        for metric in self.metrics:
+            if hasattr(metric, "set_context"):
+                metric.set_context(**context)
+
     def update(
         self,
         prediction: Any,
@@ -89,7 +96,7 @@ class MetricManager:
             metric.update(prediction, batch, loss_output, mode=mode)
             self.last_update_times[metric.name] = time.perf_counter() - start
 
-    def compute(self) -> dict[str, float]:
+    def compute(self, *, accelerator: Any | None = None) -> dict[str, float]:
         """Compute and merge scalar outputs from all metrics."""
 
         output: dict[str, float] = {}
@@ -98,6 +105,9 @@ class MetricManager:
         for metric in self.metrics:
             for key, value in metric.compute().items():
                 output[f"{metric.name}/{key}"] = float(value)
+            if hasattr(metric, "flush_artifacts"):
+                for key, value in metric.flush_artifacts(accelerator).items():
+                    output[f"{metric.name}/{key}"] = float(value)
         return output
 
     def compute_on_batch(

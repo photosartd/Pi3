@@ -32,7 +32,7 @@ case "$MODE" in
     ;;
   smoke)
     SBATCH_OPTS=(
-      --job-name=pi3-smoke-518-a40
+      --job-name=pi3-smoke-560x420-a40
       --gres=gpu:a40:1
       --cpus-per-task=8
       --mem=160G
@@ -46,7 +46,7 @@ case "$MODE" in
     TRAIN_MEM="${PI3_TRAIN_MEM:-$((TRAIN_GPUS * 100))G}"
     TRAIN_TMP="${PI3_TRAIN_TMP:-$((TRAIN_GPUS * 25))G}"
     SBATCH_OPTS=(
-      --job-name=pi3-lmgeo-518
+      --job-name=pi3-lmgeo-560x420
       --gres=gpu:a40:"$TRAIN_GPUS"
       --cpus-per-task="$TRAIN_CPUS"
       --mem="$TRAIN_MEM"

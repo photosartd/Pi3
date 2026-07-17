@@ -3,6 +3,10 @@ import unittest
 
 import numpy as np
 
+from pi3.metrics.failure_modes import (
+    coarse_failure_mode_scalars,
+    preprocessing_resize_scale,
+)
 from pi3.metrics.utils import (
     add_error,
     chamfer_components,
@@ -97,6 +101,38 @@ class MetricsUtilsTest(unittest.TestCase):
         self.assertAlmostEqual(pred_to_gt, 0.0, places=7)
         self.assertAlmostEqual(gt_to_pred, 0.0, places=7)
         self.assertAlmostEqual(chamfer, 0.0, places=7)
+
+    def test_preprocessing_resize_scale_matches_center_crop_geometry(self):
+        K = np.array(
+            [
+                [572.0, 0.0, 320.0],
+                [0.0, 572.0, 240.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        scale = preprocessing_resize_scale((640, 480), K, (518, 518))
+        self.assertAlmostEqual(scale, 518 / 480, places=6)
+
+    def test_coarse_failure_mode_scalars_use_requested_buckets(self):
+        try:
+            import pandas as pd
+        except ImportError:
+            self.skipTest("pandas is not installed")
+
+        df = pd.DataFrame(
+            [
+                {"obj_id": 1, "add_err_norm": 0.05, "size_bin_index": 0, "visib_fract": 0.8, "symmetric": False},
+                {"obj_id": 1, "add_err_norm": 0.20, "size_bin_index": 0, "visib_fract": 0.4, "symmetric": False},
+                {"obj_id": 10, "add_err_norm": 0.08, "size_bin_index": 3, "visib_fract": 0.9, "symmetric": True},
+                {"obj_id": 12, "add_err_norm": 0.30, "size_bin_index": 4, "visib_fract": 0.9, "symmetric": False},
+            ]
+        )
+        scalars = coarse_failure_mode_scalars(df)
+        self.assertEqual(scalars["small_visible_recall@0.1d"], 1.0)
+        self.assertEqual(scalars["small_occluded_recall@0.1d"], 0.0)
+        self.assertEqual(scalars["big_visible_recall@0.1d"], 0.5)
+        self.assertEqual(scalars["hard_class_recall@0.1d"], 2 / 3)
 
 
 if __name__ == "__main__":

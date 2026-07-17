@@ -4,6 +4,7 @@ import torch
 
 from pi3.models.correspondence import build_query_reference_correspondences
 from pi3.models.loss import CorrespondenceConsistencyLoss
+from pi3.metrics.correspondence import CorrespondenceMetric
 
 
 def make_view(*, is_reference: bool, batch_size: int = 1, height: int = 28, width: int = 28):
@@ -86,6 +87,25 @@ class CorrespondenceLossTest(unittest.TestCase):
         self.assertGreater(float(loss), 0.0)
         self.assertGreater(float(details["correspondence_dino_weight"]), 0.0)
         self.assertFalse(details["correspondence_dino_similarity"].requires_grad)
+
+    def test_metric_reports_geometric_consistency_without_loss_weight(self):
+        metric = CorrespondenceMetric(
+            patch_size=14,
+            max_reference_per_query=1,
+            max_pairs=0,
+            use_dino_weights=False,
+        )
+        batch = [make_view(is_reference=True), make_view(is_reference=False)]
+
+        metric.update(make_prediction(query_offset=0.0), batch, mode="val")
+        stats_identical = metric.compute()
+        self.assertEqual(stats_identical["num_pairs"], 4.0)
+        self.assertAlmostEqual(stats_identical["geo_l2_mean"], 0.0, places=7)
+
+        metric.reset()
+        metric.update(make_prediction(query_offset=0.2), batch, mode="val")
+        stats_offset = metric.compute()
+        self.assertGreater(stats_offset["geo_l2_mean"], 0.0)
 
 
 if __name__ == "__main__":

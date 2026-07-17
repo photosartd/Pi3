@@ -1,41 +1,46 @@
 # @package _global_
 
-# 518x518 LMGeo fine-tuning profile sized for one 46 GB A40 per rank.
+# Fixed 560x420 LMGeo fine-tuning profile sized for one 46 GB A40 per rank.
 #
 # This is the high-utilization profile:
-# - Dynamic total views from 3 to 32.
-# - Dataset split constraints allow 2-7 reference renders and 1-25 queries.
-# - The worst case, 7 refs + 25 queries = 32 total views, is one sample per GPU.
+# - Dynamic total views from 6 to 32.
+# - Dataset split constraints allow 5-31 reference renders and 1-25 queries.
+# - Six views has the unique split 5 refs + 1 query; 32 views can reach
+#   31 refs + 1 query, while retaining the existing 7 refs + 25 queries case.
 # - Smaller sampled view counts pack multiple sequences per GPU through the
-#   existing DynamicBatchSampler: floor(max_img_per_gpu / sampled_views). Keep
-#   max_img_per_gpu below 32 because packed small-view batches can use more
-#   memory than the single 32-view sequence.
+#   existing DynamicBatchSampler: floor(max_img_per_gpu / sampled_views).
 #
-# Memory probe on the local RTX PRO 6000 with PyTorch 2.7.1+cu128:
-# - 32 fixed 518x518 views peaked at ~40.7 GB allocated.
-# - Dynamic packed batches with max_img_per_gpu=32 reached ~45.6 GB allocated.
-# - 36 fixed 518x518 views peaked at ~45.2 GB, too close to a 46 GB A40.
-# - 38 fixed 518x518 views exceeded 46 GB allocated.
+# 560x420 matches LM-O's native 4:3 aspect ratio and both dimensions are
+# divisible by Pi3/DINOv2's patch size 14. With the existing crop/resize path it
+# retains substantially more of the source frame than a square target.
+#
+# Constrained probe on the local RTX PRO 6000 with only ~40 GB free:
+# - 32-view training: 36,262 MiB allocated / 36,634 MiB reserved.
+# - Packed 5 x 6-view training: 34,281 MiB allocated / 34,716 MiB reserved.
+# - 31 refs + 1 query: 36,262 MiB allocated / 36,634 MiB reserved.
+# - The pre-Ref16 production metrics at validation budget 128 had combined
+#   peak reserve 38,246 MiB after the 32-view training step.
 
 trainer: trainers.pi3_trainer.Pi3Trainer
+
+lmgeo_profile:
+  num_reference_range: [5, 31]
+  num_query_range: [1, 25]
+  filter_preprocessed_query_depth: true
+  allow_repeat: true
+  max_refetch: 50
 
 train:
   # Total views per sample. The LMGeo dataset then chooses a valid split inside
   # lmgeo.num_reference_range and lmgeo.num_query_range.
-  image_num_range: [3, 32]
-  max_img_per_gpu: 28
+  image_num_range: [6, 32]
+  max_img_per_gpu: 32
 
-  # Keep the Pi3 high-res native square in both the fixed validation resolution
-  # and the random training pool. The code spelling is historical.
+  # One fixed 4:3 resolution for both LMGeo training and validation. The code
+  # spelling of random_reslution is historical.
   resolution:
-    - [518, 518]
-  random_reslution: true
-  aspect_ratio_range: [0.5, 2.0]
-  pixel_count_range: [100000, 268324]
-  patch_size: 14
-  num_resolution: 16
-  base_resolution:
-    - [518, 518]
+    - [560, 420]
+  random_reslution: false
 
   num_workers: 0
   num_epoch: 30
@@ -61,7 +66,10 @@ train:
 test:
   # The per-validation-set runtime sections in the data config override these.
   image_num_range: [6, 6]
-  max_img_per_gpu: 256
+  max_img_per_gpu: 128
+  max_img_per_gpu_k5: 128
+  max_img_per_gpu_k10: 128
+  max_img_per_gpu_ref16: 128
   num_workers: 0
   iters_per_test: 0
   print_freq: 1
@@ -87,9 +95,34 @@ metrics:
       max_model_points: 20000
       nn_chunk_size: 2048
       device: cuda
+      # Raw ADD/ADD-S rows for failure-mode slicing. Build matching covariate
+      # tables first, then enable coarse_analysis to log the 14 online scalars.
+      raw_predictions_path: ${log.output_dir}/predictions.parquet
+      run_id: ${name}
+      masked: ${lmgeo.reference_rgb_masking}
+      keyframe_seed: ${train.base_seed}
+      covariates_path: ${log.output_dir}/covariates_{split}.parquet
+      analysis_dir: ${log.output_dir}/failure_modes
+      coarse_analysis: false
+      hard_object_ids: []
     camera:
       _target_: pi3.metrics.camera.CameraAlignmentMetric
       solve_scale: true
+    correspondence:
+      _target_: pi3.metrics.correspondence.CorrespondenceMetric
+      patch_size: 14
+      max_reference_per_query: 2
+      reference_selection: uniform
+      max_pairs: 512
+      pair_subsample: uniform
+      depth_abs_tol: 0.01
+      depth_rel_tol: 0.05
+      huber_beta: 0.01
+      use_dino_weights: false
+      dino_layer: 17
+      dino_center: 0.2
+      dino_temperature: 0.1
+      min_dino_weight: 0.05
     chamfer:
       _target_: pi3.metrics.chamfer.ReferenceChamferMetric
       data_root: ${lmgeo.data_root}

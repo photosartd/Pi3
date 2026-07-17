@@ -1,0 +1,6 @@
+# @package _global_
+
+# Named RTX 4090 24 GB profile. The historical low-resolution config remains
+# the implementation source so existing commands resolve identically.
+defaults:
+  - train_lmgeo_finetune_lowres
