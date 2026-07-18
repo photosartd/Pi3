@@ -16,7 +16,7 @@ real and PBR ablations. Resolution, training view sampling, and every
 | Profile | Resolution | Train views | Train `max_img_per_gpu` | Validation budgets |
 | --- | --- | --- | ---: | --- |
 | `train_lmgeo_finetune_rtx4090_24gb` | 224x224 | 6-26 | 50 | K1/K5/K10/Ref16: 96/96/96/96 |
-| `train_lmgeo_finetune_a40_46gb` | fixed 560x420 | 6-32 | 32 | K1/K5/K10/Ref16: 128/128/128/128 |
+| `train_lmgeo_finetune_a40_46gb` | fixed 560x420 | 6-28 | 28 | K1/K5/K10/Ref16: 128/128/128/128 |
 | `train_lmgeo_finetune_rtxpro6000_blackwell_96gb` | fixed 560x420 | 6-32 | 56 | K1/K5/K10/Ref16: 384/384/320/320 |
 
 `max_img_per_gpu` keeps its historical name and behavior. It is a sequence
@@ -103,19 +103,31 @@ train=train_lmgeo_finetune_a40_46gb
 data=lmgeo_trainpbr45_real_and_new_val
 ```
 
-Override only the train profile with `PI3_TRAIN_CONFIG`. For example, the
-high-resolution correspondence-loss variant inherits the same A40 hardware and
-sampling limits and sets correspondence lambda to 0.3:
+Override only the train profile with `PI3_TRAIN_CONFIG`. These are the current
+copy-paste production commands for the baseline and high-resolution
+correspondence-loss comparison:
 
 ```bash
+cd /homes/dtrofimov/repositories/Pi3
+
+PI3_TRAIN_GPUS=4 \
+PI3_TRAIN_CONFIG=train_lmgeo_finetune_a40_46gb \
+PI3_RUN_NAME=lmgeo_a40_baseline \
+  scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
+
+PI3_TRAIN_GPUS=4 \
 PI3_TRAIN_CONFIG=train_lmgeo_finetune_a40_46gb_corr \
 PI3_RUN_NAME=lmgeo_a40_corr_lambda0p3 \
   scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 ```
 
-Its constrained 32-view training smoke reached 36,417 MiB allocated / 36,784
-MiB reserved under the 38 GiB cap. This was a one-step loss-path check, not a
-full production-validation sweep.
+The correspondence variant inherits the same A40 hardware and sampling limits
+and sets correspondence lambda to 0.3. The previous constrained 32-view smoke
+was not sufficient for real A40 production: both baseline and correspondence
+runs later OOMed near the allocator limit. The A40 profile is now capped at
+28 total views per sequence and a 28-image packing budget. See
+[slurm_a40.md](slurm_a40.md#baseline-and-correspondence-runs) for per-config
+smokes, explicit checkpoint paths, output locations, and TensorBoard.
 
 Use it from the CITEc checkout:
 
@@ -202,9 +214,12 @@ and visual settings were unchanged.
 | RTX 4090 24 GB | 23.5 GiB | 2 x 25 views at 224px | 15,273 / 15,792 MiB | 16,528 MiB | 17,264 MiB |
 | A40 46 GB | 38 GiB | 1 x 32 views at 560x420 | 36,262 / 36,634 MiB | 38,246 MiB | 37,370 MiB |
 
-The current 4090 and A40 rows exited successfully. The A40 run used fixed
-560x420 and all current production metrics. It was intentionally capped below
-the roughly 40 GB that was free on the shared workstation.
+The old A40 row exited successfully locally, but real CITEc A40 production
+later OOMed at 39.07 GiB allocated plus 4.68 GiB reserved-but-unallocated on a
+44.42 GiB GPU. Treat the row as a rejected historical smoke, not as an accepted
+production limit. The accepted A40 cap now requires on-cluster smoke of both
+1 x 28-view and packed 4 x 6-view training shapes, repeated for the helper's
+default five iterations.
 
 The Blackwell profile also inherits fixed 560x420, but was not re-maximized in
 this pass. Its unchanged budgets were previously accepted at the larger
@@ -217,9 +232,10 @@ them.
 The packing edges were checked separately because small sequences pack more
 samples per rank. The RTX 4090 profile's `8 x 6`-view batch reached 14,822 MiB
 allocated / 15,360 MiB reserved. The named high-resolution profiles use a
-6-view minimum. A40 packs `5 x (5 references + 1 query)` at that edge and
-reached 34,281/34,716 MiB allocated/reserved. Its `31 references + 1 query`
-32-view edge reached 36,262/36,634 MiB. Blackwell packs nine 6-view sequences
+6-view minimum. The old A40 profile packed `5 x (5 references + 1 query)` at
+that edge and reached 34,281/34,716 MiB allocated/reserved locally. The current
+A40 profile packs `4 x 6` and caps the max one-sequence edge at 28 views.
+Blackwell packs nine 6-view sequences
 with its larger budget, but that shape still requires a fresh full-memory
 probe. The old `9 x 3` and `10 x 3` measurements remain only as historical
 results in the detailed A40 document.

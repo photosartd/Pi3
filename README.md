@@ -18,8 +18,9 @@ For the canonical LMGeo data definition and named RTX 4090, A40, and RTX PRO
 6000 Blackwell profiles, see
 [docs/lmgeo_hardware_profiles.md](docs/lmgeo_hardware_profiles.md).
 
-For Slurm installation, preflight, and 4xA40 launch notes, see
-[docs/slurm_a40.md](docs/slurm_a40.md).
+For Slurm installation, preflight, exact baseline/correspondence 4xA40 launch
+commands, output paths, and TensorBoard, see
+[docs/slurm_a40.md](docs/slurm_a40.md#baseline-and-correspondence-runs).
 
 For downloading and placing the Pi3 base checkpoint, see
 [docs/checkpoints.md](docs/checkpoints.md).

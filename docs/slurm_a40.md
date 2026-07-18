@@ -109,11 +109,12 @@ PY
 
 For an A40, `torch.cuda.get_device_capability()` should be `(8, 6)`.
 
-## One-Step Training Smoke
+## Short Training Smoke
 
 This is the queue-safe smoke I would run before a long job. It forces the
-largest 32-view 560x420 case, disables the expensive startup filter, and keeps
-validation tiny.
+largest currently allowed 28-view 560x420 case, disables the expensive startup filter, and keeps
+validation tiny. The helper script runs five training iterations per forced
+shape by default; set `PI3_SMOKE_ITERS=<n>` to change that.
 
 ```bash
 accelerate launch --config_file configs/accelerate/ddp.yaml \
@@ -121,16 +122,16 @@ accelerate launch --config_file configs/accelerate/ddp.yaml \
   scripts/train_pi3.py \
   train=train_lmgeo_finetune_a40_46gb \
   data=lmgeo_trainpbr45_real_and_new_val \
-  name=preflight_lmgeo_560x420_a40_32view \
+  name=preflight_lmgeo_560x420_a40_28view \
   model.ckpt=/vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/model.safetensors \
   train.random_reslution=false \
-  'train.image_num_range=[32,32]' \
-  train.max_img_per_gpu=32 \
-  'lmgeo_profile.num_reference_range=[7,7]' \
-  'lmgeo_profile.num_query_range=[25,25]' \
+  'train.image_num_range=[28,28]' \
+  train.max_img_per_gpu=28 \
+  'lmgeo_profile.num_reference_range=[5,5]' \
+  'lmgeo_profile.num_query_range=[23,23]' \
   lmgeo.filter_preprocessed_query_depth=false \
   train.num_epoch=1 \
-  train.iters_per_epoch=1 \
+  train.iters_per_epoch=5 \
   val_datasets.real_test.runtime.iters_per_test=1 \
   val_datasets.real_test.runtime.max_img_per_gpu=6 \
   val_datasets.real_test_ref16.runtime.iters_per_test=1 \
@@ -150,9 +151,10 @@ accelerate launch --config_file configs/accelerate/ddp.yaml \
   log.save_checkpoints=false
 ```
 
-On the local PRO 6000, this training shape reached 36,262 MiB allocated and
-36,634 MiB reserved. The production combined train/validation acceptance peak
-was 38,246 MiB reserved under a 38 GiB allocator cap.
+The helper script's `smoke` mode is preferred because it now tests both this
+max-view edge and the packed 4 x 6-view edge for `PI3_SMOKE_ITERS=5` iterations
+by default. The old 32-view smoke completed locally but OOMed during real A40
+production, so do not use it as an acceptance criterion.
 
 ## Production 4xA40 Job
 
@@ -204,13 +206,13 @@ Each GPU keeps the same per-rank memory budget. With 4 GPUs and no gradient
 accumulation, the maximum effective view count per optimizer update is:
 
 ```text
-up to 32 views/sample/rank * 4 ranks = 128 views/update
+up to 28 views/sample/rank * 4 ranks = 112 views/update
 ```
 
-The A40 config uses `train.max_img_per_gpu: 32`. A 32-view sequence uses one
-sample per rank; the current packed small-view edge is five sequences x six
-views (5 references + 1 query each) and reached 34,281 MiB allocated / 34,716
-MiB reserved locally.
+The A40 config uses `train.max_img_per_gpu: 28`. A 28-view sequence uses one
+sample per rank; the current packed small-view edge is four sequences x six
+views (5 references + 1 query each). The old 32-view budget OOMed on real A40
+nodes and is no longer the production default.
 
 ## CITEc GPU Cluster Scripts
 
@@ -224,7 +226,7 @@ cd /homes/dtrofimov/repositories/Pi3
 # 1. Check conda, CUDA visibility, A40 arch support, and BF16 matmul.
 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh preflight
 
-# 2. Run one worst-case 32-view 560x420 training step on one A40.
+# 2. Run max-view and packed-min 560x420 training smokes on one A40.
 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh smoke
 
 # 3. Submit the production 4xA40 training run.
@@ -248,6 +250,9 @@ The job selects `train=train_lmgeo_finetune_a40_46gb` by default and always uses
 the canonical `data=lmgeo_trainpbr45_real_and_new_val`. Set `PI3_TRAIN_CONFIG`
 to select another A40 train profile. The submit script keeps its historical
 filename so existing commands continue to work.
+The job exports `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` by default
+to reduce allocator fragmentation on A40; override it explicitly only when
+debugging allocator behavior.
 
 The production command writes Hydra outputs and checkpoints under
 `/vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3/<run-name>/`, not under the
@@ -305,25 +310,84 @@ PI3_RUN_NAME=my_a40_run \
   scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 ```
 
-Submit the baseline and correspondence-loss comparison as two independent
-jobs with distinct output names:
+## Baseline And Correspondence Runs
+
+Run the selected profile's short smoke before submitting its production job.
+Smoke mode always requests one A40, runs five training iterations per forced
+shape by default, and exercises one batch from every validation loader,
+including the `16 references + 1 query` real and PBR loaders:
 
 ```bash
+cd /homes/dtrofimov/repositories/Pi3
+
+# Baseline smoke.
+PI3_TRAIN_CONFIG=train_lmgeo_finetune_a40_46gb \
+PI3_RUN_NAME=lmgeo_a40_baseline_smoke \
+  scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh smoke
+
+# Correspondence-loss smoke (lambda = 0.3).
+PI3_TRAIN_CONFIG=train_lmgeo_finetune_a40_46gb_corr \
+PI3_RUN_NAME=lmgeo_a40_corr_lambda0p3_smoke \
+  scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh smoke
+```
+
+Submit the baseline and correspondence-loss comparison as two independent
+four-A40 jobs with distinct output names:
+
+```bash
+cd /homes/dtrofimov/repositories/Pi3
+
+# Baseline: fixed 560x420, no correspondence loss.
+PI3_TRAIN_GPUS=4 \
 PI3_TRAIN_CONFIG=train_lmgeo_finetune_a40_46gb \
 PI3_RUN_NAME=lmgeo_a40_baseline \
+PI3_CKPT=/vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/model.safetensors \
   scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 
+# Correspondence: same A40/data profile, correspondence lambda = 0.3.
+PI3_TRAIN_GPUS=4 \
 PI3_TRAIN_CONFIG=train_lmgeo_finetune_a40_46gb_corr \
 PI3_RUN_NAME=lmgeo_a40_corr_lambda0p3 \
+PI3_CKPT=/vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/model.safetensors \
   scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 ```
 
+Both commands can be submitted one after the other; `sbatch` returns after
+queueing each job. `PI3_TRAIN_CONFIG` is the YAML filename from
+`configs/train/` without `.yaml` and is validated on the compute node. The data
+profile remains the canonical `lmgeo_trainpbr45_real_and_new_val` for both
+runs. The explicit `PI3_CKPT` above equals the current shared default and may be
+omitted while that default remains valid.
+
 The correspondence profile inherits the fixed 560x420 A40 profile and changes
 only the layer-17 DINO output and correspondence-loss settings. Its train and
-validation correspondence lambda is `0.3`. A constrained 32-view training step
-completed at 36,417 MiB allocated / 36,784 MiB reserved under a 38 GiB
-allocator cap; the logged raw/weighted correspondence losses were 0.5030 and
-0.1509, respectively.
+validation correspondence lambda is `0.3`. The old 32-view smoke completed
+locally but real A40 production OOMed, so smoke both the baseline and
+correspondence profiles again after any memory-limit change.
+
+The two run roots and their main contents are:
+
+```text
+/vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3/lmgeo_a40_baseline/
+  ckpts/
+  lmgeo_a40_baseline/events.out.tfevents.*
+
+/vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3/lmgeo_a40_corr_lambda0p3/
+  ckpts/
+  lmgeo_a40_corr_lambda0p3/events.out.tfevents.*
+```
+
+TensorBoard recursively discovers both runs from their common parent:
+
+```bash
+tensorboard \
+  --logdir /vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3 \
+  --port 6006
+```
+
+Slurm stdout/stderr defaults to
+`/vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3/slurm_logs/`; filenames
+contain the Slurm job ID, so the two submissions do not overwrite each other.
 
 For `train` mode, `PI3_TRAIN_GPUS` can be `1`, `2`, `3`, or `4`. The helper
 scales the default CPU, RAM, and local tmp requests as `8 CPUs`, `100G RAM`, and
@@ -334,8 +398,8 @@ PI3_TRAIN_GPUS=2 PI3_TRAIN_MEM=240G PI3_TRAIN_TMP=80G \
   scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 ```
 
-The per-GPU memory profile is unchanged. A 2xA40 run still allows up to 32 views
-per sample per GPU and uses `train.max_img_per_gpu: 32` for packed smaller-view
+The per-GPU memory profile is unchanged. A 2xA40 run still allows up to 28 views
+per sample per GPU and uses `train.max_img_per_gpu: 28` for packed smaller-view
 batches. The effective number of views per optimizer step is about half of the
 4xA40 run unless you increase gradient accumulation.
 
@@ -352,7 +416,7 @@ Recommended sequence:
 1. Install/update the conda environment on the login node.
 2. Run package tests on the login node.
 3. Run the short A40 CUDA/BF16 preflight on one GPU.
-4. Run the one-step 32-view training smoke on one A40.
+4. Run the short max-view and packed-min training smoke on one A40.
 5. Submit the 4xA40 production job.
 
 The production data config keeps `lmgeo.filter_preprocessed_query_depth: true`,

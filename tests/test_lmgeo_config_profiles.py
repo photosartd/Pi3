@@ -43,11 +43,11 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
             "lmgeo_trainpbr45_real_and_new_val",
         )
 
-        self.assertEqual(list(cfg.train.image_num_range), [6, 32])
-        self.assertEqual(cfg.train.max_img_per_gpu, 32)
+        self.assertEqual(list(cfg.train.image_num_range), [6, 28])
+        self.assertEqual(cfg.train.max_img_per_gpu, 28)
         self.assertEqual(OmegaConf.to_container(cfg.train.resolution), [[560, 420]])
         self.assertFalse(cfg.train.random_reslution)
-        self.assertEqual(list(cfg.lmgeo.num_reference_range), [5, 31])
+        self.assertEqual(list(cfg.lmgeo.num_reference_range), [5, 27])
         self.assertEqual(list(cfg.lmgeo.num_query_range), [1, 25])
         self.assertEqual(cfg.primary_val, "real_test")
         self.assertEqual(cfg.val_datasets.real_test.runtime.max_img_per_gpu, 128)
@@ -77,9 +77,9 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
             ]
 
         self.assertEqual(valid_splits(6), [(5, 1)])
-        self.assertEqual(valid_splits(32)[0], (7, 25))
-        self.assertEqual(valid_splits(32)[-1], (31, 1))
-        self.assertEqual(len(valid_splits(32)), 25)
+        self.assertEqual(valid_splits(28)[0], (5, 23))
+        self.assertEqual(valid_splits(28)[-1], (27, 1))
+        self.assertEqual(len(valid_splits(28)), 23)
 
     def test_a40_correspondence_profile_is_a_hardware_preserving_delta(self):
         cfg = compose_job(
@@ -87,10 +87,10 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
             "lmgeo_trainpbr45_real_and_new_val",
         )
 
-        self.assertEqual(list(cfg.train.image_num_range), [6, 32])
-        self.assertEqual(cfg.train.max_img_per_gpu, 32)
+        self.assertEqual(list(cfg.train.image_num_range), [6, 28])
+        self.assertEqual(cfg.train.max_img_per_gpu, 28)
         self.assertEqual(OmegaConf.to_container(cfg.train.resolution), [[560, 420]])
-        self.assertEqual(list(cfg.lmgeo.num_reference_range), [5, 31])
+        self.assertEqual(list(cfg.lmgeo.num_reference_range), [5, 27])
         self.assertEqual(list(cfg.lmgeo.num_query_range), [1, 25])
         self.assertEqual(list(cfg.model.dino_output_layers), [17])
         self.assertEqual(cfg.loss.train_loss.correspondence_weight, 0.3)

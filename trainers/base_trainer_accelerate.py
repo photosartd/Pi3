@@ -550,6 +550,32 @@ class BaseTrainer:
             with self.accelerator.accumulate(self.model):
                 # Perform the forward using the accerlate
                 batch = move_to_device(batch, device=self.accelerator.device)
+                batch_shape_stats = {}
+                if batch and "img" in batch[0]:
+                    img = batch[0]["img"]
+                    if torch.is_tensor(img) and img.ndim >= 4:
+                        samples_per_rank = int(img.shape[0])
+                        views_per_sample = len(batch)
+                        batch_shape_stats = {
+                            "samples_per_rank": samples_per_rank,
+                            "views_per_sample": views_per_sample,
+                            "images_per_rank": samples_per_rank * views_per_sample,
+                            "height": int(img.shape[-2]),
+                            "width": int(img.shape[-1]),
+                        }
+                if batch_shape_stats and self.accelerator.is_main_process:
+                    self.log_info(
+                        "Train batch shape: epoch={} iter={} samples/rank={} "
+                        "views/sample={} images/rank={} resolution={}x{}".format(
+                            epoch,
+                            it,
+                            batch_shape_stats["samples_per_rank"],
+                            batch_shape_stats["views_per_sample"],
+                            batch_shape_stats["images_per_rank"],
+                            batch_shape_stats["height"],
+                            batch_shape_stats["width"],
+                        )
+                    )
                 with self.accelerator.autocast():
                     forward_output = self.forward_batch(batch, mode='train')
                 next_step = start_steps + 1
@@ -629,6 +655,7 @@ class BaseTrainer:
                 if train_visuals:
                     self.log_all(train_visuals, start_steps, prefix='train_visuals')
                     self.log_info(f"Logged randomized train visuals: {self.visual_manager.last_render_info}")
+                metric_logger.update(**batch_shape_stats)
                 metric_logger.update(**batch_output)
 
                 min_lr = 10.0

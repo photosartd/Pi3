@@ -1,12 +1,13 @@
 # @package _global_
 
-# Fixed 560x420 LMGeo fine-tuning profile sized for one 46 GB A40 per rank.
+# Fixed 560x420 LMGeo fine-tuning profile sized for one 44.4 GiB A40 per rank.
 #
-# This is the high-utilization profile:
-# - Dynamic total views from 6 to 32.
-# - Dataset split constraints allow 5-31 reference renders and 1-25 queries.
-# - Six views has the unique split 5 refs + 1 query; 32 views can reach
-#   31 refs + 1 query, while retaining the existing 7 refs + 25 queries case.
+# This is the conservative A40 profile:
+# - Dynamic total views from 6 to 28.
+# - Dataset split constraints allow 5-27 reference renders and 1-25 queries.
+# - Six views has the unique split 5 refs + 1 query.
+# - The old 32-view cases are no longer sampled because real A40 jobs OOMed
+#   near the allocator limit.
 # - Smaller sampled view counts pack multiple sequences per GPU through the
 #   existing DynamicBatchSampler: floor(max_img_per_gpu / sampled_views).
 #
@@ -14,17 +15,22 @@
 # divisible by Pi3/DINOv2's patch size 14. With the existing crop/resize path it
 # retains substantially more of the source frame than a square target.
 #
-# Constrained probe on the local RTX PRO 6000 with only ~40 GB free:
+# Previous constrained probe on the local RTX PRO 6000 with only ~40 GB free:
 # - 32-view training: 36,262 MiB allocated / 36,634 MiB reserved.
 # - Packed 5 x 6-view training: 34,281 MiB allocated / 34,716 MiB reserved.
 # - 31 refs + 1 query: 36,262 MiB allocated / 36,634 MiB reserved.
 # - The pre-Ref16 production metrics at validation budget 128 had combined
 #   peak reserve 38,246 MiB after the 32-view training step.
+#
+# Real CITEc A40 jobs then OOMed after a few training steps with 39.07 GiB
+# allocated and 4.68 GiB reserved-but-unallocated, leaving only 183 MiB free on
+# a 44.42 GiB GPU. The production default is therefore reduced to 28 views and
+# a 28-image packing budget until an on-cluster 28-view + packed-6 smoke passes.
 
 trainer: trainers.pi3_trainer.Pi3Trainer
 
 lmgeo_profile:
-  num_reference_range: [5, 31]
+  num_reference_range: [5, 27]
   num_query_range: [1, 25]
   filter_preprocessed_query_depth: true
   allow_repeat: true
@@ -33,8 +39,8 @@ lmgeo_profile:
 train:
   # Total views per sample. The LMGeo dataset then chooses a valid split inside
   # lmgeo.num_reference_range and lmgeo.num_query_range.
-  image_num_range: [6, 32]
-  max_img_per_gpu: 32
+  image_num_range: [6, 28]
+  max_img_per_gpu: 28
 
   # One fixed 4:3 resolution for both LMGeo training and validation. The code
   # spelling of random_reslution is historical.

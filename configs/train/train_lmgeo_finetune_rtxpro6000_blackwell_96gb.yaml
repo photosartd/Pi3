@@ -1,8 +1,8 @@
 # @package _global_
 
 # RTX PRO 6000 Blackwell 96 GB profile. It inherits the single fixed 560x420
-# LMGeo resolution and 6-32-view/5-31-reference sampling policy from the A40
-# profile; packing budgets remain independent.
+# LMGeo resolution from the A40 profile, then restores the larger 6-32-view /
+# 5-31-reference sampling policy that the A40 can no longer safely use.
 defaults:
   - train_lmgeo_finetune_518_a40_dynamic
   - _self_
@@ -13,7 +13,11 @@ defaults:
 # They have not been re-maximized at 560x420 because only ~40 GB was free during
 # the current probe. See docs/lmgeo_hardware_profiles.md.
 train:
+  image_num_range: [6, 32]
   max_img_per_gpu: 56
+
+lmgeo_profile:
+  num_reference_range: [5, 31]
 
 test:
   max_img_per_gpu: 384

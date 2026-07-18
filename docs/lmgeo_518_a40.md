@@ -40,36 +40,37 @@ There is no generated resolution pool for LMGeo A40 or Blackwell runs.
 
 ## Views And Packing
 
-Training samples 6-32 views per sequence, with 5-31 references and 1-25
+Training samples 6-28 views per sequence, with 5-27 references and 1-25
 queries. The constraints are applied jointly: a sampled total gets only splits
 that satisfy all three ranges. Consequently, the 6-view minimum is always 5
-references plus 1 query. At 32 views, the valid splits range from 7 references
-+ 25 queries through 31 references + 1 query. This covers the main validation
-shape (5 references + 1 query) during training.
+references plus 1 query. At 28 views, the largest query-heavy split is
+5 references + 23 queries, and the largest reference-heavy split is
+27 references + 1 query. This covers the main validation shape
+(5 references + 1 query) during training.
 
-`train.max_img_per_gpu: 32` is a packing budget, not a hard per-sequence view
+`train.max_img_per_gpu: 28` is a packing budget, not a hard per-sequence view
 limit. The sample batch size is:
 
 ```text
 max(1, floor(max_img_per_gpu / sampled_total_views))
 ```
 
-Thus a 32-view iteration contains one sequence, while a 6-view iteration packs
-5 sequences, or 30 images, on each GPU.
+Thus a 28-view iteration contains one sequence, while a 6-view iteration packs
+4 sequences, or 24 images, on each GPU.
 
-The total count is sampled uniformly from the 27 integers in 6-32. Conditional
+The total count is sampled uniformly from the 23 integers in 6-28. Conditional
 on that total, the reference count is sampled uniformly from its valid splits.
 At the two relevant edges:
 
-- `5 refs + 1 query` occurs whenever total views is 6: about 1/27 of training
-  iterations. Because that iteration packs five sequences, a 500-step epoch
-  contains about 18.5 such batches, or 92.6 such sequences, in expectation.
-- `31 refs + 1 query` is one of 25 valid splits at total views 32: about 1/675
-  of iterations, or 0.74 occurrences per 500-step epoch in expectation.
+- `5 refs + 1 query` occurs whenever total views is 6: about 1/23 of training
+  iterations. Because that iteration packs four sequences, a 500-step epoch
+  contains about 21.7 such batches, or 87.0 such sequences, in expectation.
+- `27 refs + 1 query` is one of 21 valid splits at total views 28: about 1/483
+  of iterations, or 1.04 occurrences per 500-step epoch in expectation.
 
-The query maximum remains 25 so a single LMGeo source window never needs more
-than its configured query candidates. `allow_repeat` still governs individual
-samples whose object/scene pools are smaller than the requested count.
+The nominal query range remains 1-25, but with the 28-view A40 cap and five
+minimum references, the largest actually sampled query count is 23. Use a
+larger GPU profile if a 7+25, 32-view sequence is required.
 
 Validation budgets are fixed to 128 for K=1, K=5, K=10, and the new
 16-reference/1-query ablation. Their actual per-rank batches contain:
@@ -91,9 +92,9 @@ keyframes. `primary_val` remains `real_test`, so checkpoint selection behavior
 does not change.
 
 The training sampler can produce the exact 16+1 shape, but it is uncommon:
-total views 17 is sampled with probability 1/27, and 16+1 is one of 12 valid
-splits at that total. Its per-iteration probability is therefore 1/324, or
-about 1.54 occurrences per 500-step epoch in expectation.
+total views 17 is sampled with probability 1/23, and 16+1 is one of 12 valid
+splits at that total. Its per-iteration probability is therefore 1/276, or
+about 1.81 occurrences per 500-step epoch in expectation.
 
 Interpret this comparison carefully: object-pose evaluation estimates its
 reference-only Sim(3) alignment from every reference view. A better `ref16`
@@ -125,9 +126,11 @@ Current minimum-view packing:
 | ---: | --- | --- | ---: | ---: |
 | 32 | 5 x 6 views | 5 + 1 | 34,281 MiB | 34,716 MiB |
 
-Both current sampling boundaries completed a training step and a small 5+1
-inference batch under the 38 GiB allocator cap. Changing the 32-view role split
-from 7+25 to 31+1 did not change measured peak tensor memory.
+These older 32-view/5x6 boundaries completed a training step and a small 5+1
+inference batch under the 38 GiB allocator cap. That result explains why the
+32-view A40 setting looked plausible locally, but it is no longer an accepted
+production limit. Changing the 32-view role split from 7+25 to 31+1 did not
+change measured peak tensor memory.
 
 The earlier 3-view packing probes below are retained as historical allocator
 measurements; 3-view sequences are no longer sampled by the named A40 or
@@ -163,6 +166,23 @@ The combined reserve is dominated by allocator state retained from the
 preceding 32-view backward pass. Budget 128 is the largest validation setting
 tested under the current 40 GB availability and retains about 2.6 GiB below a
 40 GiB process-memory target before ordinary CUDA-context variation.
+
+## A40 OOM Correction
+
+On the real CITEc A40 nodes, the old 32-view profile OOMed during training
+after only a few steps:
+
+```text
+39.07 GiB allocated by PyTorch
+4.68 GiB reserved but unallocated
+44.23 GiB process memory on a 44.42 GiB GPU
+```
+
+The local 38 GiB allocator smoke underestimated production memory because it
+tested selected edge shapes on a different GPU and did not run enough random
+production samples to expose allocator drift/fragmentation on A40. The current
+A40 default therefore uses 28 views and a 28-image packing budget. The Slurm
+script also defaults to `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
 
 ## Commands
 

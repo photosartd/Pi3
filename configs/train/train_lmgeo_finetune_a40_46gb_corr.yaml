@@ -3,8 +3,8 @@
 # A40 560x420 correspondence-loss variant. All hardware, data-sampling,
 # validation, metric, and visualization settings come from the named A40
 # baseline; this file changes only the DINO feature output and loss settings.
-# A constrained 32-view training smoke used 36,417 MiB allocated / 36,784 MiB
-# reserved under a 38 GiB allocator cap.
+# The old 32-view A40 budget OOMed on real CITEc A40 nodes; this variant now
+# inherits the conservative 28-view A40 cap from the baseline.
 defaults:
   - train_lmgeo_finetune_a40_46gb
   - _self_

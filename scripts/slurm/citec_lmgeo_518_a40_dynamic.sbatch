@@ -21,6 +21,7 @@ SHARED_CKPT="${PI3_SHARED_CKPT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/check
 FILTER_PREPROCESSED_QUERY_DEPTH="${PI3_FILTER_PREPROCESSED_QUERY_DEPTH:-false}"
 TRAIN_CONFIG="${PI3_TRAIN_CONFIG:-train_lmgeo_finetune_a40_46gb}"
 DATA_CONFIG="lmgeo_trainpbr45_real_and_new_val"
+SMOKE_ITERS="${PI3_SMOKE_ITERS:-5}"
 
 cd "$REPO_DIR"
 
@@ -50,6 +51,7 @@ export TOKENIZERS_PARALLELISM=false
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 export MASTER_PORT="${MASTER_PORT:-$((29500 + SLURM_JOB_ID % 1000))}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 if [[ ! -d "$DATA_ROOT" ]]; then
   echo "ERROR: DATA_ROOT does not exist: $DATA_ROOT" >&2
@@ -85,9 +87,12 @@ echo "Conda env: $CONDA_ENV at $CONDA_ROOT"
 echo "Train config: $TRAIN_CONFIG"
 echo "Data config: $DATA_CONFIG"
 echo "filter_preprocessed_query_depth=$FILTER_PREPROCESSED_QUERY_DEPTH"
+echo "smoke_iters=$SMOKE_ITERS"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 echo "SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-unset}"
 echo "SLURM_JOB_TMP=${SLURM_JOB_TMP:-unset}"
+echo "PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-unset}"
+echo "PI3_CUDA_MEMORY_LIMIT_GIB=${PI3_CUDA_MEMORY_LIMIT_GIB:-unset}"
 nvidia-smi
 
 python - <<'PY'
@@ -143,17 +148,47 @@ COMMON_OVERRIDES=(
 )
 
 if [[ "$RUN_MODE" == "smoke" ]]; then
-  echo "Running one-step worst-case 32-view 560x420 smoke."
+  echo "Running ${SMOKE_ITERS}-step max-view 28-view 560x420 smoke."
   accelerate launch --config_file configs/accelerate/ddp.yaml \
     --num_processes "$NUM_GPUS" --num_machines 1 \
     scripts/train_pi3.py \
     "${COMMON_OVERRIDES[@]}" \
-    'train.image_num_range=[32,32]' \
-    train.max_img_per_gpu=32 \
-    'lmgeo_profile.num_reference_range=[7,7]' \
-    'lmgeo_profile.num_query_range=[25,25]' \
+    'train.image_num_range=[28,28]' \
+    train.max_img_per_gpu=28 \
+    'lmgeo_profile.num_reference_range=[5,5]' \
+    'lmgeo_profile.num_query_range=[23,23]' \
     train.num_epoch=1 \
-    train.iters_per_epoch=1 \
+    train.iters_per_epoch="$SMOKE_ITERS" \
+    val_datasets.real_test.runtime.iters_per_test=1 \
+    val_datasets.real_test.runtime.max_img_per_gpu=6 \
+    val_datasets.real_test_ref16.runtime.iters_per_test=1 \
+    val_datasets.real_test_ref16.runtime.max_img_per_gpu=17 \
+    val_datasets.pbr_new_val.runtime.iters_per_test=1 \
+    val_datasets.pbr_new_val.runtime.max_img_per_gpu=6 \
+    val_datasets.pbr_new_val_ref16.runtime.iters_per_test=1 \
+    val_datasets.pbr_new_val_ref16.runtime.max_img_per_gpu=17 \
+    val_datasets.pbr_new_val_k5_subset.runtime.iters_per_test=1 \
+    val_datasets.pbr_new_val_k5_subset.runtime.max_img_per_gpu=10 \
+    val_datasets.pbr_new_val_k10_subset.runtime.iters_per_test=1 \
+    val_datasets.pbr_new_val_k10_subset.runtime.max_img_per_gpu=15 \
+    metrics.enabled=false \
+    visuals.enabled=false \
+    log.use_tensorboard=false \
+    log.save_best=false \
+    log.save_checkpoints=false \
+    extras.print_config=false
+
+  echo "Running ${SMOKE_ITERS}-step packed-min 4 x 6-view 560x420 smoke."
+  accelerate launch --config_file configs/accelerate/ddp.yaml \
+    --num_processes "$NUM_GPUS" --num_machines 1 \
+    scripts/train_pi3.py \
+    "${COMMON_OVERRIDES[@]}" \
+    'train.image_num_range=[6,6]' \
+    train.max_img_per_gpu=28 \
+    'lmgeo_profile.num_reference_range=[5,5]' \
+    'lmgeo_profile.num_query_range=[1,1]' \
+    train.num_epoch=1 \
+    train.iters_per_epoch="$SMOKE_ITERS" \
     val_datasets.real_test.runtime.iters_per_test=1 \
     val_datasets.real_test.runtime.max_img_per_gpu=6 \
     val_datasets.real_test_ref16.runtime.iters_per_test=1 \
