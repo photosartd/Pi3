@@ -2,7 +2,9 @@
 
 # Canonical LM-O train_pbr/new_val/real-test dataset definition.
 #
-# References/keyframes always come from train/<object_id> render views.
+# Training references/keyframes come from train/<object_id> render views by
+# default. Use lmgeo_trainpbr45_real_and_new_val_context_refs to mix in masked
+# same-object train_pbr frames from scenes other than the query scene.
 # Training queries come from train_pbr, which now excludes scenes 45-49.
 # The selected LMGeo train profile owns resolution, view sampling, and all
 # max_img_per_gpu values. Keeping those values out of this file makes the same
@@ -37,6 +39,7 @@ lmgeo:
     filter_preprocessed_query_depth: ${lmgeo_profile.filter_preprocessed_query_depth}
     min_preprocessed_query_depth_pixels: 1
     allow_repeat: ${lmgeo_profile.allow_repeat}
+    context_reference_fraction: 0.0
     symmetric_ids: [10, 11]
 
 _lmgeo_sequence_train_base: &lmgeo_sequence_train_base
@@ -64,6 +67,7 @@ _lmgeo_sequence_train_base: &lmgeo_sequence_train_base
     filter_preprocessed_query_depth: ${lmgeo.filter_preprocessed_query_depth}
     min_preprocessed_query_depth_pixels: ${lmgeo.min_preprocessed_query_depth_pixels}
     allow_repeat: ${lmgeo.allow_repeat}
+    context_reference_fraction: ${lmgeo.context_reference_fraction}
     aug_crop: false
     aug_focal: false
     z_far: 0

@@ -232,6 +232,8 @@ class BaseTrainer:
         loaders = {}
         runtime_cfgs = {}
         for name, entry in val_cfgs.items():
+            if entry is None or not bool(entry.get("enabled", True)):
+                continue
             self.log_info(f"Making validation dataloader: {name}")
             runtime_cfg = entry.get("runtime", self.cfg.test)
             loaders[str(name)] = create_dataloader(

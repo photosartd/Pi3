@@ -246,10 +246,11 @@ filter:     lmgeo.filter_preprocessed_query_depth=false
 mail:       dmitrii.trofimov@uni-bielefeld.de, BEGIN,END,FAIL
 ```
 
-The job selects `train=train_lmgeo_finetune_a40_46gb` by default and always uses
-the canonical `data=lmgeo_trainpbr45_real_and_new_val`. Set `PI3_TRAIN_CONFIG`
-to select another A40 train profile. The submit script keeps its historical
-filename so existing commands continue to work.
+The job selects `train=train_lmgeo_finetune_a40_46gb` and the canonical
+`data=lmgeo_trainpbr45_real_and_new_val` by default. Set `PI3_TRAIN_CONFIG` to
+select another A40 train profile, or `PI3_DATA_CONFIG` to select a data profile
+such as `lmgeo_trainpbr45_real_and_new_val_context_refs`. The submit script
+keeps its historical filename so existing commands continue to work.
 The job exports `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` by default
 to reduce allocator fragmentation on A40; override it explicitly only when
 debugging allocator behavior.
@@ -278,9 +279,11 @@ PI3_WALLTIME=72:00:00 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_TRAIN_GPUS=2 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_TRAIN_GPUS=2 PI3_RUN_NAME=lmgeo_a40_46gb_2xa40 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_TRAIN_CONFIG=train_lmgeo_finetune_a40_46gb_corr PI3_RUN_NAME=lmgeo_a40_corr_lambda0p3 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
+PI3_DATA_CONFIG=lmgeo_trainpbr45_real_and_new_val_context_refs PI3_RUN_NAME=lmgeo_a40_context_refs scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_RUN_NAME=my_run scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_CKPT=/vol/coro/.../model.safetensors scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh smoke
 PI3_FILTER_PREPROCESSED_QUERY_DEPTH=true scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
+PI3_CONTEXT_REFERENCE_FRACTION=0.0 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_MAIL_TYPE=END,FAIL scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_MAIL_USER= scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh smoke
 ```
@@ -293,6 +296,7 @@ All path overrides accepted by the job are:
 | `PI3_CONDA_ROOT` | Conda installation directory |
 | `PI3_CONDA_ENV` | Conda environment name |
 | `PI3_TRAIN_CONFIG` | Train YAML name without `.yaml`; defaults to the A40 baseline |
+| `PI3_DATA_CONFIG` | Data YAML name without `.yaml`; defaults to canonical render-keyframe LMGeo |
 | `PI3_DATA_ROOT` | LM-O dataset root |
 | `PI3_CKPT` | Exact Pi3 base `model.safetensors`; highest checkpoint precedence |
 | `PI3_SHARED_CKPT` | Alternative automatic shared-checkpoint location |
@@ -354,9 +358,21 @@ PI3_CKPT=/vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/model.s
 
 Both commands can be submitted one after the other; `sbatch` returns after
 queueing each job. `PI3_TRAIN_CONFIG` is the YAML filename from
-`configs/train/` without `.yaml` and is validated on the compute node. The data
-profile remains the canonical `lmgeo_trainpbr45_real_and_new_val` for both
-runs. The explicit `PI3_CKPT` above equals the current shared default and may be
+`configs/train/` without `.yaml` and is validated on the compute node. By
+default, the data profile remains the canonical render-keyframe
+`lmgeo_trainpbr45_real_and_new_val` for both runs. To run the otherwise same
+training with 50% masked same-object context-scene keyframes, add:
+
+```bash
+PI3_DATA_CONFIG=lmgeo_trainpbr45_real_and_new_val_context_refs
+```
+
+That context-reference data profile evaluates only `real_test`, `pbr_new_val`,
+and `pbr_new_val_context_refs`. The last loader uses 5 masked held-out PBR
+keyframes from subscenes different from the held-out PBR query subscene, plus
+1 held-out PBR query.
+
+The explicit `PI3_CKPT` above equals the current shared default and may be
 omitted while that default remains valid.
 
 The correspondence profile inherits the fixed 560x420 A40 profile and changes

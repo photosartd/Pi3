@@ -20,14 +20,20 @@ RUN_MODE="${PI3_RUN_MODE:-train}"
 SHARED_CKPT="${PI3_SHARED_CKPT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/model.safetensors}"
 FILTER_PREPROCESSED_QUERY_DEPTH="${PI3_FILTER_PREPROCESSED_QUERY_DEPTH:-false}"
 TRAIN_CONFIG="${PI3_TRAIN_CONFIG:-train_lmgeo_finetune_a40_46gb}"
-DATA_CONFIG="lmgeo_trainpbr45_real_and_new_val"
+DATA_CONFIG="${PI3_DATA_CONFIG:-lmgeo_trainpbr45_real_and_new_val}"
 SMOKE_ITERS="${PI3_SMOKE_ITERS:-5}"
+CONTEXT_REFERENCE_FRACTION="${PI3_CONTEXT_REFERENCE_FRACTION:-}"
 
 cd "$REPO_DIR"
 
 if ! [[ "$TRAIN_CONFIG" =~ ^[A-Za-z0-9_]+$ ]] || [[ ! -f "configs/train/$TRAIN_CONFIG.yaml" ]]; then
   echo "ERROR: invalid or missing train config: $TRAIN_CONFIG" >&2
   echo "Expected configs/train/$TRAIN_CONFIG.yaml inside $REPO_DIR." >&2
+  exit 2
+fi
+if ! [[ "$DATA_CONFIG" =~ ^[A-Za-z0-9_]+$ ]] || [[ ! -f "configs/data/$DATA_CONFIG.yaml" ]]; then
+  echo "ERROR: invalid or missing data config: $DATA_CONFIG" >&2
+  echo "Expected configs/data/$DATA_CONFIG.yaml inside $REPO_DIR." >&2
   exit 2
 fi
 
@@ -87,6 +93,7 @@ echo "Conda env: $CONDA_ENV at $CONDA_ROOT"
 echo "Train config: $TRAIN_CONFIG"
 echo "Data config: $DATA_CONFIG"
 echo "filter_preprocessed_query_depth=$FILTER_PREPROCESSED_QUERY_DEPTH"
+echo "context_reference_fraction_override=${CONTEXT_REFERENCE_FRACTION:-config}"
 echo "smoke_iters=$SMOKE_ITERS"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 echo "SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-unset}"
@@ -146,6 +153,9 @@ COMMON_OVERRIDES=(
   "log.ckpt_dir=$RUN_DIR/ckpts"
   "hydra.run.dir=$RUN_DIR"
 )
+if [[ -n "$CONTEXT_REFERENCE_FRACTION" ]]; then
+  COMMON_OVERRIDES+=("lmgeo.context_reference_fraction=$CONTEXT_REFERENCE_FRACTION")
+fi
 
 if [[ "$RUN_MODE" == "smoke" ]]; then
   echo "Running ${SMOKE_ITERS}-step max-view 28-view 560x420 smoke."

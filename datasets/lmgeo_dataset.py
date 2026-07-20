@@ -369,17 +369,26 @@ class LMGeoDataset(BaseDataset):
         object_id = int(record.get("object_id", getattr(self, "object_id", -1)))
         query_scene_id = int(record.get("query_scene_id", getattr(self, "query_scene_id", -1)))
         query_subscene_id = int(record.get("query_subscene_id", getattr(self, "query_subscene_id", -1)))
+        source_scene_id = int(record.get("query_scene_id", -1))
+        source_subscene_id = int(record.get("query_subscene_id", -1))
+        reference_source = str(
+            record.get(
+                "reference_source",
+                "query" if view_role == "query" else "render",
+            )
+        )
 
         with Image.open(record["rgb_path"]) as image:
             rgb = np.array(image.convert("RGB"))
         depthmap = self._read_depth_meters(record["depth_path"], record["depth_scale"])
         mask = self._read_mask(record["mask_path"], depthmap.shape)
+        force_object_masking = bool(view_role == "reference" and reference_source == "context_scene")
 
-        if self.depth_masking:
+        if self.depth_masking or force_object_masking:
             depthmap = depthmap.copy()
             depthmap[~mask] = 0.0
 
-        if rgb_masking:
+        if rgb_masking or force_object_masking:
             rgb = rgb.copy()
             rgb[~mask] = 0
 
@@ -403,6 +412,10 @@ class LMGeoDataset(BaseDataset):
             "view_role": str(view_role),
             "is_reference": bool(view_role == "reference"),
             "is_query": bool(view_role == "query"),
+            "reference_source": reference_source,
+            "is_context_reference": bool(view_role == "reference" and reference_source == "context_scene"),
+            "source_scene_id": np.int64(source_scene_id),
+            "source_subscene_id": np.int64(source_subscene_id),
             "scene_id": np.int64(query_scene_id if view_role == "query" else object_id),
             "im_id": np.int64(record["im_id"]),
             "gt_id": np.int64(record["gt_id"]),
@@ -499,6 +512,9 @@ class LMGeoSequenceDataset(LMGeoDataset):
         sort_query_windows_by_visibility=True,
         filter_target_center_crop_visibility=True,
         filter_target_preprocessed_depth=True,
+        context_reference_fraction=0.0,
+        context_reference_eval=False,
+        context_reference_exclude="scene",
         **kwargs,
     ):
         BaseDataset.__init__(self, **kwargs)
@@ -532,6 +548,13 @@ class LMGeoSequenceDataset(LMGeoDataset):
         self.sort_query_windows_by_visibility = bool(sort_query_windows_by_visibility)
         self.filter_target_center_crop_visibility = bool(filter_target_center_crop_visibility)
         self.filter_target_preprocessed_depth = bool(filter_target_preprocessed_depth)
+        self.context_reference_eval = bool(context_reference_eval)
+        self.context_reference_exclude = str(context_reference_exclude)
+        self.context_reference_fraction = (
+            float(context_reference_fraction)
+            if self.mode == "train" or self.context_reference_eval
+            else 0.0
+        )
 
         if self.mask_type not in {"mask", "mask_visib"}:
             raise ValueError("mask_type must be 'mask' or 'mask_visib'")
@@ -541,6 +564,14 @@ class LMGeoSequenceDataset(LMGeoDataset):
             raise ValueError("reference_selection must be 'uniform', 'first', or 'random'")
         if self.query_selection not in {"uniform", "first", "random"}:
             raise ValueError("query_selection must be 'uniform', 'first', or 'random'")
+        if not 0.0 <= self.context_reference_fraction <= 1.0:
+            raise ValueError(
+                f"context_reference_fraction must be in [0, 1], got {context_reference_fraction}"
+            )
+        if self.context_reference_exclude not in {"scene", "subscene"}:
+            raise ValueError(
+                f"context_reference_exclude must be 'scene' or 'subscene', got {context_reference_exclude}"
+            )
 
         self.object_ids = self._resolve_object_ids(object_ids)
         self.query_windows = self._normalize_query_windows(query_windows)
@@ -555,11 +586,17 @@ class LMGeoSequenceDataset(LMGeoDataset):
             self.samples = self._build_samples(query_scene_ids, query_subscene_ids)
         if not self.samples:
             raise ValueError("LMGeoSequenceDataset did not find any valid samples")
+        self.context_reference_records_by_object_scene = (
+            self._build_context_reference_index()
+            if self.context_reference_fraction > 0.0
+            else {}
+        )
 
         print(
             f"[{self.dataset_label}] objects={self.object_ids}, samples={len(self.samples)}, "
             f"query_source={self._resolved_query_source()}, "
-            f"num_reference_range={self.num_reference_range}, num_query_range={self.num_query_range}"
+            f"num_reference_range={self.num_reference_range}, num_query_range={self.num_query_range}, "
+            f"context_reference_fraction={self.context_reference_fraction}"
         )
 
     def __len__(self):
@@ -906,6 +943,90 @@ class LMGeoSequenceDataset(LMGeoDataset):
         )
         return samples
 
+    def _build_context_reference_index(self):
+        records_by_object_scene = {}
+        seen = set()
+        for sample in self.samples:
+            for record in sample.get("query_records", []):
+                object_id = int(record["object_id"])
+                scene_id = int(record.get("query_scene_id", -1))
+                key = (
+                    object_id,
+                    scene_id,
+                    int(record["im_id"]),
+                    int(record["gt_id"]),
+                    str(record["scene_dir"]),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                context_record = dict(record)
+                context_record["reference_source"] = "context_scene"
+                records_by_object_scene.setdefault(object_id, {}).setdefault(scene_id, []).append(context_record)
+
+        total = sum(
+            len(records)
+            for records_by_scene in records_by_object_scene.values()
+            for records in records_by_scene.values()
+        )
+        if total == 0:
+            print(
+                f"[{self.dataset_label}] context_reference_fraction={self.context_reference_fraction} "
+                "but no context reference records were found; falling back to render references."
+            )
+        else:
+            print(f"[{self.dataset_label}] context reference records={total}")
+        return records_by_object_scene
+
+    def _context_reference_candidates(self, object_id, query_scene_id, query_subscene_id):
+        records_by_scene = self.context_reference_records_by_object_scene.get(int(object_id), {})
+        candidates = []
+        for scene_id, records in records_by_scene.items():
+            if self.context_reference_exclude == "scene" and int(scene_id) == int(query_scene_id):
+                continue
+            if self.context_reference_exclude == "subscene":
+                candidates.extend(
+                    record
+                    for record in records
+                    if not (
+                        int(record.get("query_scene_id", -1)) == int(query_scene_id)
+                        and int(record.get("query_subscene_id", -1)) == int(query_subscene_id)
+                    )
+                )
+            else:
+                candidates.extend(records)
+        return candidates
+
+    def _annotate_reference_records(self, records, reference_source):
+        annotated = []
+        for record in records:
+            item = dict(record)
+            item["reference_source"] = reference_source
+            annotated.append(item)
+        return annotated
+
+    def _select_reference_records_for_sample(self, object_id, query_scene_id, query_subscene_id, count, rng):
+        render_pool = self.reference_records_by_object[object_id]
+        if self.context_reference_fraction <= 0.0:
+            records = self._select_records(render_pool, count, self.reference_selection, rng=rng)
+            return self._annotate_reference_records(records, "render")
+
+        context_pool = self._context_reference_candidates(object_id, query_scene_id, query_subscene_id)
+        context_count = int(rng.binomial(int(count), self.context_reference_fraction))
+        if not context_pool:
+            context_count = 0
+        elif not self.allow_repeat:
+            context_count = min(context_count, len(context_pool))
+
+        render_count = int(count) - context_count
+        render_records = self._select_records(render_pool, render_count, self.reference_selection, rng=rng)
+        context_records = self._select_records(context_pool, context_count, self.reference_selection, rng=rng)
+
+        records = self._annotate_reference_records(render_records, "render")
+        records.extend(self._annotate_reference_records(context_records, "context_scene"))
+        rng.shuffle(records)
+        return records
+
     def _sample_counts(self, total_frames, reference_records, query_records, rng):
         total_frames = int(total_frames)
         ref_min, ref_max = self.num_reference_range
@@ -936,11 +1057,12 @@ class LMGeoSequenceDataset(LMGeoDataset):
         ref_count, query_count = self._sample_counts(self.frame_num, reference_pool, query_pool, rng)
 
         self._current_resolution = resolution
-        reference_records = self._select_records(
-            reference_pool,
+        reference_records = self._select_reference_records_for_sample(
+            object_id,
+            sample["query_scene_id"],
+            sample["query_subscene_id"],
             ref_count,
-            self.reference_selection,
-            rng=rng,
+            rng,
         )
         query_records = self._select_records(
             query_pool,
@@ -955,7 +1077,18 @@ class LMGeoSequenceDataset(LMGeoDataset):
             "query_subscene_id": sample["query_subscene_id"],
             "reference_count": ref_count,
             "query_count": query_count,
-            "reference": [(r["split"], r["im_id"], r["gt_id"]) for r in reference_records],
+            "render_reference_count": sum(1 for r in reference_records if r.get("reference_source") == "render"),
+            "context_reference_count": sum(1 for r in reference_records if r.get("reference_source") == "context_scene"),
+            "reference": [
+                (
+                    r.get("reference_source", "render"),
+                    r["split"],
+                    int(r.get("query_scene_id", -1)),
+                    r["im_id"],
+                    r["gt_id"],
+                )
+                for r in reference_records
+            ],
             "query": [(r["split"], r["im_id"], r["gt_id"]) for r in query_records],
         }
 

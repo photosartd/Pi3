@@ -17,6 +17,14 @@ def compose_job(train: str, data: str):
         )
 
 
+def active_val_loader_names(cfg):
+    return [
+        str(name)
+        for name, entry in cfg.val_datasets.items()
+        if entry is not None and bool(entry.get("enabled", True))
+    ]
+
+
 class LMGeoHardwareProfileConfigTest(unittest.TestCase):
     def test_named_4090_profile_uses_canonical_data(self):
         cfg = compose_job(
@@ -49,6 +57,8 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         self.assertFalse(cfg.train.random_reslution)
         self.assertEqual(list(cfg.lmgeo.num_reference_range), [5, 27])
         self.assertEqual(list(cfg.lmgeo.num_query_range), [1, 25])
+        self.assertEqual(cfg.lmgeo.context_reference_fraction, 0.0)
+        self.assertEqual(cfg.train_dataset.LMGeoSequence.context_reference_fraction, 0.0)
         self.assertEqual(cfg.primary_val, "real_test")
         self.assertEqual(cfg.val_datasets.real_test.runtime.max_img_per_gpu, 128)
         self.assertEqual(cfg.val_datasets.pbr_new_val_k5_subset.runtime.max_img_per_gpu, 128)
@@ -56,6 +66,7 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         self.assertEqual(cfg.val_datasets.real_test_ref16.runtime.max_img_per_gpu, 128)
         self.assertEqual(cfg.val_datasets.pbr_new_val_ref16.runtime.max_img_per_gpu, 128)
         for name in ("real_test_ref16", "pbr_new_val_ref16"):
+            self.assertNotIn("context_reference_fraction", cfg.val_datasets[name].dataset)
             self.assertEqual(list(cfg.val_datasets[name].dataset.num_reference_range), [16, 16])
             self.assertEqual(list(cfg.val_datasets[name].dataset.num_query_range), [1, 1])
             self.assertEqual(list(cfg.val_datasets[name].runtime.image_num_range), [17, 17])
@@ -80,6 +91,27 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         self.assertEqual(valid_splits(28)[0], (5, 23))
         self.assertEqual(valid_splits(28)[-1], (27, 1))
         self.assertEqual(len(valid_splits(28)), 23)
+
+    def test_context_reference_data_profile_enables_train_and_pbr_context_val(self):
+        cfg = compose_job(
+            "train_lmgeo_finetune_a40_46gb",
+            "lmgeo_trainpbr45_real_and_new_val_context_refs",
+        )
+
+        self.assertEqual(cfg.lmgeo.context_reference_fraction, 0.5)
+        self.assertEqual(cfg.train_dataset.LMGeoSequence.context_reference_fraction, 0.5)
+        self.assertNotIn("context_reference_fraction", cfg.val_datasets.real_test.dataset)
+        self.assertNotIn("context_reference_fraction", cfg.val_datasets.pbr_new_val.dataset)
+        self.assertEqual(
+            active_val_loader_names(cfg),
+            ["real_test", "pbr_new_val", "pbr_new_val_context_refs"],
+        )
+        context_dataset = cfg.val_datasets.pbr_new_val_context_refs.dataset
+        self.assertEqual(list(context_dataset.num_reference_range), [5, 5])
+        self.assertEqual(list(context_dataset.num_query_range), [1, 1])
+        self.assertEqual(context_dataset.context_reference_fraction, 1.0)
+        self.assertTrue(context_dataset.context_reference_eval)
+        self.assertEqual(context_dataset.context_reference_exclude, "subscene")
 
     def test_a40_correspondence_profile_is_a_hardware_preserving_delta(self):
         cfg = compose_job(
