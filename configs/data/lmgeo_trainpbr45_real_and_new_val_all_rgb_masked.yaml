@@ -1,0 +1,12 @@
+# @package _global_
+
+# Same canonical LMGeo train/validation splits, but every RGB input view is
+# object-masked. This is the occlusion/background ablation: references are
+# already masked in the base profile, and this profile masks query RGB too.
+defaults:
+  - lmgeo_trainpbr45_real_and_new_val
+  - _self_
+
+lmgeo:
+    reference_rgb_masking: true
+    query_rgb_masking: true

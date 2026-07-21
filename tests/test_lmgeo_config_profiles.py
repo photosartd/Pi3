@@ -65,11 +65,56 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         self.assertEqual(cfg.val_datasets.pbr_new_val_k10_subset.runtime.max_img_per_gpu, 128)
         self.assertEqual(cfg.val_datasets.real_test_ref16.runtime.max_img_per_gpu, 128)
         self.assertEqual(cfg.val_datasets.pbr_new_val_ref16.runtime.max_img_per_gpu, 128)
+        self.assertTrue(cfg.visuals.enabled)
+        self.assertFalse(cfg.visuals.train_enabled)
+        self.assertTrue(cfg.visuals.val_enabled)
+        self.assertIn("input_reference_frames", cfg.visuals["items"])
+        self.assertIn("depth_panel", cfg.visuals["items"])
         for name in ("real_test_ref16", "pbr_new_val_ref16"):
             self.assertNotIn("context_reference_fraction", cfg.val_datasets[name].dataset)
             self.assertEqual(list(cfg.val_datasets[name].dataset.num_reference_range), [16, 16])
             self.assertEqual(list(cfg.val_datasets[name].dataset.num_query_range), [1, 1])
             self.assertEqual(list(cfg.val_datasets[name].runtime.image_num_range), [17, 17])
+
+    def test_all_rgb_masked_profile_masks_references_and_queries(self):
+        cfg = compose_job(
+            "train_lmgeo_finetune_a40_46gb",
+            "lmgeo_trainpbr45_real_and_new_val_all_rgb_masked",
+        )
+
+        self.assertTrue(cfg.lmgeo.reference_rgb_masking)
+        self.assertTrue(cfg.lmgeo.query_rgb_masking)
+        self.assertTrue(cfg.lmgeo.depth_masking)
+        self.assertTrue(cfg.train_dataset.LMGeoSequence.reference_rgb_masking)
+        self.assertTrue(cfg.train_dataset.LMGeoSequence.query_rgb_masking)
+        self.assertTrue(cfg.val_datasets.real_test.dataset.query_rgb_masking)
+        self.assertTrue(cfg.val_datasets.pbr_new_val.dataset.query_rgb_masking)
+
+    def test_all_rgb_masked_context_refs_profile_combines_both_ablations(self):
+        cfg = compose_job(
+            "train_lmgeo_finetune_a40_46gb",
+            "lmgeo_trainpbr45_real_and_new_val_all_rgb_masked_context_refs",
+        )
+
+        self.assertTrue(cfg.lmgeo.reference_rgb_masking)
+        self.assertTrue(cfg.lmgeo.query_rgb_masking)
+        self.assertTrue(cfg.lmgeo.depth_masking)
+        self.assertEqual(cfg.lmgeo.context_reference_fraction, 0.5)
+        self.assertEqual(cfg.train_dataset.LMGeoSequence.context_reference_fraction, 0.5)
+        self.assertTrue(cfg.train_dataset.LMGeoSequence.reference_rgb_masking)
+        self.assertTrue(cfg.train_dataset.LMGeoSequence.query_rgb_masking)
+        self.assertEqual(
+            active_val_loader_names(cfg),
+            ["real_test", "pbr_new_val", "pbr_new_val_context_refs"],
+        )
+        self.assertTrue(cfg.val_datasets.real_test.dataset.query_rgb_masking)
+        self.assertTrue(cfg.val_datasets.pbr_new_val.dataset.query_rgb_masking)
+        context_dataset = cfg.val_datasets.pbr_new_val_context_refs.dataset
+        self.assertTrue(context_dataset.reference_rgb_masking)
+        self.assertTrue(context_dataset.query_rgb_masking)
+        self.assertEqual(context_dataset.context_reference_fraction, 1.0)
+        self.assertTrue(context_dataset.context_reference_eval)
+        self.assertEqual(context_dataset.context_reference_exclude, "subscene")
 
     def test_named_a40_profile_covers_required_split_extremes(self):
         cfg = compose_job(
@@ -161,7 +206,8 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         self.assertEqual(cfg.loss.test_loss.correspondence_weight, 0.3)
         self.assertTrue(cfg.loss.train_loss.correspondence_use_dino_weights)
         self.assertTrue(cfg.loss.test_loss.correspondence_use_dino_weights)
-        self.assertFalse(cfg.visuals.enabled)
+        self.assertTrue(cfg.visuals.enabled)
+        self.assertTrue(cfg.visuals.val_enabled)
 
     def test_historical_a40_data_name_is_an_alias(self):
         canonical = compose_job(

@@ -144,10 +144,41 @@ metrics:
       device: cuda
 
 visuals:
-  # Keep visual logging off for the A40 memory target. The metric validation
-  # loaders are the first thing to turn on; visuals can be enabled afterwards.
-  enabled: false
+  # Validation visuals are logged once per active validation loader. Training
+  # visuals stay off to avoid touching the A40 training memory budget.
+  enabled: true
   train_enabled: false
-  val_enabled: false
+  val_enabled: true
   train_every_n_steps: 10
   val_every_n_epochs: 1
+  items:
+    input_reference_frames:
+      _target_: pi3.visualizations.input_frames.InputFramesVisualizer
+      role: reference
+      max_views: 6
+      thumbnail_size: 128
+      columns: 6
+    input_query_frames:
+      _target_: pi3.visualizations.input_frames.InputFramesVisualizer
+      role: query
+      max_views: 6
+      thumbnail_size: 128
+      columns: 6
+    query_pose_overlay:
+      _target_: pi3.visualizations.pose_overlay.QueryPoseOverlayVisualizer
+      data_root: ${lmgeo.data_root}
+      models_folder: ${lmgeo.models_folder}
+      solve_scale: true
+      max_model_points: 20000
+      max_query_views: 3
+    depth_panel:
+      _target_: pi3.visualizations.depth_panel.DepthPanelVisualizer
+      include_reference: true
+      include_query: true
+    reference_reconstruction:
+      _target_: pi3.visualizations.reconstruction.ReferenceReconstructionVisualizer
+      solve_scale: true
+      voxel_size: null
+      max_pred_points: 12000
+      max_gt_points: 12000
+      size: 320

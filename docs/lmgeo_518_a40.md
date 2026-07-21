@@ -219,6 +219,46 @@ Failure-mode diagnostics for size, occlusion, and object class remain
 documented in [failure_modes.md](failure_modes.md). The A40 profile writes raw
 ADD/ADD-S prediction rows to `${log.output_dir}/predictions.parquet`.
 
+## All-Masked RGB Ablation
+
+To test how much query error comes from background/clutter versus visible object
+geometry, use the canonical splits with all RGB inputs object-masked:
+
+```bash
+data=lmgeo_trainpbr45_real_and_new_val_all_rgb_masked
+```
+
+This profile inherits `lmgeo_trainpbr45_real_and_new_val` and only changes
+`lmgeo.query_rgb_masking: true`. References were already RGB-masked in the
+canonical config, so both keyframes and queries become masked. Ordinary LMGeo
+depth supervision remains object-masked through `lmgeo.depth_masking: true`.
+
+To combine the same all-RGB-masked input ablation with the 50% same-object
+context-scene keyframe sampling, use:
+
+```bash
+data=lmgeo_trainpbr45_real_and_new_val_all_rgb_masked_context_refs
+```
+
+This inherits `lmgeo_trainpbr45_real_and_new_val_context_refs`, keeps
+`lmgeo.context_reference_fraction: 0.5`, and masks query RGB as well.
+
+## TensorBoard Visuals
+
+The A40 profile logs validation images by default once per active validation
+loader and keeps training visuals disabled:
+
+```yaml
+visuals:
+  enabled: true
+  train_enabled: false
+  val_enabled: true
+```
+
+Expected TensorBoard image groups include input reference/query grids, query pose
+overlays, depth panels, and reference reconstruction. Event files live below
+`${log.output_dir}/${name}/events.out.tfevents.*`.
+
 ## Recenter + Zoom K1 Diagnostic
 
 The object-size diagnostic uses:

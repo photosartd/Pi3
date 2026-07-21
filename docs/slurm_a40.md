@@ -372,6 +372,27 @@ and `pbr_new_val_context_refs`. The last loader uses 5 masked held-out PBR
 keyframes from subscenes different from the held-out PBR query subscene, plus
 1 held-out PBR query.
 
+To run the background/clutter ablation where both reference and query RGB inputs
+are object-masked, keep the same train profile and switch only the data profile:
+
+```bash
+PI3_DATA_CONFIG=lmgeo_trainpbr45_real_and_new_val_all_rgb_masked
+```
+
+The canonical profile already masks reference RGB and all ordinary LMGeo depth
+supervision; this variant additionally masks query RGB.
+
+To combine all-RGB masking with the 50% context-reference keyframe sampling,
+use:
+
+```bash
+PI3_DATA_CONFIG=lmgeo_trainpbr45_real_and_new_val_all_rgb_masked_context_refs
+```
+
+This keeps the context-reference validation set from
+`lmgeo_trainpbr45_real_and_new_val_context_refs` and masks query RGB in all
+active train/validation loaders.
+
 To run the GT-bbox recenter+zoom diagnostic, use the dedicated K=1 train/data
 pair. It keeps A40-sized 560x420 inputs, samples 2-16 unchanged keyframes, and
 always uses exactly one recentered/zoomed query:
@@ -415,6 +436,13 @@ tensorboard \
   --logdir /vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3 \
   --port 6006
 ```
+
+The A40 train profile logs validation images by default. In TensorBoard, open
+the `Images` tab and look under tags such as
+`val_visuals/real_test/input_reference_frames/grid`,
+`val_visuals/real_test/input_query_frames/grid`, `depth_panel`, and
+`query_pose_overlay`. The smoke mode still disables TensorBoard and visuals
+explicitly because it is a queue/preflight check, not a logging check.
 
 Slurm stdout/stderr defaults to
 `/vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3/slurm_logs/`; filenames

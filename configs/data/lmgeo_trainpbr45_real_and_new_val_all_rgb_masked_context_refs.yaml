@@ -1,0 +1,12 @@
+# @package _global_
+
+# Canonical LMGeo context-reference profile, but every RGB input view is
+# object-masked. Training keyframes are sampled 50/50 from clean renders and
+# masked same-object scene frames, and queries are RGB-masked as well.
+defaults:
+  - lmgeo_trainpbr45_real_and_new_val_context_refs
+  - _self_
+
+lmgeo:
+    reference_rgb_masking: true
+    query_rgb_masking: true
