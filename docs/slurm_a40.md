@@ -372,6 +372,21 @@ and `pbr_new_val_context_refs`. The last loader uses 5 masked held-out PBR
 keyframes from subscenes different from the held-out PBR query subscene, plus
 1 held-out PBR query.
 
+To run the GT-bbox recenter+zoom diagnostic, use the dedicated K=1 train/data
+pair. It keeps A40-sized 560x420 inputs, samples 2-16 unchanged keyframes, and
+always uses exactly one recentered/zoomed query:
+
+```bash
+PI3_TRAIN_GPUS=4 \
+PI3_TRAIN_CONFIG=train_lmgeo_finetune_a40_46gb_recenter_zoom_k1 \
+PI3_DATA_CONFIG=lmgeo_trainpbr45_real_and_new_val_recenter_zoom_k1 \
+PI3_RUN_NAME=lmgeo_a40_recenter_zoom_k1 \
+  scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
+```
+
+The recenter+zoom profile evaluates only K=1 loaders: `real_test`,
+`real_test_ref16`, `pbr_new_val`, and `pbr_new_val_ref16`.
+
 The explicit `PI3_CKPT` above equals the current shared default and may be
 omitted while that default remains valid.
 

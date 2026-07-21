@@ -219,6 +219,42 @@ Failure-mode diagnostics for size, occlusion, and object class remain
 documented in [failure_modes.md](failure_modes.md). The A40 profile writes raw
 ADD/ADD-S prediction rows to `${log.output_dir}/predictions.parquet`.
 
+## Recenter + Zoom K1 Diagnostic
+
+The object-size diagnostic uses:
+
+```bash
+train=train_lmgeo_finetune_a40_46gb_recenter_zoom_k1
+data=lmgeo_trainpbr45_real_and_new_val_recenter_zoom_k1
+```
+
+This profile keeps the fixed 560x420 resolution and A40 packing budget, but
+changes the view-count contract to `2..16` reference/keyframes plus exactly
+`1` query. The query frame is transformed by
+`datasets.lmgeo_recenter.LMGeoRecenterZoomSequenceDataset`:
+
+- references/keyframes are unchanged;
+- the query uses GT `bbox_obj` as an oracle center;
+- a pure-rotation homography recenters the bbox ray onto the optical axis;
+- the query is then zoomed with a centered virtual focal increase;
+- `T_C_O`, `camera_pose`, intrinsics, depth, and valid supervision masks are
+  updated consistently.
+- query depth supervision uses the transformed scene depth, not only the object
+  mask. Only missing source depth or pixels introduced by the homography/crop
+  are invalidated. Reference/keyframe depth remains object-masked.
+
+The active validation loaders are all K=1: `real_test`, `real_test_ref16`,
+`pbr_new_val`, and `pbr_new_val_ref16`. Multi-query PBR K5/K10 validation is
+disabled because the query recenter+zoom transform creates an object-centric
+virtual crop and no longer preserves the original multi-query scene-context
+assumption.
+
+An example input grid is written to:
+
+```text
+examples/lmgeo_recenter_zoom_k1_input_example.png
+```
+
 ## Blackwell Status
 
 The RTX PRO 6000 profile inherits fixed 560x420 training and evaluation. Its

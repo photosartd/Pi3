@@ -158,65 +158,119 @@ if [[ -n "$CONTEXT_REFERENCE_FRACTION" ]]; then
 fi
 
 if [[ "$RUN_MODE" == "smoke" ]]; then
-  echo "Running ${SMOKE_ITERS}-step max-view 28-view 560x420 smoke."
-  accelerate launch --config_file configs/accelerate/ddp.yaml \
-    --num_processes "$NUM_GPUS" --num_machines 1 \
-    scripts/train_pi3.py \
-    "${COMMON_OVERRIDES[@]}" \
-    'train.image_num_range=[28,28]' \
-    train.max_img_per_gpu=28 \
-    'lmgeo_profile.num_reference_range=[5,5]' \
-    'lmgeo_profile.num_query_range=[23,23]' \
-    train.num_epoch=1 \
-    train.iters_per_epoch="$SMOKE_ITERS" \
-    val_datasets.real_test.runtime.iters_per_test=1 \
-    val_datasets.real_test.runtime.max_img_per_gpu=6 \
-    val_datasets.real_test_ref16.runtime.iters_per_test=1 \
-    val_datasets.real_test_ref16.runtime.max_img_per_gpu=17 \
-    val_datasets.pbr_new_val.runtime.iters_per_test=1 \
-    val_datasets.pbr_new_val.runtime.max_img_per_gpu=6 \
-    val_datasets.pbr_new_val_ref16.runtime.iters_per_test=1 \
-    val_datasets.pbr_new_val_ref16.runtime.max_img_per_gpu=17 \
-    val_datasets.pbr_new_val_k5_subset.runtime.iters_per_test=1 \
-    val_datasets.pbr_new_val_k5_subset.runtime.max_img_per_gpu=10 \
-    val_datasets.pbr_new_val_k10_subset.runtime.iters_per_test=1 \
-    val_datasets.pbr_new_val_k10_subset.runtime.max_img_per_gpu=15 \
-    metrics.enabled=false \
-    visuals.enabled=false \
-    log.use_tensorboard=false \
-    log.save_best=false \
-    log.save_checkpoints=false \
-    extras.print_config=false
+  if [[ "$TRAIN_CONFIG" == *"recenter_zoom_k1"* || "$DATA_CONFIG" == *"recenter_zoom_k1"* ]]; then
+    echo "Running ${SMOKE_ITERS}-step max-view 17-view K=1 recenter+zoom smoke."
+    accelerate launch --config_file configs/accelerate/ddp.yaml \
+      --num_processes "$NUM_GPUS" --num_machines 1 \
+      scripts/train_pi3.py \
+      "${COMMON_OVERRIDES[@]}" \
+      'train.image_num_range=[17,17]' \
+      train.max_img_per_gpu=28 \
+      'lmgeo_profile.num_reference_range=[16,16]' \
+      'lmgeo_profile.num_query_range=[1,1]' \
+      train.num_epoch=1 \
+      train.iters_per_epoch="$SMOKE_ITERS" \
+      val_datasets.real_test.runtime.iters_per_test=1 \
+      val_datasets.real_test.runtime.max_img_per_gpu=6 \
+      val_datasets.real_test_ref16.runtime.iters_per_test=1 \
+      val_datasets.real_test_ref16.runtime.max_img_per_gpu=17 \
+      val_datasets.pbr_new_val.runtime.iters_per_test=1 \
+      val_datasets.pbr_new_val.runtime.max_img_per_gpu=6 \
+      val_datasets.pbr_new_val_ref16.runtime.iters_per_test=1 \
+      val_datasets.pbr_new_val_ref16.runtime.max_img_per_gpu=17 \
+      metrics.enabled=false \
+      visuals.enabled=false \
+      log.use_tensorboard=false \
+      log.save_best=false \
+      log.save_checkpoints=false \
+      extras.print_config=false
 
-  echo "Running ${SMOKE_ITERS}-step packed-min 4 x 6-view 560x420 smoke."
-  accelerate launch --config_file configs/accelerate/ddp.yaml \
-    --num_processes "$NUM_GPUS" --num_machines 1 \
-    scripts/train_pi3.py \
-    "${COMMON_OVERRIDES[@]}" \
-    'train.image_num_range=[6,6]' \
-    train.max_img_per_gpu=28 \
-    'lmgeo_profile.num_reference_range=[5,5]' \
-    'lmgeo_profile.num_query_range=[1,1]' \
-    train.num_epoch=1 \
-    train.iters_per_epoch="$SMOKE_ITERS" \
-    val_datasets.real_test.runtime.iters_per_test=1 \
-    val_datasets.real_test.runtime.max_img_per_gpu=6 \
-    val_datasets.real_test_ref16.runtime.iters_per_test=1 \
-    val_datasets.real_test_ref16.runtime.max_img_per_gpu=17 \
-    val_datasets.pbr_new_val.runtime.iters_per_test=1 \
-    val_datasets.pbr_new_val.runtime.max_img_per_gpu=6 \
-    val_datasets.pbr_new_val_ref16.runtime.iters_per_test=1 \
-    val_datasets.pbr_new_val_ref16.runtime.max_img_per_gpu=17 \
-    val_datasets.pbr_new_val_k5_subset.runtime.iters_per_test=1 \
-    val_datasets.pbr_new_val_k5_subset.runtime.max_img_per_gpu=10 \
-    val_datasets.pbr_new_val_k10_subset.runtime.iters_per_test=1 \
-    val_datasets.pbr_new_val_k10_subset.runtime.max_img_per_gpu=15 \
-    metrics.enabled=false \
-    visuals.enabled=false \
-    log.use_tensorboard=false \
-    log.save_best=false \
-    log.save_checkpoints=false \
-    extras.print_config=false
+    echo "Running ${SMOKE_ITERS}-step packed-min 9 x 3-view K=1 recenter+zoom smoke."
+    accelerate launch --config_file configs/accelerate/ddp.yaml \
+      --num_processes "$NUM_GPUS" --num_machines 1 \
+      scripts/train_pi3.py \
+      "${COMMON_OVERRIDES[@]}" \
+      'train.image_num_range=[3,3]' \
+      train.max_img_per_gpu=28 \
+      'lmgeo_profile.num_reference_range=[2,2]' \
+      'lmgeo_profile.num_query_range=[1,1]' \
+      train.num_epoch=1 \
+      train.iters_per_epoch="$SMOKE_ITERS" \
+      val_datasets.real_test.runtime.iters_per_test=1 \
+      val_datasets.real_test.runtime.max_img_per_gpu=6 \
+      val_datasets.real_test_ref16.runtime.iters_per_test=1 \
+      val_datasets.real_test_ref16.runtime.max_img_per_gpu=17 \
+      val_datasets.pbr_new_val.runtime.iters_per_test=1 \
+      val_datasets.pbr_new_val.runtime.max_img_per_gpu=6 \
+      val_datasets.pbr_new_val_ref16.runtime.iters_per_test=1 \
+      val_datasets.pbr_new_val_ref16.runtime.max_img_per_gpu=17 \
+      metrics.enabled=false \
+      visuals.enabled=false \
+      log.use_tensorboard=false \
+      log.save_best=false \
+      log.save_checkpoints=false \
+      extras.print_config=false
+  else
+    echo "Running ${SMOKE_ITERS}-step max-view 28-view 560x420 smoke."
+    accelerate launch --config_file configs/accelerate/ddp.yaml \
+      --num_processes "$NUM_GPUS" --num_machines 1 \
+      scripts/train_pi3.py \
+      "${COMMON_OVERRIDES[@]}" \
+      'train.image_num_range=[28,28]' \
+      train.max_img_per_gpu=28 \
+      'lmgeo_profile.num_reference_range=[5,5]' \
+      'lmgeo_profile.num_query_range=[23,23]' \
+      train.num_epoch=1 \
+      train.iters_per_epoch="$SMOKE_ITERS" \
+      val_datasets.real_test.runtime.iters_per_test=1 \
+      val_datasets.real_test.runtime.max_img_per_gpu=6 \
+      val_datasets.real_test_ref16.runtime.iters_per_test=1 \
+      val_datasets.real_test_ref16.runtime.max_img_per_gpu=17 \
+      val_datasets.pbr_new_val.runtime.iters_per_test=1 \
+      val_datasets.pbr_new_val.runtime.max_img_per_gpu=6 \
+      val_datasets.pbr_new_val_ref16.runtime.iters_per_test=1 \
+      val_datasets.pbr_new_val_ref16.runtime.max_img_per_gpu=17 \
+      val_datasets.pbr_new_val_k5_subset.runtime.iters_per_test=1 \
+      val_datasets.pbr_new_val_k5_subset.runtime.max_img_per_gpu=10 \
+      val_datasets.pbr_new_val_k10_subset.runtime.iters_per_test=1 \
+      val_datasets.pbr_new_val_k10_subset.runtime.max_img_per_gpu=15 \
+      metrics.enabled=false \
+      visuals.enabled=false \
+      log.use_tensorboard=false \
+      log.save_best=false \
+      log.save_checkpoints=false \
+      extras.print_config=false
+
+    echo "Running ${SMOKE_ITERS}-step packed-min 4 x 6-view 560x420 smoke."
+    accelerate launch --config_file configs/accelerate/ddp.yaml \
+      --num_processes "$NUM_GPUS" --num_machines 1 \
+      scripts/train_pi3.py \
+      "${COMMON_OVERRIDES[@]}" \
+      'train.image_num_range=[6,6]' \
+      train.max_img_per_gpu=28 \
+      'lmgeo_profile.num_reference_range=[5,5]' \
+      'lmgeo_profile.num_query_range=[1,1]' \
+      train.num_epoch=1 \
+      train.iters_per_epoch="$SMOKE_ITERS" \
+      val_datasets.real_test.runtime.iters_per_test=1 \
+      val_datasets.real_test.runtime.max_img_per_gpu=6 \
+      val_datasets.real_test_ref16.runtime.iters_per_test=1 \
+      val_datasets.real_test_ref16.runtime.max_img_per_gpu=17 \
+      val_datasets.pbr_new_val.runtime.iters_per_test=1 \
+      val_datasets.pbr_new_val.runtime.max_img_per_gpu=6 \
+      val_datasets.pbr_new_val_ref16.runtime.iters_per_test=1 \
+      val_datasets.pbr_new_val_ref16.runtime.max_img_per_gpu=17 \
+      val_datasets.pbr_new_val_k5_subset.runtime.iters_per_test=1 \
+      val_datasets.pbr_new_val_k5_subset.runtime.max_img_per_gpu=10 \
+      val_datasets.pbr_new_val_k10_subset.runtime.iters_per_test=1 \
+      val_datasets.pbr_new_val_k10_subset.runtime.max_img_per_gpu=15 \
+      metrics.enabled=false \
+      visuals.enabled=false \
+      log.use_tensorboard=false \
+      log.save_best=false \
+      log.save_checkpoints=false \
+      extras.print_config=false
+  fi
 elif [[ "$RUN_MODE" == "train" ]]; then
   echo "Running production fixed 560x420 training on $NUM_GPUS GPU(s)."
   accelerate launch --config_file configs/accelerate/ddp.yaml \

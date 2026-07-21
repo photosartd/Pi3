@@ -1,0 +1,58 @@
+# @package _global_
+
+# Canonical LMGeo train_pbr/new_val/real-test data, but queries are transformed
+# by a GT-bbox oracle pure-rotation recenter plus centered zoom before the
+# normal 560x420 Pi3 preprocessing. References/keyframes are unchanged.
+# All active train and validation samples use exactly one query frame.
+defaults:
+  - lmgeo_trainpbr45_real_and_new_val
+  - _self_
+
+lmgeo_query_recenter:
+  bbox_key: bbox_obj
+  zoom_target_fraction: 0.55
+  zoom_max: 4.0
+  zoom_min: 1.0
+  depth_interpolation: nearest
+  min_valid_depth_pixels: ${lmgeo.min_preprocessed_query_depth_pixels}
+
+_recenter_sequence: &recenter_sequence
+  _target_: datasets.lmgeo_recenter.LMGeoRecenterZoomSequenceDataset
+  query_recenter_bbox_key: ${lmgeo_query_recenter.bbox_key}
+  query_recenter_zoom_target_fraction: ${lmgeo_query_recenter.zoom_target_fraction}
+  query_recenter_zoom_max: ${lmgeo_query_recenter.zoom_max}
+  query_recenter_zoom_min: ${lmgeo_query_recenter.zoom_min}
+  query_recenter_depth_interpolation: ${lmgeo_query_recenter.depth_interpolation}
+  query_recenter_min_valid_depth_pixels: ${lmgeo_query_recenter.min_valid_depth_pixels}
+  filter_target_center_crop_visibility: false
+
+train_dataset:
+  LMGeoSequence:
+    <<: *recenter_sequence
+
+test_dataset:
+  <<: *recenter_sequence
+
+val_datasets:
+  real_test:
+    dataset:
+      <<: *recenter_sequence
+  real_test_ref16:
+    dataset:
+      <<: *recenter_sequence
+    runtime:
+      image_num_range: [17, 17]
+      max_img_per_gpu: ${test.max_img_per_gpu_ref16}
+  pbr_new_val:
+    dataset:
+      <<: *recenter_sequence
+  pbr_new_val_ref16:
+    dataset:
+      <<: *recenter_sequence
+    runtime:
+      image_num_range: [17, 17]
+      max_img_per_gpu: ${test.max_img_per_gpu_ref16}
+  pbr_new_val_k5_subset:
+    enabled: false
+  pbr_new_val_k10_subset:
+    enabled: false

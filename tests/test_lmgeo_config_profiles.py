@@ -113,6 +113,38 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         self.assertTrue(context_dataset.context_reference_eval)
         self.assertEqual(context_dataset.context_reference_exclude, "subscene")
 
+    def test_recenter_zoom_k1_profile_uses_query_only_transform_and_k1_loaders(self):
+        cfg = compose_job(
+            "train_lmgeo_finetune_a40_46gb_recenter_zoom_k1",
+            "lmgeo_trainpbr45_real_and_new_val_recenter_zoom_k1",
+        )
+
+        self.assertEqual(list(cfg.train.image_num_range), [3, 17])
+        self.assertEqual(cfg.train.max_img_per_gpu, 28)
+        self.assertEqual(OmegaConf.to_container(cfg.train.resolution), [[560, 420]])
+        self.assertEqual(list(cfg.lmgeo.num_reference_range), [2, 16])
+        self.assertEqual(list(cfg.lmgeo.num_query_range), [1, 1])
+        self.assertEqual(
+            cfg.train_dataset.LMGeoSequence._target_,
+            "datasets.lmgeo_recenter.LMGeoRecenterZoomSequenceDataset",
+        )
+        self.assertFalse(cfg.train_dataset.LMGeoSequence.filter_target_center_crop_visibility)
+        self.assertEqual(cfg.train_dataset.LMGeoSequence.query_recenter_bbox_key, "bbox_obj")
+        self.assertEqual(cfg.train_dataset.LMGeoSequence.query_recenter_depth_interpolation, "nearest")
+        self.assertEqual(
+            active_val_loader_names(cfg),
+            ["real_test", "real_test_ref16", "pbr_new_val", "pbr_new_val_ref16"],
+        )
+        for name in active_val_loader_names(cfg):
+            dataset = cfg.val_datasets[name].dataset
+            runtime = cfg.val_datasets[name].runtime
+            self.assertEqual(dataset._target_, "datasets.lmgeo_recenter.LMGeoRecenterZoomSequenceDataset")
+            self.assertEqual(list(dataset.num_query_range), [1, 1])
+            self.assertFalse(dataset.filter_target_center_crop_visibility)
+            self.assertEqual(list(runtime.image_num_range)[-1] - list(dataset.num_reference_range)[-1], 1)
+        self.assertFalse(cfg.val_datasets.pbr_new_val_k5_subset.enabled)
+        self.assertFalse(cfg.val_datasets.pbr_new_val_k10_subset.enabled)
+
     def test_a40_correspondence_profile_is_a_hardware_preserving_delta(self):
         cfg = compose_job(
             "train_lmgeo_finetune_a40_46gb_corr",

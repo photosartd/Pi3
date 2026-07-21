@@ -365,6 +365,24 @@ class LMGeoDataset(BaseDataset):
             raise FileNotFoundError(f"Cannot read depth: {path}")
         return depth.astype(np.float32) * float(depth_scale) * self.depth_unit_scale
 
+    def _maybe_transform_raw_view(
+        self,
+        *,
+        record,
+        rgb,
+        depthmap,
+        mask,
+        intrinsics,
+        T_C_O,
+        camera_pose,
+        view_role,
+    ):
+        return rgb, depthmap, mask, intrinsics, T_C_O, camera_pose, {}
+
+    def _should_depth_mask_view(self, *, view_role, reference_source):
+        force_object_masking = bool(view_role == "reference" and reference_source == "context_scene")
+        return bool(self.depth_masking or force_object_masking)
+
     def _load_view(self, record, rgb_masking, view_role):
         object_id = int(record.get("object_id", getattr(self, "object_id", -1)))
         query_scene_id = int(record.get("query_scene_id", getattr(self, "query_scene_id", -1)))
@@ -384,7 +402,7 @@ class LMGeoDataset(BaseDataset):
         mask = self._read_mask(record["mask_path"], depthmap.shape)
         force_object_masking = bool(view_role == "reference" and reference_source == "context_scene")
 
-        if self.depth_masking or force_object_masking:
+        if self._should_depth_mask_view(view_role=view_role, reference_source=reference_source):
             depthmap = depthmap.copy()
             depthmap[~mask] = 0.0
 
@@ -392,20 +410,42 @@ class LMGeoDataset(BaseDataset):
             rgb = rgb.copy()
             rgb[~mask] = 0
 
+        intrinsics = record["K"].copy()
+        T_C_O = record["T_C_O"].astype(np.float32)
+        camera_pose = record["camera_pose"].astype(np.float32)
+        (
+            rgb,
+            depthmap,
+            mask,
+            intrinsics,
+            T_C_O,
+            camera_pose,
+            transform_meta,
+        ) = self._maybe_transform_raw_view(
+            record=record,
+            rgb=rgb,
+            depthmap=depthmap,
+            mask=mask,
+            intrinsics=intrinsics,
+            T_C_O=T_C_O,
+            camera_pose=camera_pose,
+            view_role=view_role,
+        )
+
         rgb, depthmap, intrinsics = self._crop_resize_if_necessary(
             rgb,
             depthmap,
-            record["K"].copy(),
+            intrinsics,
             self._current_resolution,
             rng=self._rng,
             info=record["rgb_path"],
         )
 
-        return {
+        view = {
             "img": rgb,
             "depthmap": depthmap.astype(np.float32),
-            "camera_pose": record["camera_pose"].astype(np.float32),
-            "T_C_O": record["T_C_O"].astype(np.float32),
+            "camera_pose": camera_pose.astype(np.float32),
+            "T_C_O": T_C_O.astype(np.float32),
             "camera_intrinsics": intrinsics.astype(np.float32),
             "dataset": self.dataset_label,
             "object_id": np.int64(object_id),
@@ -429,6 +469,8 @@ class LMGeoDataset(BaseDataset):
             ),
             "instance": f"{record['split']}_{record['im_id']:06d}_{record['gt_id']:06d}",
         }
+        view.update(transform_meta)
+        return view
 
     def _get_views(self, index, resolution, rng):
         expected = self.num_reference + self.num_query

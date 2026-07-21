@@ -1,0 +1,18 @@
+# @package _global_
+
+# A40-sized recenter+zoom diagnostic profile.
+#
+# The query branch is always K=1 because query homography+zoom creates an
+# object-centric virtual crop and should not be mixed with multi-query scene
+# context assumptions. References/keyframes vary from N=2 to N=16.
+defaults:
+  - train_lmgeo_finetune_a40_46gb
+  - _self_
+
+lmgeo_profile:
+  num_reference_range: [2, 16]
+  num_query_range: [1, 1]
+
+train:
+  image_num_range: [3, 17]
+  max_img_per_gpu: 28
