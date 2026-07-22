@@ -115,6 +115,12 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         self.assertEqual(context_dataset.context_reference_fraction, 1.0)
         self.assertTrue(context_dataset.context_reference_eval)
         self.assertEqual(context_dataset.context_reference_exclude, "subscene")
+        for name in active_val_loader_names(cfg):
+            dataset = cfg.val_datasets[name].dataset
+            runtime = cfg.val_datasets[name].runtime
+            self.assertEqual(list(dataset.num_reference_range), [5, 5])
+            self.assertEqual(list(dataset.num_query_range), [1, 1])
+            self.assertEqual(list(runtime.image_num_range), [6, 6])
 
     def test_named_a40_profile_covers_required_split_extremes(self):
         cfg = compose_job(
@@ -257,6 +263,90 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         self.assertEqual(cfg.val_datasets.pbr_new_val_k10_subset.runtime.max_img_per_gpu, 320)
         self.assertEqual(cfg.val_datasets.real_test_ref16.runtime.max_img_per_gpu, 320)
         self.assertEqual(cfg.val_datasets.pbr_new_val_ref16.runtime.max_img_per_gpu, 320)
+
+    def test_named_blackwell_70gb_profile_preserves_masked_context_refs(self):
+        cfg = compose_job(
+            "train_lmgeo_finetune_rtxpro6000_blackwell_70gb",
+            "lmgeo_trainpbr45_real_and_new_val_all_rgb_masked_context_refs",
+        )
+
+        self.assertEqual(list(cfg.train.image_num_range), [6, 32])
+        self.assertEqual(cfg.train.max_img_per_gpu, 56)
+        self.assertEqual(OmegaConf.to_container(cfg.train.resolution), [[560, 420]])
+        self.assertEqual(list(cfg.lmgeo.num_reference_range), [5, 31])
+        self.assertEqual(list(cfg.lmgeo.num_query_range), [1, 25])
+        self.assertEqual(cfg.lmgeo.context_reference_fraction, 0.5)
+        self.assertTrue(cfg.lmgeo.reference_rgb_masking)
+        self.assertTrue(cfg.lmgeo.query_rgb_masking)
+        self.assertEqual(
+            active_val_loader_names(cfg),
+            ["real_test", "pbr_new_val", "pbr_new_val_context_refs"],
+        )
+        self.assertEqual(cfg.val_datasets.real_test.runtime.max_img_per_gpu, 96)
+        self.assertEqual(cfg.val_datasets.pbr_new_val.runtime.max_img_per_gpu, 96)
+        self.assertEqual(cfg.val_datasets.pbr_new_val_context_refs.runtime.max_img_per_gpu, 96)
+        self.assertTrue(cfg.visuals.enabled)
+        self.assertFalse(cfg.visuals.train_enabled)
+        self.assertTrue(cfg.visuals.val_enabled)
+        self.assertEqual(cfg.visuals.val_every_n_epochs, 1)
+        for name in active_val_loader_names(cfg):
+            dataset = cfg.val_datasets[name].dataset
+            runtime = cfg.val_datasets[name].runtime
+            self.assertEqual(list(dataset.num_reference_range), [5, 5])
+            self.assertEqual(list(dataset.num_query_range), [1, 1])
+            self.assertEqual(list(runtime.image_num_range), [6, 6])
+
+    def test_recenter_zoom_masked_context_refs_profile_uses_k1_masked_vals(self):
+        data_name = "lmgeo_trainpbr45_real_and_new_val_recenter_zoom_masked_context_refs_k1"
+        a40 = compose_job(
+            "train_lmgeo_finetune_a40_40gb_recenter_zoom_masked_k1",
+            data_name,
+        )
+        blackwell = compose_job(
+            "train_lmgeo_finetune_rtxpro6000_blackwell_70gb_recenter_zoom_masked_k1",
+            data_name,
+        )
+
+        self.assertEqual(list(a40.train.image_num_range), [3, 17])
+        self.assertEqual(a40.train.max_img_per_gpu, 28)
+        self.assertEqual(a40.test.max_img_per_gpu, 128)
+        self.assertEqual(list(blackwell.train.image_num_range), [3, 17])
+        self.assertEqual(blackwell.train.max_img_per_gpu, 56)
+        self.assertEqual(blackwell.test.max_img_per_gpu, 96)
+
+        for cfg in (a40, blackwell):
+            self.assertEqual(OmegaConf.to_container(cfg.train.resolution), [[560, 420]])
+            self.assertEqual(list(cfg.lmgeo.num_reference_range), [2, 16])
+            self.assertEqual(list(cfg.lmgeo.num_query_range), [1, 1])
+            self.assertEqual(cfg.lmgeo.context_reference_fraction, 0.5)
+            self.assertTrue(cfg.lmgeo.reference_rgb_masking)
+            self.assertTrue(cfg.lmgeo.query_rgb_masking)
+            self.assertEqual(
+                cfg.train_dataset.LMGeoSequence._target_,
+                "datasets.lmgeo_recenter.LMGeoRecenterZoomSequenceDataset",
+            )
+            self.assertEqual(cfg.train_dataset.LMGeoSequence.context_reference_fraction, 0.5)
+            self.assertTrue(cfg.train_dataset.LMGeoSequence.reference_rgb_masking)
+            self.assertTrue(cfg.train_dataset.LMGeoSequence.query_rgb_masking)
+            self.assertFalse(cfg.train_dataset.LMGeoSequence.filter_preprocessed_query_depth)
+            self.assertEqual(
+                active_val_loader_names(cfg),
+                ["real_test", "pbr_new_val"],
+            )
+            for name in active_val_loader_names(cfg):
+                dataset = cfg.val_datasets[name].dataset
+                runtime = cfg.val_datasets[name].runtime
+                self.assertEqual(dataset._target_, "datasets.lmgeo_recenter.LMGeoRecenterZoomSequenceDataset")
+                self.assertTrue(dataset.reference_rgb_masking)
+                self.assertTrue(dataset.query_rgb_masking)
+                if name == "real_test":
+                    self.assertFalse(dataset.filter_target_preprocessed_depth)
+                else:
+                    self.assertFalse(dataset.filter_preprocessed_query_depth)
+                self.assertFalse(dataset.filter_target_center_crop_visibility)
+                self.assertEqual(list(dataset.num_reference_range), [5, 5])
+                self.assertEqual(list(dataset.num_query_range), [1, 1])
+                self.assertEqual(list(runtime.image_num_range), [6, 6])
 
     def test_generic_pi3_profile_is_unchanged(self):
         cfg = compose_job("train_pi3_lowres", "example")

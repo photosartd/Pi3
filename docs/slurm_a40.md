@@ -389,9 +389,9 @@ use:
 PI3_DATA_CONFIG=lmgeo_trainpbr45_real_and_new_val_all_rgb_masked_context_refs
 ```
 
-This keeps the context-reference validation set from
-`lmgeo_trainpbr45_real_and_new_val_context_refs` and masks query RGB in all
-active train/validation loaders.
+This keeps context-reference sampling for training, masks query RGB in all
+active train/validation loaders, and runs the N=5, K=1 `real_test`,
+`pbr_new_val`, and `pbr_new_val_context_refs` validation loaders.
 
 To run the GT-bbox recenter+zoom diagnostic, use the dedicated K=1 train/data
 pair. It keeps A40-sized 560x420 inputs, samples 2-16 unchanged keyframes, and

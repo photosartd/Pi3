@@ -1,0 +1,35 @@
+# @package _global_
+
+# Local RTX PRO 6000 Blackwell profile intended to be run with
+# PI3_CUDA_MEMORY_LIMIT_GIB=70. It keeps the 560x420 high-resolution sampling
+# that fits under that process cap in local probes:
+# - 32-view training: 41,200 MiB allocated / 41,500 MiB reserved.
+# - Packed 9 x 6-view training: 63,321 MiB allocated / 63,822 MiB reserved.
+# Validation must stay smaller than the 96 GB profile: 384 images/rank creates
+# very large prefetched 560x420 batches and can exhaust host RAM when workers
+# are enabled.
+# The process-level cap itself is set by scripts/train_pi3.py from the
+# PI3_CUDA_MEMORY_LIMIT_GIB environment variable.
+defaults:
+  - train_lmgeo_finetune_rtxpro6000_blackwell_96gb
+  - _self_
+
+train:
+  image_num_range: [6, 32]
+  max_img_per_gpu: 56
+
+lmgeo_profile:
+  num_reference_range: [5, 31]
+
+test:
+  max_img_per_gpu: 96
+  max_img_per_gpu_k5: 96
+  max_img_per_gpu_k10: 96
+  max_img_per_gpu_ref16: 96
+  num_workers: 2
+
+visuals:
+  enabled: true
+  train_enabled: false
+  val_enabled: true
+  val_every_n_epochs: 1

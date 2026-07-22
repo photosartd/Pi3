@@ -1,0 +1,27 @@
+# @package _global_
+
+# RTX PRO 6000 Blackwell profile for the recenter+zoom masked-query K=1
+# diagnostic under PI3_CUDA_MEMORY_LIMIT_GIB=70.
+#
+# It reuses the accepted 70 GiB packing budget from the Blackwell profile, but
+# switches the view-count contract to the K=1 recenter diagnostic:
+# 2..16 references/keyframes plus exactly one query.
+defaults:
+  - train_lmgeo_finetune_rtxpro6000_blackwell_70gb
+  - _self_
+
+lmgeo_profile:
+  num_reference_range: [2, 16]
+  num_query_range: [1, 1]
+
+train:
+  image_num_range: [3, 17]
+  max_img_per_gpu: 56
+
+test:
+  # The 70 GiB profile intentionally uses 96 here to avoid the host-RAM pressure
+  # seen with larger validation prefetches while workers are enabled.
+  max_img_per_gpu: 96
+  max_img_per_gpu_ref16: 96
+  max_img_per_gpu_k5: 96
+  max_img_per_gpu_k10: 96

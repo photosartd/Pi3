@@ -1,0 +1,18 @@
+# @package _global_
+
+# A40/40 GiB constrained profile for the recenter+zoom masked-query K=1
+# diagnostic. It keeps the conservative A40 recenter packing:
+# - at most 17 total views per sequence (2..16 refs + exactly 1 query);
+# - 28-image per-rank packing budget, already below the rejected 32-view A40
+#   setting and compatible with the historical 40 GB local packing probes.
+defaults:
+  - train_lmgeo_finetune_a40_46gb_recenter_zoom_k1
+  - _self_
+
+train:
+  image_num_range: [3, 17]
+  max_img_per_gpu: 28
+
+test:
+  # Only N=5,K=1 validation loaders are active in the paired data config.
+  max_img_per_gpu: 128

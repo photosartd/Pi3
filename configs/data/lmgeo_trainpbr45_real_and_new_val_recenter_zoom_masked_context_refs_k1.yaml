@@ -1,0 +1,38 @@
+# @package _global_
+
+# Recenter+zoom K=1 diagnostic with object-masked RGB inputs and context refs.
+#
+# This intentionally combines:
+# - query-only GT-bbox homography recenter + centered zoom from
+#   lmgeo_trainpbr45_real_and_new_val_recenter_zoom_k1;
+# - all-RGB masking and 50/50 training context references from
+#   lmgeo_trainpbr45_real_and_new_val_all_rgb_masked_context_refs.
+#
+# Validation is narrowed on purpose: only render-reference real/PBR N=5,K=1
+# loaders stay active, and both use the same recentered/zoomed masked-query
+# regime. K>1 and Ref16 loaders are disabled for this diagnostic.
+defaults:
+  - lmgeo_trainpbr45_real_and_new_val_recenter_zoom_k1
+  - _self_
+
+lmgeo:
+  context_reference_fraction: 0.5
+  reference_rgb_masking: true
+  query_rgb_masking: true
+  filter_preprocessed_query_depth: false
+
+val_datasets:
+  real_test:
+    dataset:
+      filter_target_preprocessed_depth: false
+  pbr_new_val:
+    dataset:
+      filter_preprocessed_query_depth: false
+  real_test_ref16:
+    enabled: false
+  pbr_new_val_ref16:
+    enabled: false
+  pbr_new_val_k5_subset:
+    enabled: false
+  pbr_new_val_k10_subset:
+    enabled: false

@@ -241,7 +241,9 @@ data=lmgeo_trainpbr45_real_and_new_val_all_rgb_masked_context_refs
 ```
 
 This inherits `lmgeo_trainpbr45_real_and_new_val_context_refs`, keeps
-`lmgeo.context_reference_fraction: 0.5`, and masks query RGB as well.
+`lmgeo.context_reference_fraction: 0.5`, and masks query RGB as well. Its
+active validation loaders are N=5, K=1 `real_test`, `pbr_new_val`, and
+`pbr_new_val_context_refs`.
 
 ## TensorBoard Visuals
 

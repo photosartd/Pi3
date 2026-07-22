@@ -17,6 +17,7 @@ real and PBR ablations. Resolution, training view sampling, and every
 | --- | --- | --- | ---: | --- |
 | `train_lmgeo_finetune_rtx4090_24gb` | 224x224 | 6-26 | 50 | K1/K5/K10/Ref16: 96/96/96/96 |
 | `train_lmgeo_finetune_a40_46gb` | fixed 560x420 | 6-28 | 28 | K1/K5/K10/Ref16: 128/128/128/128 |
+| `train_lmgeo_finetune_rtxpro6000_blackwell_70gb` | fixed 560x420 | 6-32 | 56 | K1/K5/K10/Ref16: 384/384/320/320 |
 | `train_lmgeo_finetune_rtxpro6000_blackwell_96gb` | fixed 560x420 | 6-32 | 56 | K1/K5/K10/Ref16: 384/384/320/320 |
 
 `max_img_per_gpu` keeps its historical name and behavior. It is a sequence
@@ -66,6 +67,14 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file configs/accelerate/ddp.ya
   train=train_lmgeo_finetune_rtxpro6000_blackwell_96gb \
   data=lmgeo_trainpbr45_real_and_new_val \
   name=lmgeo_rtxpro6000_blackwell_96gb
+
+# RTX PRO 6000 Blackwell with a 70 GiB PyTorch allocator cap
+CUDA_VISIBLE_DEVICES=0 PI3_CUDA_MEMORY_LIMIT_GIB=70 accelerate launch --config_file configs/accelerate/ddp.yaml \
+  --num_processes 1 --num_machines 1 \
+  scripts/train_pi3.py \
+  train=train_lmgeo_finetune_rtxpro6000_blackwell_70gb \
+  data=lmgeo_trainpbr45_real_and_new_val \
+  name=lmgeo_rtxpro6000_blackwell_70gb
 ```
 
 Hydra overrides replace any local path without editing YAML. Override all three

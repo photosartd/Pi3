@@ -158,7 +158,8 @@ if [[ -n "$CONTEXT_REFERENCE_FRACTION" ]]; then
 fi
 
 if [[ "$RUN_MODE" == "smoke" ]]; then
-  if [[ "$TRAIN_CONFIG" == *"recenter_zoom_k1"* || "$DATA_CONFIG" == *"recenter_zoom_k1"* ]]; then
+  if { [[ "$TRAIN_CONFIG" == *"recenter_zoom"* ]] && [[ "$TRAIN_CONFIG" == *"k1"* ]]; } || \
+     { [[ "$DATA_CONFIG" == *"recenter_zoom"* ]] && [[ "$DATA_CONFIG" == *"k1"* ]]; }; then
     echo "Running ${SMOKE_ITERS}-step max-view 17-view K=1 recenter+zoom smoke."
     accelerate launch --config_file configs/accelerate/ddp.yaml \
       --num_processes "$NUM_GPUS" --num_machines 1 \
