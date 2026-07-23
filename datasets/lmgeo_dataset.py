@@ -550,19 +550,22 @@ class LMGeoDataset(BaseDataset):
             view_role=view_role,
         )
 
-        rgb, depthmap, intrinsics = self._crop_resize_if_necessary(
+        rgb, depthmap, intrinsics, object_visibility_mask = self._crop_resize_if_necessary(
             rgb,
             depthmap,
             intrinsics,
             self._current_resolution,
             rng=self._rng,
             info=record["rgb_path"],
+            far_mask=mask.astype(np.uint8),
         )
         rgb = self._apply_sample_photometric_augmentation(rgb, view_role)
+        object_visibility_mask = object_visibility_mask.astype(bool)
 
         view = {
             "img": rgb,
             "depthmap": depthmap.astype(np.float32),
+            "object_visibility_mask": object_visibility_mask,
             "camera_pose": camera_pose.astype(np.float32),
             "T_C_O": T_C_O.astype(np.float32),
             "camera_intrinsics": intrinsics.astype(np.float32),

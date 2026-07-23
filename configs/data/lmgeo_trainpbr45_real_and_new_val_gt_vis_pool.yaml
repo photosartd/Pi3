@@ -1,0 +1,12 @@
+# @package _global_
+
+# Canonical LMGeo train/val profile for oracle visibility-pooling diagnostics.
+#
+# This config intentionally keeps the RGB inputs on the baseline path. The
+# additional object_visibility_mask is produced by LMGeo itself after the same
+# crop/resize preprocessing as RGB/depth, and is used only by the camera head
+# when paired with a visibility-pooling train config.
+defaults:
+  - lmgeo_trainpbr45_real_and_new_val
+  - _self_
+

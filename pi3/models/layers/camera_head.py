@@ -29,6 +29,59 @@ class ResConvBlock(nn.Module):
         res = self.head_skip(res) + x
         return res
 
+class VisibilityGuidedTokenPool(nn.Module):
+    """Mix uniform token pooling with oracle visibility-mask pooling."""
+
+    def __init__(self, eps=1e-6):
+        super().__init__()
+        self.eps = float(eps)
+
+    def forward(self, feat, patch_h, patch_w, visibility_patch_mask=None, alpha=0.0):
+        BN, hw, _ = feat.shape
+        if hw != int(patch_h) * int(patch_w):
+            raise ValueError(f"Expected patch_h*patch_w={patch_h * patch_w}, got {hw}")
+
+        uniform_pool = feat.mean(dim=1)
+        alpha_value = float(alpha)
+        stats = {
+            "visibility_pool_alpha": feat.new_tensor(alpha_value),
+            "visibility_pool_nonempty_fraction": feat.new_tensor(0.0),
+            "visibility_pool_patch_fraction": feat.new_tensor(0.0),
+        }
+        if visibility_patch_mask is None or alpha_value <= 0.0:
+            return uniform_pool, stats
+
+        mask = visibility_patch_mask.to(device=feat.device, dtype=feat.dtype)
+        if mask.ndim == 4:
+            mask = torch.nn.functional.avg_pool2d(
+                mask,
+                kernel_size=(14, 14),
+                stride=(14, 14),
+            ).reshape(BN, hw)
+        elif mask.ndim != 2:
+            raise ValueError(
+                "visibility_patch_mask must have shape (BN, hw) or (BN, 1, H, W), "
+                f"got {tuple(mask.shape)}"
+            )
+        if tuple(mask.shape) != (BN, hw):
+            raise ValueError(f"Visibility mask shape {tuple(mask.shape)} does not match {(BN, hw)}")
+
+        mask = mask.clamp_min(0.0)
+        weight_sum = mask.sum(dim=1, keepdim=True)
+        nonempty = weight_sum.squeeze(1) > self.eps
+        weights = mask / weight_sum.clamp_min(self.eps)
+        masked_pool = (feat * weights.unsqueeze(-1)).sum(dim=1)
+        pooled = torch.where(nonempty[:, None], masked_pool, uniform_pool)
+
+        alpha_value = max(0.0, min(1.0, alpha_value))
+        mixed_pool = uniform_pool.lerp(pooled, alpha_value)
+        stats = {
+            "visibility_pool_alpha": feat.new_tensor(alpha_value),
+            "visibility_pool_nonempty_fraction": nonempty.float().mean(),
+            "visibility_pool_patch_fraction": (mask > self.eps).float().mean(),
+        }
+        return mixed_pool, stats
+
 class CameraHead(nn.Module):
     def __init__(self, dim=512):
         super().__init__()
@@ -36,6 +89,7 @@ class CameraHead(nn.Module):
         self.res_conv = nn.ModuleList([deepcopy(ResConvBlock(output_dim, output_dim)) 
                 for _ in range(2)])
         self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.visibility_pool = VisibilityGuidedTokenPool()
         self.more_mlps = nn.Sequential(
             nn.Linear(output_dim,output_dim),
             nn.ReLU(),
@@ -45,15 +99,27 @@ class CameraHead(nn.Module):
         self.fc_t = nn.Linear(output_dim, 3)
         self.fc_rot = nn.Linear(output_dim, 9)
 
-    def forward(self, feat, patch_h, patch_w):
+    def forward(
+        self,
+        feat,
+        patch_h,
+        patch_w,
+        visibility_patch_mask=None,
+        visibility_pool_alpha=0.0,
+        return_pool_stats=False,
+    ):
         BN, hw, c = feat.shape
 
         for i in range(2):
             feat = self.res_conv[i](feat)
 
-        # feat = self.avgpool(feat)
-        feat = self.avgpool(feat.permute(0, 2, 1).reshape(BN, -1, patch_h, patch_w).contiguous())              ##########
-        feat = feat.view(feat.size(0), -1)
+        feat, pool_stats = self.visibility_pool(
+            feat,
+            patch_h,
+            patch_w,
+            visibility_patch_mask=visibility_patch_mask,
+            alpha=visibility_pool_alpha,
+        )
 
         feat = self.more_mlps(feat)  # [B, D_]
         with torch.amp.autocast(device_type='cuda', enabled=False):
@@ -61,6 +127,8 @@ class CameraHead(nn.Module):
             out_r = self.fc_rot(feat.float())  # [B,9]
             pose = self.convert_pose_to_4x4(BN, out_r, out_t, feat.device)
 
+        if return_pool_stats:
+            return pose, pool_stats
         return pose
 
     def convert_pose_to_4x4(self, B, out_r, out_t, device):

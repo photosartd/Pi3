@@ -1,0 +1,18 @@
+# @package _global_
+
+# A40-sized oracle visibility-gated camera pooling experiment.
+#
+# The learning rate and optimizer remain the conservative LMGeo A40 baseline.
+# Only the camera-head pooling changes, and it is blended in gradually:
+#   pooled = (1 - alpha) * uniform_pool + alpha * gt_visibility_pool
+# alpha warms from 0 to 1 over 3000 optimizer steps.
+defaults:
+  - train_lmgeo_finetune_a40_46gb
+  - _self_
+
+model:
+  visibility_pooling: true
+  visibility_pool_alpha_max: 1.0
+  visibility_pool_warmup_steps: 3000
+  visibility_pool_start_step: 0
+

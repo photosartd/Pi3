@@ -236,6 +236,26 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         self.assertNotIn("photometric_augmentation", cfg.val_datasets.real_test.dataset)
         self.assertNotIn("photometric_augmentation", cfg.val_datasets.pbr_new_val.dataset)
 
+    def test_a40_gt_visibility_pool_profile_is_baseline_delta(self):
+        cfg = compose_job(
+            "train_lmgeo_finetune_a40_40gb_gt_vis_pool",
+            "lmgeo_trainpbr45_real_and_new_val_gt_vis_pool",
+        )
+
+        self.assertEqual(list(cfg.train.image_num_range), [6, 28])
+        self.assertEqual(cfg.train.max_img_per_gpu, 28)
+        self.assertEqual(OmegaConf.to_container(cfg.train.resolution), [[560, 420]])
+        self.assertFalse(cfg.train.random_reslution)
+        self.assertEqual(cfg.train.optimizer.lr, 5e-6)
+        self.assertEqual(cfg.train.optimizer.encoder_lr, 0.0)
+        self.assertTrue(cfg.model.visibility_pooling)
+        self.assertEqual(cfg.model.visibility_pool_alpha_max, 1.0)
+        self.assertEqual(cfg.model.visibility_pool_warmup_steps, 3000)
+        self.assertEqual(list(cfg.lmgeo.num_reference_range), [5, 27])
+        self.assertEqual(list(cfg.lmgeo.num_query_range), [1, 25])
+        self.assertFalse(cfg.lmgeo.query_rgb_masking)
+        self.assertEqual(cfg.loss.train_loss.correspondence_weight, 0.0)
+
     def test_historical_a40_data_name_is_an_alias(self):
         canonical = compose_job(
             "train_lmgeo_finetune_a40_46gb",

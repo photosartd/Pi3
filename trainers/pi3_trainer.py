@@ -84,9 +84,35 @@ class Pi3Trainer(BaseTrainer):
             
     def forward_batch(self, batch, mode='train'):
         imgs = torch.stack([view['img'] for view in batch], dim=1)
-        pred = self.model(imgs)
+        visibility_masks = None
+        visibility_alpha = self._visibility_pool_alpha()
+        if bool(self.cfg.model.get("visibility_pooling", False)):
+            missing = [idx for idx, view in enumerate(batch) if "object_visibility_mask" not in view]
+            if missing:
+                raise KeyError(
+                    "model.visibility_pooling=true requires object_visibility_mask in every view; "
+                    f"missing view indices {missing}"
+                )
+            visibility_masks = torch.stack([view['object_visibility_mask'] for view in batch], dim=1)
+
+        pred = self.model(
+            imgs,
+            object_visibility_masks=visibility_masks,
+            visibility_pool_alpha=visibility_alpha,
+        )
 
         return [pred, batch]
+
+    def _visibility_pool_alpha(self):
+        if not bool(self.cfg.model.get("visibility_pooling", False)):
+            return 0.0
+        alpha_max = float(self.cfg.model.get("visibility_pool_alpha_max", 1.0))
+        warmup_steps = int(self.cfg.model.get("visibility_pool_warmup_steps", 0))
+        start_step = int(self.cfg.model.get("visibility_pool_start_step", 0))
+        if warmup_steps <= 0:
+            return alpha_max
+        step = max(0, int(getattr(self, "global_step", 0)) - start_step)
+        return min(alpha_max, alpha_max * float(step) / float(warmup_steps))
     
     def calculate_loss(self, output, batch, mode='train'):
         output, batch = output
@@ -95,6 +121,22 @@ class Pi3Trainer(BaseTrainer):
             loss, details = self.train_loss(output, batch)
         else:
             loss, details = self.test_loss(output, batch)
+
+        for key in (
+            "visibility_pool_alpha",
+            "visibility_pool_nonempty_fraction",
+            "visibility_pool_patch_fraction",
+        ):
+            if key not in output:
+                continue
+            value = output[key]
+            if torch.is_tensor(value):
+                value = float(value.detach().mean().cpu().item())
+            else:
+                value = float(value)
+            details[key] = value
+            if getattr(self, "accelerator", None) is not None:
+                self.accelerator.log({f"{mode}/{key}": value}, step=int(getattr(self, "global_step", 0)))
 
         return EasyDict(
             loss=loss,

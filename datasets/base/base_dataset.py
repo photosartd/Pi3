@@ -144,7 +144,14 @@ class BaseDataset(EasyDataset):
         l, t = cx - min_margin_x, cy - min_margin_y
         r, b = cx + min_margin_x, cy + min_margin_y
         crop_bbox = (l, t, r, b)
-        image, depthmap, intrinsics, normal, far_mask = cropping.crop_image_depthmap(image, depthmap, intrinsics, crop_bbox, normal=normal)
+        image, depthmap, intrinsics, normal, far_mask = cropping.crop_image_depthmap(
+            image,
+            depthmap,
+            intrinsics,
+            crop_bbox,
+            normal=normal,
+            far_mask=far_mask,
+        )
 
         # transpose the resolution if necessary
         W, H = image.size  # new size

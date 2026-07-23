@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from functools import partial
 from copy import deepcopy
 
@@ -32,6 +33,10 @@ class Pi3(nn.Module):
             freeze_encoder=True,
             use_global_points=False,
             train_conf=False,
+            visibility_pooling=False,
+            visibility_pool_alpha_max=0.0,
+            visibility_pool_warmup_steps=0,
+            visibility_pool_start_step=0,
             num_dec_blk_not_to_checkpoint=4,
             dino_output_layers=None,
             ckpt=None,
@@ -176,6 +181,10 @@ class Pi3(nn.Module):
             print("Loading vggt decoder", self.decoder.load_state_dict(vggt_dec_weight, strict=False))
 
         self.train_conf = train_conf
+        self.visibility_pooling = bool(visibility_pooling)
+        self.visibility_pool_alpha_max = float(visibility_pool_alpha_max)
+        self.visibility_pool_warmup_steps = int(visibility_pool_warmup_steps)
+        self.visibility_pool_start_step = int(visibility_pool_start_step)
         if train_conf:
             assert ckpt is not None
 
@@ -271,11 +280,30 @@ class Pi3(nn.Module):
         }
         return hidden, dino_features
 
-    def forward(self, imgs):
+    def _visibility_patch_mask(self, object_visibility_masks, H, W, patch_h, patch_w):
+        if object_visibility_masks is None:
+            return None
+        masks = object_visibility_masks.float().reshape(-1, 1, H, W)
+        return F.avg_pool2d(
+            masks,
+            kernel_size=(14, 14),
+            stride=(14, 14),
+        ).reshape(-1, patch_h * patch_w)
+
+    def forward(self, imgs, object_visibility_masks=None, visibility_pool_alpha=0.0):
         imgs = (imgs - self.image_mean) / self.image_std
 
         B, N, _, H, W = imgs.shape
         patch_h, patch_w = H // 14, W // 14
+        visibility_patch_mask = None
+        if self.visibility_pooling:
+            visibility_patch_mask = self._visibility_patch_mask(
+                object_visibility_masks,
+                H,
+                W,
+                patch_h,
+                patch_w,
+            )
         
         # encode by dinov2
         imgs = imgs.reshape(B*N, _, H, W)
@@ -308,7 +336,15 @@ class Pi3(nn.Module):
                 
             # camera
             camera_hidden = camera_hidden.float()
-            camera_poses = self.camera_head(camera_hidden[:, self.patch_start_idx:], patch_h, patch_w).reshape(B, N, 4, 4)
+            camera_poses, visibility_pool_stats = self.camera_head(
+                camera_hidden[:, self.patch_start_idx:],
+                patch_h,
+                patch_w,
+                visibility_patch_mask=visibility_patch_mask,
+                visibility_pool_alpha=visibility_pool_alpha if self.visibility_pooling else 0.0,
+                return_pool_stats=True,
+            )
+            camera_poses = camera_poses.reshape(B, N, 4, 4)
 
             # Global points
             if self.use_global_points:
@@ -325,7 +361,8 @@ class Pi3(nn.Module):
             local_points=local_points,
             conf=conf,
             camera_poses=camera_poses,
-            global_points=global_points
+            global_points=global_points,
+            **visibility_pool_stats,
         )
         if dino_features:
             output["dino_features"] = {
