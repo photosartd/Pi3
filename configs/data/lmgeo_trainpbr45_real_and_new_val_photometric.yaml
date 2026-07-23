@@ -1,0 +1,25 @@
+# @package _global_
+
+# Canonical LMGeo train_pbr/new_val/real-test profile with train-only
+# role-consistent photometric augmentation.
+#
+# For every sampled training sequence, one Pi3 photometric recipe is sampled
+# for all reference/keyframe RGBs and one independent recipe is sampled for all
+# query RGBs. Depth, masks, intrinsics, poses, resolution, aspect ratio, and all
+# validation loaders stay unchanged.
+defaults:
+  - lmgeo_trainpbr45_real_and_new_val
+  - _self_
+
+train_dataset:
+  LMGeoSequence:
+    photometric_augmentation: true
+    photometric_brightness: [0.7, 1.3]
+    photometric_contrast: [0.7, 1.3]
+    photometric_saturation: [0.7, 1.3]
+    photometric_hue: [-0.1, 0.1]
+    photometric_gamma: [0.7, 1.3]
+    photometric_jpeg_prob: 0.5
+    photometric_jpeg_quality: [20, 100]
+    photometric_blur_prob: 0.5
+    photometric_blur_resize_ratio: [0.25, 1.0]

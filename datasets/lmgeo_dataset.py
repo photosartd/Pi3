@@ -9,6 +9,60 @@ from datasets.base.base_dataset import BaseDataset
 from datasets.base.transforms import *
 
 
+PHOTOMETRIC_INTERPOLATIONS = (lanczos, bicubic, bilinear)
+
+
+def _adjust_hue(image, hue_delta):
+    hsv = np.asarray(image.convert("HSV"), dtype=np.uint8).copy()
+    hue_shift = int(round(float(hue_delta) * 255.0))
+    hsv[..., 0] = ((hsv[..., 0].astype(np.int16) + hue_shift) % 256).astype(np.uint8)
+    return Image.fromarray(hsv, mode="HSV").convert("RGB")
+
+
+def _adjust_gamma(image, gamma):
+    array = np.asarray(image, dtype=np.float32) / 255.0
+    array = np.clip(array ** float(gamma), 0.0, 1.0)
+    return Image.fromarray((array * 255.0 + 0.5).astype(np.uint8), mode="RGB")
+
+
+def _apply_role_photometric_spec(image, spec):
+    """Apply the existing Pi3 photometric recipe with pre-sampled parameters."""
+
+    if not isinstance(image, Image.Image):
+        image = Image.fromarray(np.asarray(image))
+    image = image.convert("RGB")
+
+    image = TF.adjust_brightness(image, spec["brightness"])
+    image = TF.adjust_contrast(image, spec["contrast"])
+    image = TF.adjust_saturation(image, spec["saturation"])
+    image = _adjust_hue(image, spec["hue"])
+    image = _adjust_gamma(image, spec["gamma"])
+
+    if spec["jpeg_enabled"]:
+        image_cv = np.asarray(image)[:, :, ::-1]
+        _, encoded = cv2.imencode(
+            ".jpg",
+            image_cv,
+            [cv2.IMWRITE_JPEG_QUALITY, int(spec["jpeg_quality"])],
+        )
+        image_cv = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        image = Image.fromarray(image_cv[:, :, ::-1])
+
+    if spec["blur_enabled"]:
+        width, height = image.size
+        ratio = float(spec["blur_resize_ratio"])
+        resized_small = image.resize(
+            (max(1, int(width * ratio)), max(1, int(height * ratio))),
+            resample=lanczos,
+        )
+        image = resized_small.resize(
+            (width, height),
+            resample=PHOTOMETRIC_INTERPOLATIONS[int(spec["blur_interpolation_index"])],
+        )
+
+    return image
+
+
 class LMGeoDataset(BaseDataset):
     """LM-O object-centric overfit dataset for Pi3 training.
 
@@ -49,6 +103,16 @@ class LMGeoDataset(BaseDataset):
         filter_preprocessed_query_depth=True,
         min_preprocessed_query_depth_pixels=1,
         allow_repeat=False,
+        photometric_augmentation=False,
+        photometric_brightness=(0.7, 1.3),
+        photometric_contrast=(0.7, 1.3),
+        photometric_saturation=(0.7, 1.3),
+        photometric_hue=(-0.1, 0.1),
+        photometric_gamma=(0.7, 1.3),
+        photometric_jpeg_prob=0.5,
+        photometric_jpeg_quality=(20, 100),
+        photometric_blur_prob=0.5,
+        photometric_blur_resize_ratio=(0.25, 1.0),
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -77,6 +141,17 @@ class LMGeoDataset(BaseDataset):
         self.filter_preprocessed_query_depth = bool(filter_preprocessed_query_depth)
         self.min_preprocessed_query_depth_pixels = int(min_preprocessed_query_depth_pixels)
         self.allow_repeat = bool(allow_repeat)
+        self.photometric_augmentation = bool(photometric_augmentation)
+        self.photometric_brightness = tuple(float(value) for value in photometric_brightness)
+        self.photometric_contrast = tuple(float(value) for value in photometric_contrast)
+        self.photometric_saturation = tuple(float(value) for value in photometric_saturation)
+        self.photometric_hue = tuple(float(value) for value in photometric_hue)
+        self.photometric_gamma = tuple(float(value) for value in photometric_gamma)
+        self.photometric_jpeg_prob = float(photometric_jpeg_prob)
+        self.photometric_jpeg_quality = tuple(int(value) for value in photometric_jpeg_quality)
+        self.photometric_blur_prob = float(photometric_blur_prob)
+        self.photometric_blur_resize_ratio = tuple(float(value) for value in photometric_blur_resize_ratio)
+        self._photometric_role_specs = {}
 
         if self.mask_type not in {"mask", "mask_visib"}:
             raise ValueError("mask_type must be 'mask' or 'mask_visib'")
@@ -84,6 +159,10 @@ class LMGeoDataset(BaseDataset):
             raise ValueError("reference_selection must be 'uniform', 'first', or 'random'")
         if self.query_selection not in {"uniform", "first", "random"}:
             raise ValueError("query_selection must be 'uniform', 'first', or 'random'")
+        if not 0.0 <= self.photometric_jpeg_prob <= 1.0:
+            raise ValueError("photometric_jpeg_prob must be in [0, 1]")
+        if not 0.0 <= self.photometric_blur_prob <= 1.0:
+            raise ValueError("photometric_blur_prob must be in [0, 1]")
 
         self.reference_records = self._build_reference_records()
         self.query_records = self._build_query_records()
@@ -365,6 +444,45 @@ class LMGeoDataset(BaseDataset):
             raise FileNotFoundError(f"Cannot read depth: {path}")
         return depth.astype(np.float32) * float(depth_scale) * self.depth_unit_scale
 
+    def _sample_photometric_spec(self, rng):
+        jpeg_enabled = bool(rng.random() < self.photometric_jpeg_prob)
+        blur_enabled = bool(rng.random() < self.photometric_blur_prob)
+        return {
+            "brightness": float(rng.uniform(*self.photometric_brightness)),
+            "contrast": float(rng.uniform(*self.photometric_contrast)),
+            "saturation": float(rng.uniform(*self.photometric_saturation)),
+            "hue": float(rng.uniform(*self.photometric_hue)),
+            "gamma": float(rng.uniform(*self.photometric_gamma)),
+            "jpeg_enabled": jpeg_enabled,
+            "jpeg_quality": int(rng.integers(*self.photometric_jpeg_quality)) if jpeg_enabled else 100,
+            "blur_enabled": blur_enabled,
+            "blur_resize_ratio": (
+                float(rng.uniform(*self.photometric_blur_resize_ratio))
+                if blur_enabled
+                else 1.0
+            ),
+            "blur_interpolation_index": (
+                int(rng.integers(0, len(PHOTOMETRIC_INTERPOLATIONS)))
+                if blur_enabled
+                else 0
+            ),
+        }
+
+    def _prepare_sample_photometric_augmentation(self, rng):
+        if not self.photometric_augmentation:
+            self._photometric_role_specs = {}
+            return
+        self._photometric_role_specs = {
+            "reference": self._sample_photometric_spec(rng),
+            "query": self._sample_photometric_spec(rng),
+        }
+
+    def _apply_sample_photometric_augmentation(self, image, view_role):
+        spec = getattr(self, "_photometric_role_specs", {}).get(str(view_role))
+        if spec is None:
+            return image
+        return _apply_role_photometric_spec(image, spec)
+
     def _maybe_transform_raw_view(
         self,
         *,
@@ -440,6 +558,7 @@ class LMGeoDataset(BaseDataset):
             rng=self._rng,
             info=record["rgb_path"],
         )
+        rgb = self._apply_sample_photometric_augmentation(rgb, view_role)
 
         view = {
             "img": rgb,
@@ -483,6 +602,7 @@ class LMGeoDataset(BaseDataset):
             )
 
         self._current_resolution = resolution
+        self._prepare_sample_photometric_augmentation(rng)
         reference_records = self._select_records(
             self.reference_records,
             self.num_reference,
@@ -549,6 +669,16 @@ class LMGeoSequenceDataset(LMGeoDataset):
         filter_preprocessed_query_depth=True,
         min_preprocessed_query_depth_pixels=1,
         allow_repeat=False,
+        photometric_augmentation=False,
+        photometric_brightness=(0.7, 1.3),
+        photometric_contrast=(0.7, 1.3),
+        photometric_saturation=(0.7, 1.3),
+        photometric_hue=(-0.1, 0.1),
+        photometric_gamma=(0.7, 1.3),
+        photometric_jpeg_prob=0.5,
+        photometric_jpeg_quality=(20, 100),
+        photometric_blur_prob=0.5,
+        photometric_blur_resize_ratio=(0.25, 1.0),
         min_query_records=None,
         max_query_subsequences=None,
         sort_query_windows_by_visibility=True,
@@ -584,6 +714,17 @@ class LMGeoSequenceDataset(LMGeoDataset):
         self.filter_preprocessed_query_depth = bool(filter_preprocessed_query_depth)
         self.min_preprocessed_query_depth_pixels = int(min_preprocessed_query_depth_pixels)
         self.allow_repeat = bool(allow_repeat)
+        self.photometric_augmentation = bool(photometric_augmentation)
+        self.photometric_brightness = tuple(float(value) for value in photometric_brightness)
+        self.photometric_contrast = tuple(float(value) for value in photometric_contrast)
+        self.photometric_saturation = tuple(float(value) for value in photometric_saturation)
+        self.photometric_hue = tuple(float(value) for value in photometric_hue)
+        self.photometric_gamma = tuple(float(value) for value in photometric_gamma)
+        self.photometric_jpeg_prob = float(photometric_jpeg_prob)
+        self.photometric_jpeg_quality = tuple(int(value) for value in photometric_jpeg_quality)
+        self.photometric_blur_prob = float(photometric_blur_prob)
+        self.photometric_blur_resize_ratio = tuple(float(value) for value in photometric_blur_resize_ratio)
+        self._photometric_role_specs = {}
         default_min_query_records = self.num_query_range[0] if self.allow_repeat else self.num_query_range[1]
         self.min_query_records = int(min_query_records) if min_query_records is not None else default_min_query_records
         self.max_query_subsequences = None if max_query_subsequences is None else int(max_query_subsequences)
@@ -606,6 +747,10 @@ class LMGeoSequenceDataset(LMGeoDataset):
             raise ValueError("reference_selection must be 'uniform', 'first', or 'random'")
         if self.query_selection not in {"uniform", "first", "random"}:
             raise ValueError("query_selection must be 'uniform', 'first', or 'random'")
+        if not 0.0 <= self.photometric_jpeg_prob <= 1.0:
+            raise ValueError("photometric_jpeg_prob must be in [0, 1]")
+        if not 0.0 <= self.photometric_blur_prob <= 1.0:
+            raise ValueError("photometric_blur_prob must be in [0, 1]")
         if not 0.0 <= self.context_reference_fraction <= 1.0:
             raise ValueError(
                 f"context_reference_fraction must be in [0, 1], got {context_reference_fraction}"
@@ -1099,6 +1244,7 @@ class LMGeoSequenceDataset(LMGeoDataset):
         ref_count, query_count = self._sample_counts(self.frame_num, reference_pool, query_pool, rng)
 
         self._current_resolution = resolution
+        self._prepare_sample_photometric_augmentation(rng)
         reference_records = self._select_reference_records_for_sample(
             object_id,
             sample["query_scene_id"],

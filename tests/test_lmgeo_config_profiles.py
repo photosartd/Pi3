@@ -215,6 +215,27 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         self.assertTrue(cfg.visuals.enabled)
         self.assertTrue(cfg.visuals.val_enabled)
 
+    def test_a40_photometric_profile_is_train_only_baseline_delta(self):
+        cfg = compose_job(
+            "train_lmgeo_finetune_a40_40gb_photometric",
+            "lmgeo_trainpbr45_real_and_new_val_photometric",
+        )
+
+        self.assertEqual(list(cfg.train.image_num_range), [6, 28])
+        self.assertEqual(cfg.train.max_img_per_gpu, 28)
+        self.assertEqual(OmegaConf.to_container(cfg.train.resolution), [[560, 420]])
+        self.assertFalse(cfg.train.random_reslution)
+        self.assertEqual(cfg.train.num_workers, 4)
+        self.assertEqual(cfg.test.num_workers, 2)
+        self.assertEqual(list(cfg.lmgeo.num_reference_range), [5, 27])
+        self.assertEqual(list(cfg.lmgeo.num_query_range), [1, 25])
+        self.assertTrue(cfg.train_dataset.LMGeoSequence.photometric_augmentation)
+        self.assertFalse(cfg.train_dataset.LMGeoSequence.aug_crop)
+        self.assertFalse(cfg.train_dataset.LMGeoSequence.aug_focal)
+        self.assertEqual(cfg.loss.train_loss.correspondence_weight, 0.0)
+        self.assertNotIn("photometric_augmentation", cfg.val_datasets.real_test.dataset)
+        self.assertNotIn("photometric_augmentation", cfg.val_datasets.pbr_new_val.dataset)
+
     def test_historical_a40_data_name_is_an_alias(self):
         canonical = compose_job(
             "train_lmgeo_finetune_a40_46gb",

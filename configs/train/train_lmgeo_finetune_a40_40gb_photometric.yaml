@@ -1,0 +1,16 @@
+# @package _global_
+
+# A40 40 GiB conservative LMGeo baseline with train-only photometric
+# augmentation supplied by the paired data config. This intentionally inherits
+# the baseline loss, fixed 560x420 resolution, and 28-image per-rank packing
+# budget; photometric augmentation runs on CPU before ImgToTensor and does not
+# change the model-side VRAM budget.
+defaults:
+  - train_lmgeo_finetune_a40_46gb
+  - _self_
+
+train:
+  num_workers: 4
+
+test:
+  num_workers: 2
