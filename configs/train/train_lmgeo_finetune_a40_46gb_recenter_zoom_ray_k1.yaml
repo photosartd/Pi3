@@ -1,0 +1,25 @@
+# @package _global_
+
+# Fair Pi3 ray-conditioning comparison for the existing 560x420 oracle
+# recenter+zoom K=1 experiment. The paired baseline train/data profiles,
+# trainable Pi3 modules, losses, view budgets, and transformed samples remain
+# unchanged. This profile only enables the zero-initialized Pi3X-style ray
+# branch, assigns it a dedicated peak LR, and adds detached validation metrics.
+defaults:
+  - train_lmgeo_finetune_a40_46gb_recenter_zoom_k1
+  - _self_
+
+model:
+  use_ray_conditioning: true
+
+train:
+  optimizer:
+    ray_lr: 1e-5
+
+metrics:
+  items:
+    ray_geometry:
+      _target_: pi3.metrics.ray_geometry.RayGeometryMetric
+      max_points_per_view: 4096
+      min_fit_points: 64
+      min_ray_variance: 1e-8

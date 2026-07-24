@@ -16,15 +16,24 @@ class Pi3Trainer(BaseTrainer):
     def build_optimizer(self, cfg_optimizer, model):
         def param_group_fn(model_):
             encoder_params = [param for param in model_.encoder.named_parameters()]
+            ray_params = [
+                (name, param) for name, param in model_.named_parameters()
+                if name.startswith("ray_embed.")
+            ]
             other_params = [
                 (name, param) for name, param in model_.named_parameters()
-                if not name.startswith("encoder.") and not '.encoder.' in name
+                if (
+                    not name.startswith("encoder.")
+                    and '.encoder.' not in name
+                    and not name.startswith("ray_embed.")
+                )
             ]
 
             print(f'Number of trainable encoder parameters:', sum(p.numel() for _, p in encoder_params if p.requires_grad))
+            print(f'Number of trainable ray parameters:', sum(p.numel() for _, p in ray_params if p.requires_grad))
             print(f'Length of trainable others:', sum(p.numel() for _, p in other_params if p.requires_grad))
 
-            def handle_weight_decay(params, weight_decay, lr):
+            def handle_weight_decay(params, weight_decay, lr, group_name):
                 decay = []
                 no_decay = []
                 for name, param in params:
@@ -36,14 +45,48 @@ class Pi3Trainer(BaseTrainer):
                     else:
                         decay.append(param)
 
-                return [
-                    {"params": no_decay, "weight_decay": 0.0, 'lr': lr},
-                    {"params": decay, "weight_decay": weight_decay, 'lr': lr},
-                ]
+                groups = []
+                for suffix, values, decay_value in (
+                    ("no_decay", no_decay, 0.0),
+                    ("decay", decay, weight_decay),
+                ):
+                    if not values:
+                        continue
+                    group = {
+                        "params": values,
+                        "weight_decay": decay_value,
+                        "lr": lr,
+                        "group_name": group_name,
+                    }
+                    if group_name == "ray":
+                        # The OneCycle scheduler otherwise caps every group at
+                        # the base decoder LR. Preserve the explicitly selected
+                        # ray peak LR without changing historical groups.
+                        group["max_lr"] = lr
+                    groups.append(group)
+                return groups
 
             res = []
-            res.extend(handle_weight_decay(encoder_params, cfg_optimizer.weight_decay, cfg_optimizer.encoder_lr))
-            res.extend(handle_weight_decay(other_params, cfg_optimizer.weight_decay, cfg_optimizer.lr))
+            res.extend(handle_weight_decay(
+                encoder_params,
+                cfg_optimizer.weight_decay,
+                cfg_optimizer.encoder_lr,
+                "encoder",
+            ))
+            if ray_params:
+                ray_lr = cfg_optimizer.get("ray_lr", cfg_optimizer.lr)
+                res.extend(handle_weight_decay(
+                    ray_params,
+                    cfg_optimizer.weight_decay,
+                    ray_lr,
+                    "ray",
+                ))
+            res.extend(handle_weight_decay(
+                other_params,
+                cfg_optimizer.weight_decay,
+                cfg_optimizer.lr,
+                "other",
+            ))
 
             return res
         
@@ -84,7 +127,8 @@ class Pi3Trainer(BaseTrainer):
             
     def forward_batch(self, batch, mode='train'):
         imgs = torch.stack([view['img'] for view in batch], dim=1)
-        pred = self.model(imgs)
+        intrinsics = torch.stack([view['camera_intrinsics'] for view in batch], dim=1)
+        pred = self.model(imgs, intrinsics=intrinsics)
 
         return [pred, batch]
     

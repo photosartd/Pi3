@@ -1,4 +1,5 @@
 import unittest
+from types import MethodType
 
 import numpy as np
 
@@ -135,6 +136,7 @@ class LMGeoRecenterGeometryTest(unittest.TestCase):
         dataset.query_recenter_zoom_min = 1.0
         dataset.query_recenter_depth_interpolation = "nearest"
         dataset.query_recenter_min_valid_depth_pixels = 1
+        dataset.query_recenter_include_original_query_view = False
 
         rgb = np.zeros((8, 10, 3), dtype=np.uint8)
         depth = np.ones((8, 10), dtype=np.float32)
@@ -160,6 +162,35 @@ class LMGeoRecenterGeometryTest(unittest.TestCase):
         np.testing.assert_allclose(T_out, T_C_O)
         np.testing.assert_allclose(camera_pose_out, np.linalg.inv(T_C_O))
 
+    def test_paired_mixin_puts_collatable_geometry_defaults_on_references(self):
+        dataset = object.__new__(LMGeoRecenterZoomSequenceDataset)
+        dataset.query_recenter_include_original_query_view = True
+        rgb = np.zeros((8, 10, 3), dtype=np.uint8)
+        depth = np.ones((8, 10), dtype=np.float32)
+        mask = np.ones((8, 10), dtype=bool)
+        T_C_O = np.eye(4, dtype=np.float32)
+
+        *_, meta = dataset._maybe_transform_raw_view(
+            record={},
+            rgb=rgb,
+            depthmap=depth,
+            mask=mask,
+            intrinsics=self.K,
+            T_C_O=T_C_O,
+            camera_pose=T_C_O,
+            view_role="reference",
+        )
+
+        np.testing.assert_allclose(
+            meta["query_recenter_R_old_to_new"],
+            np.eye(3),
+        )
+        np.testing.assert_allclose(
+            meta["query_crop_from_original_homography"],
+            np.eye(3),
+        )
+        np.testing.assert_allclose(meta["query_original_T_C_O"], T_C_O)
+
     def test_mixin_does_not_apply_baseline_center_crop_filter_to_queries(self):
         dataset = object.__new__(LMGeoRecenterZoomSequenceDataset)
 
@@ -171,6 +202,110 @@ class LMGeoRecenterGeometryTest(unittest.TestCase):
 
         self.assertFalse(dataset._should_depth_mask_view(view_role="query", reference_source="query"))
         self.assertTrue(dataset._should_depth_mask_view(view_role="reference", reference_source="render"))
+
+    def test_paired_counting_treats_one_query_record_as_two_model_views(self):
+        dataset = object.__new__(LMGeoRecenterZoomSequenceDataset)
+        dataset.query_recenter_include_original_query_view = True
+        dataset.num_reference_range = (2, 16)
+        dataset.num_query_range = (1, 1)
+        dataset.allow_repeat = True
+        rng = np.random.default_rng(7)
+
+        self.assertEqual(
+            dataset._sample_counts(4, [object()], [object()], rng),
+            (2, 1),
+        )
+        self.assertEqual(
+            dataset._sample_counts(18, [object()], [object()], rng),
+            (16, 1),
+        )
+        with self.assertRaisesRegex(ValueError, "paired query-record range"):
+            dataset._sample_counts(3, [object()], [object()], rng)
+
+    def test_paired_query_expansion_preserves_both_cameras_and_final_homography(self):
+        dataset = object.__new__(LMGeoRecenterZoomSequenceDataset)
+        dataset.query_recenter_include_original_query_view = True
+        dataset.query_rgb_masking = False
+        angle = np.deg2rad(12.0)
+        R_old_to_new = np.array(
+            [
+                [np.cos(angle), 0.0, np.sin(angle)],
+                [0.0, 1.0, 0.0],
+                [-np.sin(angle), 0.0, np.cos(angle)],
+            ],
+            dtype=np.float32,
+        )
+        K_original = np.array(
+            [[100.0, 0.0, 14.0], [0.0, 105.0, 7.0], [0.0, 0.0, 1.0]],
+            dtype=np.float32,
+        )
+        K_crop = np.array(
+            [[180.0, 0.0, 14.0], [0.0, 185.0, 7.0], [0.0, 0.0, 1.0]],
+            dtype=np.float32,
+        )
+        T_C_original_O = np.eye(4, dtype=np.float32)
+        T_C_original_O[:3, 3] = np.array([0.1, -0.2, 1.4], dtype=np.float32)
+        T_C_crop_O = compose_recentered_object_pose(
+            T_C_original_O,
+            R_old_to_new,
+        )
+        load_calls = []
+
+        def fake_load_view(self, record, rgb_masking, view_role):
+            is_original = bool(record.get("_lmgeo_skip_query_recenter", False))
+            load_calls.append(is_original)
+            T_C_O = T_C_original_O if is_original else T_C_crop_O
+            view = {
+                "camera_intrinsics": (
+                    K_original.copy() if is_original else K_crop.copy()
+                ),
+                "T_C_O": T_C_O.copy(),
+                "camera_pose": np.linalg.inv(T_C_O).astype(np.float32),
+                "view_role": view_role,
+                "is_reference": False,
+                "is_query": True,
+                "is_query_context": False,
+                "is_cropped_query": False,
+                "is_original_query": False,
+                "query_pair_index": np.int64(-1),
+                "query_recenter_applied": not is_original,
+            }
+            if not is_original:
+                view["query_recenter_R_old_to_new"] = R_old_to_new.copy()
+            return view
+
+        dataset._load_view = MethodType(fake_load_view, dataset)
+        crop, original = dataset._load_query_views({"record": 1})
+
+        self.assertEqual(load_calls, [False, True])
+        self.assertTrue(crop["is_query"])
+        self.assertTrue(crop["is_cropped_query"])
+        self.assertFalse(crop["is_original_query"])
+        self.assertFalse(crop["is_query_context"])
+        self.assertFalse(original["is_query"])
+        self.assertFalse(original["is_cropped_query"])
+        self.assertTrue(original["is_original_query"])
+        self.assertTrue(original["is_query_context"])
+        self.assertEqual(original["view_role"], "query_context")
+        np.testing.assert_allclose(crop["T_C_O"], T_C_crop_O, atol=1e-6)
+        np.testing.assert_allclose(original["T_C_O"], T_C_original_O, atol=1e-6)
+        np.testing.assert_allclose(
+            crop["query_original_T_C_O"],
+            T_C_original_O,
+            atol=1e-6,
+        )
+        expected_H = K_crop @ R_old_to_new @ np.linalg.inv(K_original)
+        expected_H /= expected_H[2, 2]
+        np.testing.assert_allclose(
+            crop["query_crop_from_original_homography"],
+            expected_H,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            original["query_crop_from_original_homography"],
+            expected_H,
+            atol=1e-6,
+        )
 
 
 if __name__ == "__main__":

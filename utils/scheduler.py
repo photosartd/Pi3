@@ -128,8 +128,13 @@ class OneCycleLR(lr_scheduler.OneCycleLR):
     ):
         if len(optimizer.param_groups) > 1:
             if not isinstance(max_lr, list):
-                # max_lr = [max_lr * pg.get("lr_scale", 1.0) for pg in optimizer.param_groups]
-                max_lr = [min(max_lr, pg.get("lr")) for pg in optimizer.param_groups]
+                # Preserve historical scalar capping unless a parameter group
+                # explicitly opts into its own scheduled peak (for example the
+                # zero-initialized Pi3 ray-conditioning adapter).
+                max_lr = [
+                    pg.get("max_lr", min(max_lr, pg.get("lr")))
+                    for pg in optimizer.param_groups
+                ]
             
             assert len(max_lr) == len(optimizer.param_groups)
 

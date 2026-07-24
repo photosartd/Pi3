@@ -182,6 +182,10 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         self.assertFalse(cfg.train_dataset.LMGeoSequence.filter_target_center_crop_visibility)
         self.assertEqual(cfg.train_dataset.LMGeoSequence.query_recenter_bbox_key, "bbox_obj")
         self.assertEqual(cfg.train_dataset.LMGeoSequence.query_recenter_depth_interpolation, "nearest")
+        self.assertFalse(
+            cfg.train_dataset.LMGeoSequence.query_recenter_include_original_query_view
+        )
+        self.assertNotIn("paired_query", cfg.metrics["items"])
         self.assertEqual(
             active_val_loader_names(cfg),
             ["real_test", "real_test_ref16", "pbr_new_val", "pbr_new_val_ref16"],
@@ -195,6 +199,92 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
             self.assertEqual(list(runtime.image_num_range)[-1] - list(dataset.num_reference_range)[-1], 1)
         self.assertFalse(cfg.val_datasets.pbr_new_val_k5_subset.enabled)
         self.assertFalse(cfg.val_datasets.pbr_new_val_k10_subset.enabled)
+
+    def test_paired_recenter_zoom_profile_adds_one_model_view_and_metrics_on_demand(self):
+        cfg = compose_job(
+            "train_lmgeo_finetune_a40_46gb_recenter_zoom_k1",
+            "lmgeo_trainpbr45_real_and_new_val_recenter_zoom_plus_original_k1",
+        )
+
+        self.assertFalse(cfg.model.use_ray_conditioning)
+        self.assertEqual(list(cfg.train.image_num_range), [4, 18])
+        self.assertEqual(list(cfg.test.image_num_range), [7, 7])
+        self.assertEqual(list(cfg.lmgeo.num_reference_range), [2, 16])
+        self.assertEqual(list(cfg.lmgeo.num_query_range), [1, 1])
+        self.assertTrue(
+            cfg.train_dataset.LMGeoSequence.query_recenter_include_original_query_view
+        )
+        self.assertEqual(
+            cfg.metrics["items"].paired_query._target_,
+            "pi3.metrics.paired_query.PairedQueryConsistencyMetric",
+        )
+        self.assertNotIn("ray_geometry", cfg.metrics["items"])
+        self.assertEqual(
+            cfg.visuals["items"].input_query_context_frames.role,
+            "query_context",
+        )
+        expected_totals = {
+            "real_test": 7,
+            "real_test_ref16": 18,
+            "pbr_new_val": 7,
+            "pbr_new_val_ref16": 18,
+        }
+        for name, total_views in expected_totals.items():
+            dataset = cfg.val_datasets[name].dataset
+            runtime = cfg.val_datasets[name].runtime
+            self.assertTrue(
+                dataset.query_recenter_include_original_query_view
+            )
+            self.assertEqual(list(dataset.num_query_range), [1, 1])
+            self.assertEqual(
+                list(runtime.image_num_range),
+                [total_views, total_views],
+            )
+
+    def test_paired_recenter_zoom_ray_profile_composes_both_optional_deltas(self):
+        cfg = compose_job(
+            "train_lmgeo_finetune_a40_46gb_recenter_zoom_ray_k1",
+            "lmgeo_trainpbr45_real_and_new_val_recenter_zoom_plus_original_k1",
+        )
+
+        self.assertTrue(cfg.model.use_ray_conditioning)
+        self.assertEqual(float(cfg.train.optimizer.ray_lr), 1e-5)
+        self.assertEqual(list(cfg.train.image_num_range), [4, 18])
+        self.assertTrue(
+            cfg.train_dataset.LMGeoSequence.query_recenter_include_original_query_view
+        )
+        self.assertIn("paired_query", cfg.metrics["items"])
+        self.assertIn("ray_geometry", cfg.metrics["items"])
+
+    def test_recenter_zoom_ray_k1_is_an_isolated_model_and_metric_delta(self):
+        cfg = compose_job(
+            "train_lmgeo_finetune_a40_46gb_recenter_zoom_ray_k1",
+            "lmgeo_trainpbr45_real_and_new_val_recenter_zoom_k1",
+        )
+
+        self.assertTrue(cfg.model.use_ray_conditioning)
+        self.assertEqual(float(cfg.train.optimizer.lr), 5e-6)
+        self.assertEqual(float(cfg.train.optimizer.encoder_lr), 0.0)
+        self.assertEqual(float(cfg.train.optimizer.ray_lr), 1e-5)
+        self.assertEqual(list(cfg.train.image_num_range), [3, 17])
+        self.assertEqual(cfg.train.max_img_per_gpu, 28)
+        self.assertEqual(OmegaConf.to_container(cfg.train.resolution), [[560, 420]])
+        self.assertEqual(list(cfg.lmgeo.num_reference_range), [2, 16])
+        self.assertEqual(list(cfg.lmgeo.num_query_range), [1, 1])
+        self.assertEqual(
+            cfg.train_dataset.LMGeoSequence._target_,
+            "datasets.lmgeo_recenter.LMGeoRecenterZoomSequenceDataset",
+        )
+        self.assertEqual(
+            cfg.metrics["items"].ray_geometry._target_,
+            "pi3.metrics.ray_geometry.RayGeometryMetric",
+        )
+        self.assertFalse(cfg.metrics.train_enabled)
+        self.assertTrue(cfg.metrics.val_enabled)
+        self.assertEqual(
+            active_val_loader_names(cfg),
+            ["real_test", "real_test_ref16", "pbr_new_val", "pbr_new_val_ref16"],
+        )
 
     def test_a40_correspondence_profile_is_a_hardware_preserving_delta(self):
         cfg = compose_job(
@@ -376,6 +466,7 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         self.assertEqual(cfg.train.max_img_per_gpu, 64)
         self.assertEqual(OmegaConf.to_container(cfg.train.resolution), [[224, 224]])
         self.assertNotIn("lmgeo_profile", cfg)
+        self.assertFalse(cfg.model.use_ray_conditioning)
 
 
 if __name__ == "__main__":

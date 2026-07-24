@@ -1,5 +1,8 @@
 # Slurm A40 Setup
 
+For the paired recentered/original K=1 smoke branches, see
+[lmgeo_paired_query_views.md](lmgeo_paired_query_views.md).
+
 This note is for running the fixed 560x420 LMGeo profile on one Slurm node with
 4 NVIDIA A40 GPUs. The Slurm filenames retain `518_a40_dynamic` only for
 backward compatibility.
@@ -288,6 +291,18 @@ PI3_MAIL_TYPE=END,FAIL scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 PI3_MAIL_USER= scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh smoke
 ```
 
+For the paired recenter/zoom ray-conditioning experiment, use:
+
+```bash
+PI3_TRAIN_CONFIG=train_lmgeo_finetune_a40_46gb_recenter_zoom_ray_k1 \
+PI3_DATA_CONFIG=lmgeo_trainpbr45_real_and_new_val_recenter_zoom_k1 \
+PI3_RUN_NAME=lmgeo_a40_recenter_zoom_ray_k1 \
+scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh smoke
+```
+
+See [`lmgeo_ray_conditioning.md`](lmgeo_ray_conditioning.md) for the full
+preflight/smoke/train sequence and TensorBoard metrics.
+
 All path overrides accepted by the job are:
 
 | Variable | Meaning |
@@ -524,7 +539,9 @@ The production data config keeps `lmgeo.filter_preprocessed_query_depth: true`,
 but the CITEc Slurm script overrides it to `false` by default to avoid spending
 allocated GPU time on a full `/vol` preprocessing scan. Set
 `PI3_FILTER_PREPROCESSED_QUERY_DEPTH=true` for a slower but more conservative
-run that filters invalid high-res samples before training.
+production run that filters invalid high-res samples before training. Smoke
+mode always disables that filter and the real-target preprocessed-depth filters,
+because dataset scans are outside the purpose of a compute/memory probe.
 
 ## References
 

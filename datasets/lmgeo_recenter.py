@@ -217,6 +217,8 @@ def warp_recenter_zoom_view(
         "query_recenter_zoom": np.float32(zoom),
         "query_recenter_valid_depth_pixels_raw": np.int64(valid_depth_pixels),
         "query_recenter_valid_fraction_raw": np.float32(valid_depth_pixels / float(height * width)),
+        "query_recenter_R_old_to_new": R_old_to_new.astype(np.float32),
+        "query_recenter_H_raw": H.astype(np.float32),
     }
     return (
         rgb_warped,
@@ -241,6 +243,7 @@ class LMGeoQueryRecenterZoomMixin:
         query_recenter_zoom_min=1.0,
         query_recenter_depth_interpolation="nearest",
         query_recenter_min_valid_depth_pixels=1,
+        query_recenter_include_original_query_view=False,
         **kwargs,
     ):
         self.query_recenter_bbox_key = str(query_recenter_bbox_key)
@@ -249,6 +252,9 @@ class LMGeoQueryRecenterZoomMixin:
         self.query_recenter_zoom_min = float(query_recenter_zoom_min)
         self.query_recenter_depth_interpolation = str(query_recenter_depth_interpolation)
         self.query_recenter_min_valid_depth_pixels = int(query_recenter_min_valid_depth_pixels)
+        self.query_recenter_include_original_query_view = bool(
+            query_recenter_include_original_query_view
+        )
         super().__init__(*args, **kwargs)
 
     def _bbox_for_recenter(self, record):
@@ -310,15 +316,42 @@ class LMGeoQueryRecenterZoomMixin:
         camera_pose,
         view_role,
     ):
-        if view_role != "query":
-            return rgb, depthmap, mask, intrinsics, T_C_O, camera_pose, {
+        skip_recenter = bool(record.get("_lmgeo_skip_query_recenter", False))
+        if view_role != "query" or skip_recenter:
+            meta = {
                 "query_recenter_applied": False,
                 "query_recenter_zoom": np.float32(1.0),
                 "query_recenter_valid_depth_pixels_raw": np.int64(0),
                 "query_recenter_valid_fraction_raw": np.float32(0.0),
             }
+            if getattr(
+                self,
+                "query_recenter_include_original_query_view",
+                False,
+            ):
+                # unified_collate_fn takes its key set from the first
+                # reference view, so paired-only matrices need shape-stable
+                # identity defaults on every view in this opt-in regime.
+                meta.update(
+                    {
+                        "query_recenter_R_old_to_new": np.eye(
+                            3,
+                            dtype=np.float32,
+                        ),
+                        "query_recenter_H_raw": np.eye(3, dtype=np.float32),
+                        "query_crop_from_original_homography": np.eye(
+                            3,
+                            dtype=np.float32,
+                        ),
+                        "query_original_T_C_O": np.asarray(
+                            T_C_O,
+                            dtype=np.float32,
+                        ).copy(),
+                    }
+                )
+            return rgb, depthmap, mask, intrinsics, T_C_O, camera_pose, meta
 
-        return warp_recenter_zoom_view(
+        transformed = warp_recenter_zoom_view(
             rgb=rgb,
             depthmap=depthmap,
             mask=mask,
@@ -331,6 +364,115 @@ class LMGeoQueryRecenterZoomMixin:
             depth_interpolation=self.query_recenter_depth_interpolation,
             min_valid_depth_pixels=self.query_recenter_min_valid_depth_pixels,
         )
+        if not getattr(
+            self,
+            "query_recenter_include_original_query_view",
+            False,
+        ):
+            return transformed
+
+        rgb_out, depth_out, mask_out, K_out, T_out, pose_out, meta = transformed
+        meta.update(
+            {
+                "query_crop_from_original_homography": np.eye(
+                    3,
+                    dtype=np.float32,
+                ),
+                "query_original_T_C_O": np.asarray(
+                    T_C_O,
+                    dtype=np.float32,
+                ).copy(),
+            }
+        )
+        return rgb_out, depth_out, mask_out, K_out, T_out, pose_out, meta
+
+    def _sample_counts(self, total_frames, reference_records, query_records, rng):
+        if not self.query_recenter_include_original_query_view:
+            return super()._sample_counts(
+                total_frames,
+                reference_records,
+                query_records,
+                rng,
+            )
+
+        total_frames = int(total_frames)
+        ref_min, ref_max = self.num_reference_range
+        query_min, query_max = self.num_query_range
+        if not self.allow_repeat:
+            ref_max = min(ref_max, len(reference_records))
+            query_max = min(query_max, len(query_records))
+
+        valid_counts = [
+            (ref_count, query_count)
+            for ref_count in range(ref_min, ref_max + 1)
+            for query_count in range(query_min, query_max + 1)
+            if ref_count + 2 * query_count == total_frames
+        ]
+        if not valid_counts:
+            raise ValueError(
+                f"Cannot split model frame_num={total_frames} into reference "
+                f"range {self.num_reference_range} and paired query-record range "
+                f"{self.num_query_range}"
+            )
+        return valid_counts[int(rng.integers(len(valid_counts)))]
+
+    def _load_query_views(self, record):
+        cropped_views = super()._load_query_views(record)
+        if not self.query_recenter_include_original_query_view:
+            return cropped_views
+        if len(cropped_views) != 1:
+            raise RuntimeError(
+                "LMGeo paired-query expansion expects one base view per query record"
+            )
+
+        cropped = cropped_views[0]
+        original_record = dict(record)
+        original_record["_lmgeo_skip_query_recenter"] = True
+        original = self._load_view(
+            original_record,
+            rgb_masking=self.query_rgb_masking,
+            view_role="query",
+        )
+
+        R_old_to_new = np.asarray(
+            cropped["query_recenter_R_old_to_new"],
+            dtype=np.float32,
+        )
+        K_cropped = np.asarray(cropped["camera_intrinsics"], dtype=np.float32)
+        K_original = np.asarray(original["camera_intrinsics"], dtype=np.float32)
+        H_final = K_cropped @ R_old_to_new @ np.linalg.inv(K_original)
+        H_final = (H_final / H_final[2, 2]).astype(np.float32)
+
+        cropped.update(
+            {
+                "is_cropped_query": True,
+                "is_original_query": False,
+                "is_query_context": False,
+                "query_variant": "cropped",
+                "query_crop_from_original_homography": H_final,
+                "query_original_T_C_O": np.asarray(
+                    original["T_C_O"],
+                    dtype=np.float32,
+                ).copy(),
+            }
+        )
+        original.update(
+            {
+                "view_role": "query_context",
+                "is_query": False,
+                "is_query_context": True,
+                "is_cropped_query": False,
+                "is_original_query": True,
+                "query_variant": "original",
+                "query_recenter_R_old_to_new": R_old_to_new.copy(),
+                "query_crop_from_original_homography": H_final.copy(),
+                "query_original_T_C_O": np.asarray(
+                    original["T_C_O"],
+                    dtype=np.float32,
+                ).copy(),
+            }
+        )
+        return [cropped, original]
 
 
 class LMGeoRecenterZoomSequenceDataset(LMGeoQueryRecenterZoomMixin, LMGeoSequenceDataset):

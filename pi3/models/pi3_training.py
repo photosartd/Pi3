@@ -3,8 +3,9 @@ import torch.nn as nn
 from functools import partial
 from copy import deepcopy
 
-from .dinov2.layers import Mlp
+from .dinov2.layers import Mlp, PatchEmbed
 from ..utils.geometry import homogenize_points
+from .ray_conditioning import intrinsics_to_ray_map
 from .layers.pos_embed import RoPE2D, PositionGetter
 from .layers.block import BlockRope
 from .layers.attention import FlashAttentionRope
@@ -34,6 +35,7 @@ class Pi3(nn.Module):
             train_conf=False,
             num_dec_blk_not_to_checkpoint=4,
             dino_output_layers=None,
+            use_ray_conditioning=False,
             ckpt=None,
         ):
         super().__init__()
@@ -98,6 +100,25 @@ class Pi3(nn.Module):
                 rope=self.rope
             ) for _ in range(dec_depth)])
         self.dec_embed_dim = dec_embed_dim
+
+        # ----------------------
+        #  Camera Ray Condition
+        # ----------------------
+        self.use_ray_conditioning = bool(use_ray_conditioning)
+        if self.use_ray_conditioning:
+            # This is the Pi3X conditioning mechanism: a full-resolution
+            # (x/z, y/z) ray map is projected with the same 14x14 patch layout
+            # as the RGB encoder, then added to the RGB patch tokens. The
+            # projection is zero-initialized so a Pi3 checkpoint has identical
+            # initial behavior before the first optimizer update.
+            self.ray_embed = PatchEmbed(
+                img_size=224,
+                patch_size=self.patch_size,
+                in_chans=2,
+                embed_dim=self.dec_embed_dim,
+            )
+            nn.init.zeros_(self.ray_embed.proj.weight)
+            nn.init.zeros_(self.ray_embed.proj.bias)
 
         # ----------------------
         #     Register_token
@@ -271,7 +292,7 @@ class Pi3(nn.Module):
         }
         return hidden, dino_features
 
-    def forward(self, imgs):
+    def forward(self, imgs, intrinsics=None):
         imgs = (imgs - self.image_mean) / self.image_std
 
         B, N, _, H, W = imgs.shape
@@ -280,6 +301,25 @@ class Pi3(nn.Module):
         # encode by dinov2
         imgs = imgs.reshape(B*N, _, H, W)
         hidden, dino_features = self._encode_with_optional_dino_outputs(imgs)
+
+        if self.use_ray_conditioning:
+            if intrinsics is None:
+                raise ValueError("intrinsics are required when ray conditioning is enabled")
+            if tuple(intrinsics.shape[:2]) != (B, N):
+                raise ValueError(
+                    "Expected intrinsics with leading shape "
+                    f"{(B, N)}, got {tuple(intrinsics.shape)}"
+                )
+            ray_map = intrinsics_to_ray_map(intrinsics, H, W)
+            ray_tokens = self.ray_embed(
+                ray_map.reshape(B * N, H, W, 2).permute(0, 3, 1, 2)
+            )
+            if ray_tokens.shape != hidden.shape:
+                raise RuntimeError(
+                    "Ray/image token shape mismatch: "
+                    f"{tuple(ray_tokens.shape)} vs {tuple(hidden.shape)}"
+                )
+            hidden = hidden + ray_tokens.to(dtype=hidden.dtype)
 
         hidden, pos = self.decode(hidden, N, H, W)
 

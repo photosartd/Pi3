@@ -22,8 +22,10 @@ class InputFramesVisualizer(BaseVisualizer):
         thumbnail_size: int = 128,
         columns: int = 6,
     ):
-        if role not in {"reference", "query"}:
-            raise ValueError("role must be 'reference' or 'query'")
+        if role not in {"reference", "query", "query_context"}:
+            raise ValueError(
+                "role must be 'reference', 'query', or 'query_context'"
+            )
         self.role = str(role)
         self.name = f"input_{self.role}_frames"
         self.max_views = min(6, max(1, int(max_views)))

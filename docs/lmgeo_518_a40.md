@@ -1,5 +1,8 @@
 # LMGeo 560x420 A40 Training
 
+The optional paired recentered/original query workflow is documented in
+[lmgeo_paired_query_views.md](lmgeo_paired_query_views.md).
+
 > The filename is retained for backward-compatible links. The current LMGeo
 > high-resolution target is fixed 560x420, not 518x518.
 
@@ -299,6 +302,12 @@ An example input grid is written to:
 ```text
 examples/lmgeo_recenter_zoom_k1_input_example.png
 ```
+
+The optional Pi3X-style intrinsics/ray conditioning comparison for this exact
+data path is documented in
+[`lmgeo_ray_conditioning.md`](lmgeo_ray_conditioning.md). It keeps the
+recenter/zoom data and Pi3 fine-tuning scope unchanged while adding a
+zero-initialized ray patch projection and detached ray-geometry metrics.
 
 ## Blackwell Status
 

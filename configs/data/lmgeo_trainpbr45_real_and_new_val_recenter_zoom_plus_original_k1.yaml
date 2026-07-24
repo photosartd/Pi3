@@ -1,0 +1,61 @@
+# @package _global_
+
+# Additive paired-query experiment built on the K=1 oracle recenter+zoom data.
+# Each physical query record contributes two Pi3 views:
+#   1. the existing recentered/zoomed query;
+#   2. the same source image under its original camera/intrinsics.
+#
+# Select the parent recenter_zoom_k1 data profile to recover the historical
+# one-query-view behavior. No other LMGeo profile enables this expansion or
+# its paired-query validation metric.
+defaults:
+  - lmgeo_trainpbr45_real_and_new_val_recenter_zoom_k1
+  - _self_
+
+lmgeo_query_recenter:
+  include_original_query_view: true
+
+# num_query_range remains [1, 1] in the train profile: it counts physical
+# query records. These ranges count actual model views, so the paired query
+# adds one view to every historical K=1 sample.
+train:
+  image_num_range: [4, 18]
+
+test:
+  image_num_range: [7, 7]
+
+val_datasets:
+  real_test:
+    runtime:
+      image_num_range: [7, 7]
+  real_test_ref16:
+    runtime:
+      image_num_range: [18, 18]
+  pbr_new_val:
+    runtime:
+      image_num_range: [7, 7]
+  pbr_new_val_ref16:
+    runtime:
+      image_num_range: [18, 18]
+
+metrics:
+  items:
+    paired_query:
+      _target_: pi3.metrics.paired_query.PairedQueryConsistencyMetric
+      data_root: ${lmgeo.data_root}
+      models_folder: ${lmgeo.models_folder}
+      symmetric_ids: ${lmgeo.symmetric_ids}
+      solve_scale: true
+      max_model_points: 20000
+      nn_chunk_size: 2048
+      device: cuda
+      max_points_per_pair: 4096
+
+visuals:
+  items:
+    input_query_context_frames:
+      _target_: pi3.visualizations.input_frames.InputFramesVisualizer
+      role: query_context
+      max_views: 6
+      thumbnail_size: 128
+      columns: 6

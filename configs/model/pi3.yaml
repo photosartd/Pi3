@@ -10,6 +10,10 @@ model:
     train_conf: false
     num_dec_blk_not_to_checkpoint: 4
     dino_output_layers: []
+    # Optional Pi3X-style K^-1 pixel-ray patch embedding. When false, the
+    # module is not constructed and historical Pi3 checkpoints/configs retain
+    # their original model structure.
+    use_ray_conditioning: false
     ckpt: null # <path-to-your-pretrain-checkpoint>
 
 loss:

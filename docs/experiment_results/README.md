@@ -14,3 +14,4 @@ we can compare experiments without re-mining TensorBoard/log files every time.
 | [2026-07-21 all-RGB-masked context refs](2026-07-21_lmgeo_rtxpro6000_all_rgb_masked_context_refs.md) | running | High-resolution RTX PRO 6000 diagnostic with masked query/reference RGB and context-reference validation. |
 | [2026-07-22 A40 baseline vs correspondence](2026-07-22_lmgeo_a40_baseline_vs_corr.md) | complete/partial | Cluster A40 high-resolution baseline and DINO-weighted correspondence-loss ablation comparison. |
 | [2026-07-22 next moves](2026-07-22_next_moves_after_a40_corr_masked.md) | decision note | Interprets the baseline/corr/masked-query evidence and records the next experiment priorities. |
+| [2026-07-24 paired query implementation](2026-07-24_lmgeo_paired_query_implementation.md) | implementation validated | Adds opt-in recentered+original query regimes, canonical/equivariance metrics, and local/Slurm-script smoke evidence. |

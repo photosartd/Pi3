@@ -589,6 +589,13 @@ class BaseTrainer:
         metric_logger.add_meter(
             "min_lr", SmoothedValue(window_size=1, fmt="{value:.6f}")
         )
+        if any(
+            group.get("group_name") == "ray"
+            for group in self.optimizer.param_groups
+        ):
+            metric_logger.add_meter(
+                "ray_lr", SmoothedValue(window_size=1, fmt="{value:.6f}")
+            )
         # metric_logger.add_meter(
         #     "dataloader", SmoothedValue(window_size=1, fmt="{value:.6f}")
         # )
@@ -720,14 +727,24 @@ class BaseTrainer:
 
                 min_lr = 10.0
                 max_lr = 0.0
+                named_lrs = {}
                 for group in self.optimizer.param_groups:
                     min_lr = min(min_lr, group["lr"])
                     max_lr = max(max_lr, group["lr"])
+                    group_name = group.get("group_name")
+                    if group_name:
+                        named_lrs[group_name] = max(
+                            named_lrs.get(group_name, 0.0),
+                            float(group["lr"]),
+                        )
 
                 metric_logger.update(lr=max_lr)
                 metric_logger.update(min_lr=min_lr)
                 self.accelerator.log({"lr": max_lr}, step=start_steps)
                 self.accelerator.log({"min_lr": min_lr}, step=start_steps)
+                if "ray" in named_lrs:
+                    metric_logger.update(ray_lr=named_lrs["ray"])
+                    self.accelerator.log({"ray_lr": named_lrs["ray"]}, step=start_steps)
 
                 weight_decay_value = None
                 for group in self.optimizer.param_groups:

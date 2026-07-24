@@ -15,6 +15,9 @@ lmgeo_query_recenter:
   zoom_min: 1.0
   depth_interpolation: nearest
   min_valid_depth_pixels: ${lmgeo.min_preprocessed_query_depth_pixels}
+  # Default-off additive experiment: when enabled, every selected query record
+  # contributes the recentered target and its original-camera companion.
+  include_original_query_view: false
 
 _recenter_sequence: &recenter_sequence
   _target_: datasets.lmgeo_recenter.LMGeoRecenterZoomSequenceDataset
@@ -24,6 +27,7 @@ _recenter_sequence: &recenter_sequence
   query_recenter_zoom_min: ${lmgeo_query_recenter.zoom_min}
   query_recenter_depth_interpolation: ${lmgeo_query_recenter.depth_interpolation}
   query_recenter_min_valid_depth_pixels: ${lmgeo_query_recenter.min_valid_depth_pixels}
+  query_recenter_include_original_query_view: ${lmgeo_query_recenter.include_original_query_view}
   filter_target_center_crop_visibility: false
 
 train_dataset:

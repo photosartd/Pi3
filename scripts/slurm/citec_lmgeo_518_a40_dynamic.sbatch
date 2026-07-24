@@ -211,9 +211,73 @@ elif [[ -n "$CONTINUE_MODE" ]]; then
       ;;
   esac
 fi
+if [[ "$RUN_MODE" == "smoke" ]]; then
+  # Dataset construction must not dominate or stall a memory/forward smoke.
+  # Keep every preprocessed-depth filter off, including the real BOP target
+  # loaders that do not inherit lmgeo.filter_preprocessed_query_depth.
+  COMMON_OVERRIDES+=(
+    "lmgeo_profile.filter_preprocessed_query_depth=false"
+    "lmgeo.filter_preprocessed_query_depth=false"
+    "test_dataset.filter_target_preprocessed_depth=false"
+    "val_datasets.real_test.dataset.filter_target_preprocessed_depth=false"
+    "val_datasets.real_test_ref16.dataset.filter_target_preprocessed_depth=false"
+  )
+fi
 
 if [[ "$RUN_MODE" == "smoke" ]]; then
-  if { [[ "$TRAIN_CONFIG" == *"recenter_zoom"* ]] && [[ "$TRAIN_CONFIG" == *"k1"* ]]; } || \
+  if [[ "$DATA_CONFIG" == *"recenter_zoom_plus_original_k1"* ]]; then
+    echo "Running ${SMOKE_ITERS}-step max-view 18-view paired K=1 recenter+zoom smoke."
+    accelerate launch --config_file configs/accelerate/ddp.yaml \
+      --num_processes "$NUM_GPUS" --num_machines 1 \
+      scripts/train_pi3.py \
+      "${COMMON_OVERRIDES[@]}" \
+      'train.image_num_range=[18,18]' \
+      train.max_img_per_gpu=28 \
+      'lmgeo_profile.num_reference_range=[16,16]' \
+      'lmgeo_profile.num_query_range=[1,1]' \
+      train.num_epoch=1 \
+      train.iters_per_epoch="$SMOKE_ITERS" \
+      val_datasets.real_test.runtime.iters_per_test=1 \
+      val_datasets.real_test.runtime.max_img_per_gpu=7 \
+      val_datasets.real_test_ref16.runtime.iters_per_test=1 \
+      val_datasets.real_test_ref16.runtime.max_img_per_gpu=18 \
+      val_datasets.pbr_new_val.runtime.iters_per_test=1 \
+      val_datasets.pbr_new_val.runtime.max_img_per_gpu=7 \
+      val_datasets.pbr_new_val_ref16.runtime.iters_per_test=1 \
+      val_datasets.pbr_new_val_ref16.runtime.max_img_per_gpu=18 \
+      metrics.enabled=false \
+      visuals.enabled=false \
+      log.use_tensorboard=false \
+      log.save_best=false \
+      log.save_checkpoints=false \
+      extras.print_config=false
+
+    echo "Running ${SMOKE_ITERS}-step packed-min 7 x 4-view paired K=1 recenter+zoom smoke."
+    accelerate launch --config_file configs/accelerate/ddp.yaml \
+      --num_processes "$NUM_GPUS" --num_machines 1 \
+      scripts/train_pi3.py \
+      "${COMMON_OVERRIDES[@]}" \
+      'train.image_num_range=[4,4]' \
+      train.max_img_per_gpu=28 \
+      'lmgeo_profile.num_reference_range=[2,2]' \
+      'lmgeo_profile.num_query_range=[1,1]' \
+      train.num_epoch=1 \
+      train.iters_per_epoch="$SMOKE_ITERS" \
+      val_datasets.real_test.runtime.iters_per_test=1 \
+      val_datasets.real_test.runtime.max_img_per_gpu=7 \
+      val_datasets.real_test_ref16.runtime.iters_per_test=1 \
+      val_datasets.real_test_ref16.runtime.max_img_per_gpu=18 \
+      val_datasets.pbr_new_val.runtime.iters_per_test=1 \
+      val_datasets.pbr_new_val.runtime.max_img_per_gpu=7 \
+      val_datasets.pbr_new_val_ref16.runtime.iters_per_test=1 \
+      val_datasets.pbr_new_val_ref16.runtime.max_img_per_gpu=18 \
+      metrics.enabled=false \
+      visuals.enabled=false \
+      log.use_tensorboard=false \
+      log.save_best=false \
+      log.save_checkpoints=false \
+      extras.print_config=false
+  elif { [[ "$TRAIN_CONFIG" == *"recenter_zoom"* ]] && [[ "$TRAIN_CONFIG" == *"k1"* ]]; } || \
      { [[ "$DATA_CONFIG" == *"recenter_zoom"* ]] && [[ "$DATA_CONFIG" == *"k1"* ]]; }; then
     echo "Running ${SMOKE_ITERS}-step max-view 17-view K=1 recenter+zoom smoke."
     accelerate launch --config_file configs/accelerate/ddp.yaml \

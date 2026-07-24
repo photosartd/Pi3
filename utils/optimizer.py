@@ -35,6 +35,7 @@ _LOCAL_OPTIMIZER_KEYS = {
     "filter_bias_and_bn",
     "verbose",
     "encoder_lr",
+    "ray_lr",
     "foreach",
 }
 

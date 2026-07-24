@@ -571,6 +571,12 @@ class LMGeoDataset(BaseDataset):
             "view_role": str(view_role),
             "is_reference": bool(view_role == "reference"),
             "is_query": bool(view_role == "query"),
+            # Optional paired-query experiments override these fields after
+            # loading. Defaults keep every historical dataset/config unchanged.
+            "is_query_context": False,
+            "is_cropped_query": False,
+            "is_original_query": False,
+            "query_pair_index": np.int64(-1),
             "reference_source": reference_source,
             "is_context_reference": bool(view_role == "reference" and reference_source == "context_scene"),
             "source_scene_id": np.int64(source_scene_id),
@@ -590,6 +596,17 @@ class LMGeoDataset(BaseDataset):
         }
         view.update(transform_meta)
         return view
+
+    def _load_query_views(self, record):
+        """Expand one selected query record into one or more model views."""
+
+        return [
+            self._load_view(
+                record,
+                rgb_masking=self.query_rgb_masking,
+                view_role="query",
+            )
+        ]
 
     def _get_views(self, index, resolution, rng):
         expected = self.num_reference + self.num_query
@@ -626,10 +643,11 @@ class LMGeoDataset(BaseDataset):
             self._load_view(record, rgb_masking=self.reference_rgb_masking, view_role="reference")
             for record in reference_records
         ]
-        views.extend(
-            self._load_view(record, rgb_masking=self.query_rgb_masking, view_role="query")
-            for record in query_records
-        )
+        for query_index, record in enumerate(query_records):
+            query_views = self._load_query_views(record)
+            for view in query_views:
+                view["query_pair_index"] = np.int64(query_index)
+            views.extend(query_views)
         return views
 
 
@@ -1284,8 +1302,9 @@ class LMGeoSequenceDataset(LMGeoDataset):
             self._load_view(record, rgb_masking=self.reference_rgb_masking, view_role="reference")
             for record in reference_records
         ]
-        views.extend(
-            self._load_view(record, rgb_masking=self.query_rgb_masking, view_role="query")
-            for record in query_records
-        )
+        for query_index, record in enumerate(query_records):
+            query_views = self._load_query_views(record)
+            for view in query_views:
+                view["query_pair_index"] = np.int64(query_index)
+            views.extend(query_views)
         return views
