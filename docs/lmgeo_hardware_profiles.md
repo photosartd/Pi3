@@ -164,6 +164,8 @@ The current CITEc path defaults and their overrides are:
 | Runs | `/vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3` | `PI3_RUNS_ROOT` |
 | One run directory | `<runs>/<run-name>` | `PI3_RUN_DIR` |
 | TensorBoard events | `/homes/dtrofimov/logs/spott3r/<run-name>` | `PI3_TENSORBOARD_ROOT` or `PI3_TENSORBOARD_DIR` |
+| Checkpoint interval | Every epoch for Slurm jobs | `PI3_CKPT_INTERVAL` or `--ckpt-interval` |
+| Resume latest checkpoint | Config default or explicit Slurm continue | `PI3_CONTINUE=true` or `--continue` |
 | Slurm logs | `<runs>/slurm_logs` | `PI3_SLURM_LOG_DIR` |
 
 For example, a two-A40 job with explicit checkpoint, data, and output paths is:

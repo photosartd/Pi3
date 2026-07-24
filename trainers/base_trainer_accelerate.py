@@ -53,6 +53,60 @@ from accelerate.utils import (
 )
 import numpy as np
 
+
+_AUTO_RESUME_VALUES = {"auto", "latest", "last"}
+
+
+def checkpoint_epoch_from_path(path):
+    checkpoint_name = os.path.basename(os.path.normpath(str(path)))
+    if not checkpoint_name.startswith("checkpoint_"):
+        return None
+    try:
+        return int(checkpoint_name.split("checkpoint_", 1)[1])
+    except ValueError:
+        return None
+
+
+def list_accelerate_checkpoints(ckpt_dir):
+    if not ckpt_dir or not os.path.isdir(ckpt_dir):
+        return []
+
+    checkpoints = []
+    for name in os.listdir(ckpt_dir):
+        path = os.path.join(ckpt_dir, name)
+        epoch = checkpoint_epoch_from_path(path)
+        if epoch is not None and os.path.isdir(path):
+            checkpoints.append((epoch, path))
+    checkpoints.sort(key=lambda item: item[0])
+    return [path for _, path in checkpoints]
+
+
+def latest_accelerate_checkpoint(ckpt_dir):
+    checkpoints = list_accelerate_checkpoints(ckpt_dir)
+    return checkpoints[-1] if checkpoints else None
+
+
+def resolve_resume_checkpoint(ckpt_dir, resume=None, auto_resume=True):
+    if resume is not None:
+        resume = str(resume)
+        if not resume.strip():
+            resume = None
+        elif resume.strip().lower() in _AUTO_RESUME_VALUES:
+            return latest_accelerate_checkpoint(ckpt_dir)
+        else:
+            return resume
+    if resume is None and auto_resume:
+        return latest_accelerate_checkpoint(ckpt_dir)
+    return None
+
+
+def next_epoch_after_checkpoint(path):
+    epoch = checkpoint_epoch_from_path(path)
+    if epoch is None:
+        return 0
+    return epoch + 1
+
+
 class BaseTrainer:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -200,9 +254,9 @@ class BaseTrainer:
         )
 
         # Auto resume the checkpoint
-        latest_epoch = self.auto_resume()
-        self.initial_global_step = self.iters_per_epoch * latest_epoch
-        self.first_epoch = latest_epoch
+        first_epoch = self.auto_resume()
+        self.initial_global_step = self.iters_per_epoch * first_epoch
+        self.first_epoch = first_epoch
 
         os.makedirs(self.cfg.log.ckpt_dir, exist_ok=True)
 
@@ -259,7 +313,11 @@ class BaseTrainer:
         best_model_path = None
 
         max_checkpoints = self.cfg.log.max_checkpoints  # Maximum number of recent checkpoints to keep
-        saved_checkpoints = []  # List to track saved checkpoint paths
+        saved_checkpoints = (
+            list_accelerate_checkpoints(self.cfg.log.ckpt_dir)
+            if self.first_epoch > 0
+            else []
+        )  # List to track saved checkpoint paths
 
         for epoch in range(self.first_epoch, self.cfg.train.num_epoch):
             torch.cuda.reset_peak_memory_stats()
@@ -834,39 +892,26 @@ class BaseTrainer:
         self.accelerator = accelerator
 
     def auto_resume(self):
-        if self.cfg.train.resume:
-            path = self.cfg.train.resume
-        elif os.path.exists(self.cfg.log.ckpt_dir):
-            # Get the most recent checkpoint
-            dirs = os.listdir(self.cfg.log.ckpt_dir)
-            dirs = [d for d in dirs if d.startswith("checkpoint_")]
-            dirs = sorted(dirs, key=lambda x: int(x.split("_")[1]))
-            path = dirs[-1] if len(dirs) > 0 else None
-            if path is not None:
-                path = os.path.join(self.cfg.log.ckpt_dir, path)
-        else:
-            path = None
+        path = resolve_resume_checkpoint(
+            self.cfg.log.ckpt_dir,
+            resume=self.cfg.train.get("resume"),
+            auto_resume=bool(self.cfg.train.get("auto_resume", True)),
+        )
 
         if path is None:
             self.log_info("Checkpoint does not exist. Starting a new training run.")
             
             start_epoch = 0
         else:
+            if not os.path.isdir(path):
+                raise FileNotFoundError(f"Resume checkpoint directory does not exist: {path}")
             self.log_info(f"Resuming from checkpoint {path}")
             self.accelerator.load_state(
                 # os.path.join(self.cfg.log.ckpt_dir, path)
                 path
             )
-            # Extract epoch number from checkpoint path
-            # Handles both "checkpoint_N" and "best_model" formats
-            if "checkpoint_" in path:
-                # Extract epoch from "checkpoint_N" format
-                checkpoint_name = path.rstrip('/').split('/')[-1]
-                start_epoch = int(checkpoint_name.split("checkpoint_")[-1])
-            else:
-                # For "best_model" or other formats, start from epoch 0
-                # This is correct for stage transitions where we want to reset the epoch counter
-                start_epoch = 0
+            start_epoch = next_epoch_after_checkpoint(path)
+            self.log_info(f"Resume will start from epoch {start_epoch}")
 
         return start_epoch
 

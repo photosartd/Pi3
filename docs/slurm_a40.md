@@ -305,6 +305,10 @@ All path overrides accepted by the job are:
 | `PI3_TENSORBOARD_ROOT` | Parent directory for default TensorBoard event directories; defaults to `/homes/dtrofimov/logs/spott3r` |
 | `PI3_TENSORBOARD_DIR` | Exact TensorBoard event directory; set to empty only to fall back to `PI3_RUN_DIR` |
 | `PI3_SLURM_LOG_DIR` | Directory for Slurm `.out` and `.err` files |
+| `PI3_CKPT_INTERVAL` | Save checkpoint every N epochs; defaults to `1`; equivalent to `--ckpt-interval N` |
+| `PI3_MAX_CHECKPOINTS` | Keep at most N recent epoch checkpoints; defaults to `5`; equivalent to `--max-checkpoints N` |
+| `PI3_CONTINUE` | `true` resumes from the latest checkpoint in `PI3_RUN_DIR/ckpts`; `false` forces a fresh start |
+| `PI3_RESUME` | Exact Accelerate checkpoint directory to resume, for example `.../ckpts/checkpoint_9` |
 
 Example with explicit paths:
 
@@ -316,6 +320,37 @@ PI3_TENSORBOARD_DIR=/homes/dtrofimov/logs/spott3r/my_a40_run \
 PI3_RUN_NAME=my_a40_run \
   scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 ```
+
+Slurm training saves every epoch and keeps the latest five epoch checkpoints by
+default. Override that cadence directly on the submit wrapper when needed:
+
+```bash
+# Save every two epochs and keep the latest three epoch checkpoints.
+PI3_RUN_NAME=my_a40_run \
+  scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train \
+  --ckpt-interval 2 \
+  --max-checkpoints 3
+
+# Continue the same run from the latest checkpoint under
+# /vol/coro/.../runs/Pi3/my_a40_run/ckpts.
+PI3_RUN_NAME=my_a40_run \
+  scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train \
+  --continue
+
+# Resume from a specific checkpoint directory.
+PI3_RUN_NAME=my_a40_run \
+  scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train \
+  --resume /vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3/my_a40_run/ckpts/checkpoint_9
+
+# Reuse a run name intentionally without auto-resuming.
+PI3_RUN_NAME=my_a40_run \
+  scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train \
+  --fresh
+```
+
+`--continue` checks for an existing `checkpoint_*` directory before submitting
+the job. This avoids spending queue time on a job that would only discover after
+allocation that the requested previous checkpoint does not exist.
 
 ## Baseline And Correspondence Runs
 

@@ -24,6 +24,10 @@ TRAIN_CONFIG="${PI3_TRAIN_CONFIG:-train_lmgeo_finetune_a40_46gb}"
 DATA_CONFIG="${PI3_DATA_CONFIG:-lmgeo_trainpbr45_real_and_new_val}"
 SMOKE_ITERS="${PI3_SMOKE_ITERS:-5}"
 CONTEXT_REFERENCE_FRACTION="${PI3_CONTEXT_REFERENCE_FRACTION:-}"
+CONTINUE_MODE="${PI3_CONTINUE:-}"
+RESUME_PATH="${PI3_RESUME:-}"
+CKPT_INTERVAL="${PI3_CKPT_INTERVAL:-1}"
+MAX_CHECKPOINTS="${PI3_MAX_CHECKPOINTS:-5}"
 
 cd "$REPO_DIR"
 
@@ -90,6 +94,16 @@ if [[ -z "$TENSORBOARD_DIR" ]]; then
   TENSORBOARD_DIR="$RUN_DIR"
 fi
 mkdir -p "$RUN_DIR/ckpts" "$TENSORBOARD_DIR"
+if [[ -z "$RESUME_PATH" ]]; then
+  case "${CONTINUE_MODE,,}" in
+    1|true|yes|y|on)
+      if ! find "$RUN_DIR/ckpts" -maxdepth 1 -type d -name 'checkpoint_*' -print -quit 2>/dev/null | grep -q .; then
+        echo "ERROR: continue requested, but no checkpoint_* directory was found under: $RUN_DIR/ckpts" >&2
+        exit 2
+      fi
+      ;;
+  esac
+fi
 
 echo "Job: $SLURM_JOB_ID"
 echo "Node: $(hostname)"
@@ -104,6 +118,10 @@ echo "Train config: $TRAIN_CONFIG"
 echo "Data config: $DATA_CONFIG"
 echo "filter_preprocessed_query_depth=$FILTER_PREPROCESSED_QUERY_DEPTH"
 echo "context_reference_fraction_override=${CONTEXT_REFERENCE_FRACTION:-config}"
+echo "continue_mode=${CONTINUE_MODE:-config}"
+echo "resume_path=${RESUME_PATH:-latest/config}"
+echo "ckpt_interval=${CKPT_INTERVAL:-config}"
+echo "max_checkpoints=${MAX_CHECKPOINTS:-config}"
 echo "smoke_iters=$SMOKE_ITERS"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 echo "SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-unset}"
@@ -166,6 +184,32 @@ COMMON_OVERRIDES=(
 )
 if [[ -n "$CONTEXT_REFERENCE_FRACTION" ]]; then
   COMMON_OVERRIDES+=("lmgeo.context_reference_fraction=$CONTEXT_REFERENCE_FRACTION")
+fi
+if [[ -n "$CKPT_INTERVAL" ]]; then
+  COMMON_OVERRIDES+=("log.ckpt_interval=$CKPT_INTERVAL")
+fi
+if [[ -n "$MAX_CHECKPOINTS" ]]; then
+  COMMON_OVERRIDES+=("log.max_checkpoints=$MAX_CHECKPOINTS")
+fi
+if [[ -n "$RESUME_PATH" ]]; then
+  if [[ ! -d "$RESUME_PATH" ]]; then
+    echo "ERROR: resume checkpoint directory does not exist: $RESUME_PATH" >&2
+    exit 2
+  fi
+  COMMON_OVERRIDES+=("train.resume=$RESUME_PATH" "train.auto_resume=true")
+elif [[ -n "$CONTINUE_MODE" ]]; then
+  case "${CONTINUE_MODE,,}" in
+    1|true|yes|y|on)
+      COMMON_OVERRIDES+=("train.resume=auto" "train.auto_resume=true")
+      ;;
+    0|false|no|n|off)
+      COMMON_OVERRIDES+=("train.resume=null" "train.auto_resume=false")
+      ;;
+    *)
+      echo "ERROR: PI3_CONTINUE must be true/false when set, got: $CONTINUE_MODE" >&2
+      exit 2
+      ;;
+  esac
 fi
 
 if [[ "$RUN_MODE" == "smoke" ]]; then
