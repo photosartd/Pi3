@@ -721,9 +721,13 @@ class BaseTrainer:
         pass
 
     def build_accelerator(self):
+        tracker_dir = OmegaConf.select(self.cfg, "log.tensorboard_dir")
+        if tracker_dir in (None, ""):
+            tracker_dir = self.cfg.log.output_dir
+
         accelerator_project_config = ProjectConfiguration(
             project_dir=self.cfg.log.output_dir,
-            logging_dir=self.cfg.log.output_dir,
+            logging_dir=str(tracker_dir),
             total_limit=4,      # self.cfg.save_total_limit = 4
             # automatic_checkpoint_naming=True,
         )
@@ -738,7 +742,7 @@ class BaseTrainer:
         elif self.cfg.log.use_tensorboard:
             log_with = 'tensorboard'
         else:
-            log_with = 'all'
+            log_with = None
 
         mixed_precision = 'no' if self.cfg.train.model_dtype not in ['fp8', 'fp16', 'bf16'] else self.cfg.train.model_dtype
 

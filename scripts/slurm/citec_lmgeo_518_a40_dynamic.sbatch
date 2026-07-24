@@ -16,6 +16,7 @@ CONDA_ROOT="${PI3_CONDA_ROOT:-/homes/dtrofimov/miniconda3}"
 CONDA_ENV="${PI3_CONDA_ENV:-pi3-lmgeo}"
 DATA_ROOT="${PI3_DATA_ROOT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/lm-o}"
 RUNS_ROOT="${PI3_RUNS_ROOT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3}"
+TENSORBOARD_ROOT="${PI3_TENSORBOARD_ROOT:-/homes/dtrofimov/logs/spott3r}"
 RUN_MODE="${PI3_RUN_MODE:-train}"
 SHARED_CKPT="${PI3_SHARED_CKPT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/model.safetensors}"
 FILTER_PREPROCESSED_QUERY_DEPTH="${PI3_FILTER_PREPROCESSED_QUERY_DEPTH:-false}"
@@ -80,7 +81,15 @@ fi
 
 RUN_NAME="${PI3_RUN_NAME:-lmgeo_a40_46gb_${RUN_MODE}_${SLURM_JOB_ID}}"
 RUN_DIR="${PI3_RUN_DIR:-$RUNS_ROOT/$RUN_NAME}"
-mkdir -p "$RUN_DIR/ckpts"
+if [[ -n "${PI3_TENSORBOARD_DIR+x}" ]]; then
+  TENSORBOARD_DIR="$PI3_TENSORBOARD_DIR"
+else
+  TENSORBOARD_DIR="$TENSORBOARD_ROOT/$RUN_NAME"
+fi
+if [[ -z "$TENSORBOARD_DIR" ]]; then
+  TENSORBOARD_DIR="$RUN_DIR"
+fi
+mkdir -p "$RUN_DIR/ckpts" "$TENSORBOARD_DIR"
 
 echo "Job: $SLURM_JOB_ID"
 echo "Node: $(hostname)"
@@ -89,6 +98,7 @@ echo "Repo: $REPO_DIR"
 echo "Data: $DATA_ROOT"
 echo "Checkpoint: $PI3_CKPT"
 echo "Output: $RUN_DIR"
+echo "TensorBoard: $TENSORBOARD_DIR"
 echo "Conda env: $CONDA_ENV at $CONDA_ROOT"
 echo "Train config: $TRAIN_CONFIG"
 echo "Data config: $DATA_CONFIG"
@@ -150,6 +160,7 @@ COMMON_OVERRIDES=(
   "lmgeo.filter_preprocessed_query_depth=$FILTER_PREPROCESSED_QUERY_DEPTH"
   "model.ckpt=$PI3_CKPT"
   "log.output_dir=$RUN_DIR"
+  "log.tensorboard_dir=$TENSORBOARD_DIR"
   "log.ckpt_dir=$RUN_DIR/ckpts"
   "hydra.run.dir=$RUN_DIR"
 )

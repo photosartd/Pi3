@@ -163,6 +163,7 @@ The current CITEc path defaults and their overrides are:
 | Pi3 base checkpoint | `/vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/model.safetensors` | `PI3_CKPT` |
 | Runs | `/vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3` | `PI3_RUNS_ROOT` |
 | One run directory | `<runs>/<run-name>` | `PI3_RUN_DIR` |
+| TensorBoard events | `/homes/dtrofimov/logs/spott3r/<run-name>` | `PI3_TENSORBOARD_ROOT` or `PI3_TENSORBOARD_DIR` |
 | Slurm logs | `<runs>/slurm_logs` | `PI3_SLURM_LOG_DIR` |
 
 For example, a two-A40 job with explicit checkpoint, data, and output paths is:
@@ -172,6 +173,7 @@ PI3_TRAIN_GPUS=2 \
 PI3_CKPT=/shared/checkpoints/pi3/model.safetensors \
 PI3_DATA_ROOT=/shared/datasets/lm-o \
 PI3_RUN_DIR=/shared/runs/pi3/my_a40_run \
+PI3_TENSORBOARD_DIR=/homes/dtrofimov/logs/spott3r/my_a40_run \
 PI3_RUN_NAME=my_a40_run \
   scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 ```

@@ -259,7 +259,10 @@ visuals:
 
 Expected TensorBoard image groups include input reference/query grids, query pose
 overlays, depth panels, and reference reconstruction. Event files live below
-`${log.output_dir}/${name}/events.out.tfevents.*`.
+`${log.tensorboard_dir}/${name}/events.out.tfevents.*` when
+`log.tensorboard_dir` is set. The CITEc Slurm script sets this to
+`/homes/dtrofimov/logs/spott3r/<run-name>` by default so checkpoints can remain
+under the `/vol/coro/.../runs/Pi3/<run-name>/ckpts` run directory.
 
 ## Recenter + Zoom K1 Diagnostic
 

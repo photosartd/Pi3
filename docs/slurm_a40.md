@@ -300,8 +300,10 @@ All path overrides accepted by the job are:
 | `PI3_DATA_ROOT` | LM-O dataset root |
 | `PI3_CKPT` | Exact Pi3 base `model.safetensors`; highest checkpoint precedence |
 | `PI3_SHARED_CKPT` | Alternative automatic shared-checkpoint location |
-| `PI3_RUNS_ROOT` | Parent directory for default run directories and Slurm logs |
-| `PI3_RUN_DIR` | Exact output directory for this run |
+| `PI3_RUNS_ROOT` | Parent directory for default run directories; defaults to `/vol/coro/.../runs/Pi3` |
+| `PI3_RUN_DIR` | Exact output directory for metrics and checkpoints for this run |
+| `PI3_TENSORBOARD_ROOT` | Parent directory for default TensorBoard event directories; defaults to `/homes/dtrofimov/logs/spott3r` |
+| `PI3_TENSORBOARD_DIR` | Exact TensorBoard event directory; set to empty only to fall back to `PI3_RUN_DIR` |
 | `PI3_SLURM_LOG_DIR` | Directory for Slurm `.out` and `.err` files |
 
 Example with explicit paths:
@@ -310,6 +312,7 @@ Example with explicit paths:
 PI3_CKPT=/shared/checkpoints/pi3/model.safetensors \
 PI3_DATA_ROOT=/shared/datasets/lm-o \
 PI3_RUN_DIR=/shared/runs/pi3/my_a40_run \
+PI3_TENSORBOARD_DIR=/homes/dtrofimov/logs/spott3r/my_a40_run \
 PI3_RUN_NAME=my_a40_run \
   scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train
 ```
@@ -422,10 +425,14 @@ The two run roots and their main contents are:
 ```text
 /vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3/lmgeo_a40_baseline/
   ckpts/
-  lmgeo_a40_baseline/events.out.tfevents.*
 
 /vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3/lmgeo_a40_corr_lambda0p3/
   ckpts/
+
+/homes/dtrofimov/logs/spott3r/lmgeo_a40_baseline/
+  lmgeo_a40_baseline/events.out.tfevents.*
+
+/homes/dtrofimov/logs/spott3r/lmgeo_a40_corr_lambda0p3/
   lmgeo_a40_corr_lambda0p3/events.out.tfevents.*
 ```
 
@@ -433,7 +440,7 @@ TensorBoard recursively discovers both runs from their common parent:
 
 ```bash
 tensorboard \
-  --logdir /vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3 \
+  --logdir /homes/dtrofimov/logs/spott3r \
   --port 6006
 ```
 
