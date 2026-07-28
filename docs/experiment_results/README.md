@@ -15,3 +15,4 @@ we can compare experiments without re-mining TensorBoard/log files every time.
 | [2026-07-22 A40 baseline vs correspondence](2026-07-22_lmgeo_a40_baseline_vs_corr.md) | complete/partial | Cluster A40 high-resolution baseline and DINO-weighted correspondence-loss ablation comparison. |
 | [2026-07-22 next moves](2026-07-22_next_moves_after_a40_corr_masked.md) | decision note | Interprets the baseline/corr/masked-query evidence and records the next experiment priorities. |
 | [2026-07-24 paired query implementation](2026-07-24_lmgeo_paired_query_implementation.md) | implementation validated | Adds opt-in recentered+original query regimes, canonical/equivariance metrics, and local/Slurm-script smoke evidence. |
+| [2026-07-27 A40 ablation comparison](2026-07-27_lmgeo_a40_new_ablation_comparison.md) | event-mined comparison | Analyzes context refs, recenter+zoom, GT visibility pooling, and recenter+masked A40 runs against the existing baselines. |
