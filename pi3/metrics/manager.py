@@ -41,6 +41,8 @@ class MetricManager:
         metrics = []
         if enabled and items:
             for _, metric_cfg in items.items():
+                if metric_cfg is None or metric_cfg is False:
+                    continue
                 metrics.append(hydra.utils.instantiate(metric_cfg))
         return cls(
             metrics,

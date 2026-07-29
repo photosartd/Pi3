@@ -1,0 +1,70 @@
+# @package _global_
+
+# Eval-only same-scene ceiling profile sized conservatively for one 44.4 GiB
+# A40.  The fixed 25-view sampler budget gives one object-window sample per GPU
+# rank: up to 24 same-scene references plus one held-out query.
+defaults:
+  - train_lmgeo_finetune_a40_46gb
+  - _self_
+
+train:
+  eval_only: true
+  image_num_range: [25, 25]
+  max_img_per_gpu: 25
+  resolution:
+    - [560, 420]
+  random_reslution: false
+  num_epoch: 1
+  iters_per_epoch: 1
+  val_every_n_epochs: 1
+  auto_resume: false
+  resume: null
+  num_workers: 0
+  print_freq: 1
+
+test:
+  image_num_range: [25, 25]
+  max_img_per_gpu: 25
+  num_workers: 2
+  iters_per_test: 0
+  print_freq: 1
+
+model:
+  load_vggt: false
+  freeze_encoder: true
+  train_conf: false
+  ckpt: ckpts/Pi3/model.safetensors
+
+metrics:
+  enabled: true
+  train_enabled: false
+  val_enabled: true
+  items:
+    # Keep the ceiling run focused on pose/camera/object reconstruction
+    # metrics. Correspondence diagnostics are optional and expensive here.
+    correspondence: null
+
+visuals:
+  enabled: true
+  train_enabled: false
+  val_enabled: true
+  val_every_n_epochs: 1
+  items:
+    input_reference_frames:
+      max_views: 12
+      thumbnail_size: 128
+      columns: 6
+    input_query_frames:
+      max_views: 1
+      thumbnail_size: 160
+      columns: 1
+    query_pose_overlay:
+      max_query_views: 1
+    reference_reconstruction:
+      max_pred_points: 12000
+      max_gt_points: 12000
+
+log:
+  save_best: false
+  save_checkpoints: false
+  ckpt_interval: 999

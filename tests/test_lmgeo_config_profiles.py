@@ -143,6 +143,39 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         self.assertEqual(valid_splits(28)[-1], (27, 1))
         self.assertEqual(len(valid_splits(28)), 23)
 
+    def test_same_scene_ceiling_eval_profile_uses_heldout_query_dataset(self):
+        cfg = compose_job(
+            "train_lmgeo_eval_only_a40_40gb_same_scene_ceiling",
+            "lmgeo_same_scene_ceiling",
+        )
+
+        self.assertTrue(cfg.train.eval_only)
+        self.assertEqual(list(cfg.train.image_num_range), [25, 25])
+        self.assertEqual(cfg.train.max_img_per_gpu, 25)
+        self.assertEqual(OmegaConf.to_container(cfg.train.resolution), [[560, 420]])
+        self.assertFalse(cfg.lmgeo.reference_rgb_masking)
+        self.assertFalse(cfg.lmgeo.query_rgb_masking)
+        self.assertTrue(cfg.lmgeo.depth_masking)
+        self.assertEqual(cfg.lmgeo_ceiling.max_reference, 24)
+        self.assertEqual(cfg.lmgeo_ceiling.query_frame_strategy, "random")
+        self.assertIsNone(cfg.metrics["items"].correspondence)
+        self.assertEqual(
+            active_val_loader_names(cfg),
+            ["real_same_scene_ceiling", "pbr_same_scene_ceiling"],
+        )
+        for name in active_val_loader_names(cfg):
+            dataset = cfg.val_datasets[name].dataset
+            runtime = cfg.val_datasets[name].runtime
+            self.assertEqual(
+                dataset._target_,
+                "datasets.lmgeo_dataset.LMGeoSameSceneCeilingDataset",
+            )
+            self.assertEqual(dataset.query_source, "windows")
+            self.assertEqual(dataset.max_reference, 24)
+            self.assertEqual(dataset.min_reference, 2)
+            self.assertEqual(list(runtime.image_num_range), [25, 25])
+            self.assertEqual(runtime.max_img_per_gpu, 25)
+
     def test_context_reference_data_profile_enables_train_and_pbr_context_val(self):
         cfg = compose_job(
             "train_lmgeo_finetune_a40_46gb",

@@ -1,0 +1,14 @@
+# @package _global_
+
+# Same-scene ceiling diagnostic with exactly five same-scene keyframes and one
+# random held-out query.  Windows with fewer than six usable object frames are
+# skipped so references never repeat and the query never leaks into alignment.
+defaults:
+  - lmgeo_same_scene_ceiling
+  - _self_
+
+lmgeo_ceiling:
+  max_reference: 5
+  min_reference: 5
+  min_query_records: 6
+  query_frame_strategy: random

@@ -1308,3 +1308,218 @@ class LMGeoSequenceDataset(LMGeoDataset):
                 view["query_pair_index"] = np.int64(query_index)
             views.extend(query_views)
         return views
+
+
+class LMGeoSameSceneCeilingDataset(LMGeoSequenceDataset):
+    """Evaluation-only same-scene ceiling dataset for object-pose alignment.
+
+    Every sample takes one object in one scene window, randomly holds out one
+    visible frame as the query, and uses the remaining visible frames from the
+    same object/window as references.  This tests Pi3's ceiling when reference
+    and query views already come from the same scene distribution and therefore
+    avoid the render-to-real/context gap.  The held-out query record is never
+    used as a reference, so the existing reference-only Sim(3) alignment metric
+    remains leak-free.
+    """
+
+    def __init__(
+        self,
+        *args,
+        max_reference=24,
+        min_reference=2,
+        query_frame_strategy="random",
+        skip_ambiguous_instances=True,
+        min_query_records=None,
+        **kwargs,
+    ):
+        self.same_scene_max_reference = int(max_reference)
+        self.same_scene_min_reference = int(min_reference)
+        self.query_frame_strategy = str(query_frame_strategy)
+        self.skip_ambiguous_instances = bool(skip_ambiguous_instances)
+        self._same_scene_epoch = 0
+        self._same_scene_base_seed = 777
+
+        if self.same_scene_min_reference <= 0:
+            raise ValueError("min_reference must be positive")
+        if self.same_scene_max_reference < self.same_scene_min_reference:
+            raise ValueError(
+                f"max_reference must be >= min_reference, got "
+                f"{self.same_scene_max_reference} < {self.same_scene_min_reference}"
+            )
+        if self.query_frame_strategy not in {"random", "first"}:
+            raise ValueError("query_frame_strategy must be 'random' or 'first'")
+        if min_query_records is None:
+            min_query_records = self.same_scene_min_reference + 1
+
+        kwargs.setdefault("query_source", "windows")
+        kwargs.setdefault("num_reference_range", (self.same_scene_min_reference, self.same_scene_max_reference))
+        kwargs.setdefault("num_query_range", (1, 1))
+        kwargs.setdefault("allow_repeat", False)
+        super().__init__(*args, min_query_records=min_query_records, **kwargs)
+
+        self.dataset_label = "LMGeoSameSceneCeiling"
+        self.samples, drop_counts = self._filter_same_scene_samples(self.samples)
+        if not self.samples:
+            raise ValueError(
+                "LMGeoSameSceneCeilingDataset did not find any windows with "
+                f"at least {self.same_scene_min_reference + 1} usable same-scene records"
+            )
+
+        ref_counts = [
+            min(self.same_scene_max_reference, max(0, len(sample["query_records"]) - 1))
+            for sample in self.samples
+        ]
+        print(
+            f"[{self.dataset_label}] same-scene ceiling samples={len(self.samples)}, "
+            f"query_frame_strategy={self.query_frame_strategy}, "
+            f"reference_count_range=({min(ref_counts)}, {max(ref_counts)}), "
+            f"dropped_too_few={drop_counts['too_few']}, "
+            f"dropped_ambiguous={drop_counts['ambiguous']}"
+        )
+
+    def set_epoch(self, epoch, base_seed=None):
+        self._same_scene_epoch = int(epoch)
+        if base_seed is not None:
+            self._same_scene_base_seed = int(base_seed)
+
+    def _build_reference_records(self, object_id=None):
+        # This diagnostic never samples render references.  Avoid walking the
+        # full train/<object_id> render split during validation-only setup.
+        return []
+
+    def _filter_same_scene_samples(self, samples):
+        filtered = []
+        drop_counts = {"too_few": 0, "ambiguous": 0}
+        for sample in samples:
+            records = list(sample["query_records"])
+            if len(records) < self.same_scene_min_reference + 1:
+                drop_counts["too_few"] += 1
+                continue
+            if self.skip_ambiguous_instances:
+                im_ids = [int(record["im_id"]) for record in records]
+                if len(set(im_ids)) != len(im_ids):
+                    drop_counts["ambiguous"] += 1
+                    continue
+            filtered.append(sample)
+        return filtered, drop_counts
+
+    def _same_scene_rng(self, index):
+        seed = (
+            int(self._same_scene_base_seed)
+            + 1000003 * int(self._same_scene_epoch)
+            + 9176 * int(index)
+        )
+        return np.random.default_rng(seed)
+
+    def _record_identity(self, record):
+        return (
+            str(record.get("split", "")),
+            str(record.get("scene_dir", "")),
+            int(record.get("im_id", -1)),
+            int(record.get("gt_id", -1)),
+            int(record.get("object_id", -1)),
+        )
+
+    def _select_same_scene_query_record(self, records, rng):
+        if self.query_frame_strategy == "first":
+            return records[0]
+        return records[int(rng.integers(0, len(records)))]
+
+    def _tag_same_scene_reference(self, record):
+        item = dict(record)
+        item["reference_source"] = "same_scene"
+        return item
+
+    def _load_same_scene_reference_view(self, record, sample):
+        view = self._load_view(
+            record,
+            rgb_masking=self.reference_rgb_masking,
+            view_role="reference",
+        )
+        view["reference_source"] = "same_scene"
+        view["is_context_reference"] = False
+        view["is_same_scene_reference"] = True
+        view["scene_id"] = np.int64(sample["query_scene_id"])
+        view["source_scene_id"] = np.int64(sample["query_scene_id"])
+        view["source_subscene_id"] = np.int64(sample["query_subscene_id"])
+        return view
+
+    def _get_views(self, index, resolution, rng):
+        sample_index = int(index) % len(self.samples)
+        sample = self.samples[sample_index]
+        object_id = int(sample["object_id"])
+        query_pool = list(sample["query_records"])
+        local_rng = self._same_scene_rng(sample_index)
+        query_record = self._select_same_scene_query_record(query_pool, local_rng)
+        query_identity = self._record_identity(query_record)
+
+        reference_pool = [
+            record for record in query_pool
+            if self._record_identity(record) != query_identity
+        ]
+        max_reference_by_sampler = max(0, int(self.frame_num) - 1)
+        ref_count = min(
+            self.same_scene_max_reference,
+            max_reference_by_sampler,
+            len(reference_pool),
+        )
+        if ref_count < self.same_scene_min_reference:
+            raise ValueError(
+                f"Same-scene sample has only {len(reference_pool)} reference candidates "
+                f"after holding out the query; need at least {self.same_scene_min_reference}"
+            )
+
+        self._current_resolution = resolution
+        self._prepare_sample_photometric_augmentation(rng)
+        reference_records = [
+            self._tag_same_scene_reference(record)
+            for record in self._select_records(
+                reference_pool,
+                ref_count,
+                self.reference_selection,
+                rng=local_rng,
+            )
+        ]
+
+        reference_identities = {self._record_identity(record) for record in reference_records}
+        if query_identity in reference_identities:
+            raise AssertionError("Selected same-scene query leaked into references")
+
+        self.this_views_info = {
+            "object_id": object_id,
+            "query_scene_id": sample["query_scene_id"],
+            "query_subscene_id": sample["query_subscene_id"],
+            "reference_count": ref_count,
+            "query_count": 1,
+            "same_scene_reference_count": ref_count,
+            "heldout_query": (
+                query_record["split"],
+                int(query_record.get("query_scene_id", -1)),
+                int(query_record.get("query_subscene_id", -1)),
+                int(query_record["im_id"]),
+                int(query_record["gt_id"]),
+            ),
+            "reference": [
+                (
+                    r.get("reference_source", "same_scene"),
+                    r["split"],
+                    int(r.get("query_scene_id", -1)),
+                    int(r.get("query_subscene_id", -1)),
+                    int(r["im_id"]),
+                    int(r["gt_id"]),
+                )
+                for r in reference_records
+            ],
+            "query": [(query_record["split"], query_record["im_id"], query_record["gt_id"])],
+            "leak_free": query_identity not in reference_identities,
+        }
+
+        views = [
+            self._load_same_scene_reference_view(record, sample)
+            for record in reference_records
+        ]
+        query_views = self._load_query_views(query_record)
+        for view in query_views:
+            view["query_pair_index"] = np.int64(0)
+        views.extend(query_views)
+        return views

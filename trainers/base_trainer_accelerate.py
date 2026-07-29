@@ -110,6 +110,7 @@ def next_epoch_after_checkpoint(path):
 class BaseTrainer:
     def __init__(self, cfg):
         self.cfg = cfg
+        self.eval_only = bool(OmegaConf.select(cfg, "train.eval_only", default=False))
 
         with open_dict(cfg):
             cfg.job_logging_cfg = HydraConfig.get().job_logging
@@ -139,8 +140,12 @@ class BaseTrainer:
         self.accelerator.wait_for_everyone()
 
         ## 3. Prepare dataloader
-        self.log_info("Making train dataloader...")
-        self.train_loader = create_dataloader(cfg, 'train')
+        if self.eval_only:
+            self.log_info("Eval-only mode: skipping train dataloader.")
+            self.train_loader = None
+        else:
+            self.log_info("Making train dataloader...")
+            self.train_loader = create_dataloader(cfg, 'train')
         self.log_info("Making validation dataloader(s)...")
         self.val_loaders, self.val_runtime_cfgs = self.prepare_val_loaders()
         self.test_loader = next(iter(self.val_loaders.values()))
@@ -151,17 +156,28 @@ class BaseTrainer:
             self.model = self.accelerator.prepare(self.model)
             self.accelerator.wait_for_everyone()
 
-            self.optimizer = self.build_optimizer(self.cfg.train.optimizer, self.model)
-            self.log_info(f"optimizer: {self.optimizer}")
+            if self.eval_only:
+                self.optimizer = None
+                self.log_info("Eval-only mode: optimizer disabled.")
+            else:
+                self.optimizer = self.build_optimizer(self.cfg.train.optimizer, self.model)
+                self.log_info(f"optimizer: {self.optimizer}")
         else:
-            self.optimizer = self.build_optimizer(self.cfg.train.optimizer, self.model)
-            self.log_info(f"optimizer: {self.optimizer}")
+            if self.eval_only:
+                self.optimizer = None
+                self.log_info("Eval-only mode: optimizer disabled.")
+            else:
+                self.optimizer = self.build_optimizer(self.cfg.train.optimizer, self.model)
+                self.log_info(f"optimizer: {self.optimizer}")
 
             self.model = self.accelerator.prepare(self.model)
             self.accelerator.wait_for_everyone()
 
         # Create the LR scheduler
-        self.iters_per_epoch = self.cfg.train.iters_per_epoch if self.cfg.train.iters_per_epoch > 0 else len(self.train_loader)
+        if self.eval_only:
+            self.iters_per_epoch = max(1, int(self.cfg.train.get("iters_per_epoch", 1)))
+        else:
+            self.iters_per_epoch = self.cfg.train.iters_per_epoch if self.cfg.train.iters_per_epoch > 0 else len(self.train_loader)
         self.iters_per_val = {
             name: (
                 runtime_cfg.iters_per_test
@@ -178,12 +194,16 @@ class BaseTrainer:
         if self.primary_val_name not in self.val_loaders:
             raise ValueError(f"primary_val={self.primary_val_name!r} is not in val loaders {list(self.val_loaders)}")
         self.latest_primary_val_stats = {}
-        self.cfg.train.lr_scheduler.total_steps = self.cfg.train.num_epoch * self.iters_per_epoch
-        self.log_info(f"Total step for lr scheduler: {self.cfg.train.lr_scheduler.total_steps} ({self.cfg.train.num_epoch} * {self.iters_per_epoch})")
-        self.lr_scheduler = build_scheduler(
-            self.cfg.train.lr_scheduler, optimizer=self.optimizer
-        )
-        self.log_info(f"LRScheduler: {self.lr_scheduler}")
+        if self.eval_only:
+            self.lr_scheduler = None
+            self.log_info("Eval-only mode: LR scheduler disabled.")
+        else:
+            self.cfg.train.lr_scheduler.total_steps = self.cfg.train.num_epoch * self.iters_per_epoch
+            self.log_info(f"Total step for lr scheduler: {self.cfg.train.lr_scheduler.total_steps} ({self.cfg.train.num_epoch} * {self.iters_per_epoch})")
+            self.lr_scheduler = build_scheduler(
+                self.cfg.train.lr_scheduler, optimizer=self.optimizer
+            )
+            self.log_info(f"LRScheduler: {self.lr_scheduler}")
 
         ## 6. Prepare accelerate training
         self.prepare_training()
@@ -214,12 +234,15 @@ class BaseTrainer:
         # )
 
         # don't wrap dataloader
-        (
-            self.optimizer,
-            self.lr_scheduler,
-        ) = self.accelerator.prepare(
-            self.optimizer, self.lr_scheduler
-        )
+        if self.eval_only:
+            self.log_info("Eval-only mode: no optimizer or scheduler to wrap.")
+        else:
+            (
+                self.optimizer,
+                self.lr_scheduler,
+            ) = self.accelerator.prepare(
+                self.optimizer, self.lr_scheduler
+            )
 
         if self.accelerator.is_main_process:
             self.accelerator.init_trackers(os.path.basename(self.cfg.log.output_dir))
@@ -231,6 +254,8 @@ class BaseTrainer:
             * self.cfg.train.gradient_accumulation_steps
         )
         self.log_info("***** Running training *****")
+        if self.eval_only:
+            self.log_info("Eval-only mode: validation will run once and training updates are disabled.")
         self.log_info(f"LR = {self.cfg.train.optimizer.lr:.8f}")
         self.log_info(f"Weigth Decay = {self.cfg.train.optimizer.weight_decay:.8f}")
         self.log_info(f"Instantaneous batch size per device = {self.cfg.train.batch_size}")
@@ -307,6 +332,35 @@ class BaseTrainer:
         # Start Train!
         start_time = time.time()
         self.accelerator.wait_for_everyone()
+
+        if self.eval_only:
+            epoch = int(self.first_epoch)
+            self.global_step = int(self.initial_global_step)
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+            self.before_epoch(epoch)
+            val_stats = self.validate_all(epoch)
+            log_stats = {
+                **{f"val_{k}": v for k, v in val_stats.items()},
+                "epoch": epoch,
+                "n_parameters": self.n_learnable_parameters,
+                "eval_only": True,
+            }
+            if self.accelerator.is_main_process:
+                with open(
+                    os.path.join(self.cfg.log.ckpt_dir, "log.txt"),
+                    mode="a",
+                    encoding="utf-8",
+                ) as f:
+                    f.write(json.dumps(log_stats) + "\n")
+                self.log_all(log_stats, step=self.global_step)
+
+            total_time = time.time() - start_time
+            total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+            self.log_info("Evaluation time {}".format(total_time_str))
+            self.accelerator.wait_for_everyone()
+            self.accelerator.end_training()
+            return
 
         # Initialize variable to track the best validation metric
         best_val_metric = float('inf')  # For metrics like loss; use -float('inf') for accuracy

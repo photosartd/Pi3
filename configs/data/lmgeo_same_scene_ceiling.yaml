@@ -1,0 +1,114 @@
+# @package _global_
+
+# Same-scene ceiling diagnostic for LMGeo.
+#
+# Each validation sample takes one object in one scene/subscene window, holds
+# one visible frame out as the query, and uses up to 24 remaining same-scene
+# frames as references.  RGB inputs stay unmasked; depth supervision/Chamfer
+# stays object-masked so object-frame geometry is not polluted by background.
+
+primary_val: real_same_scene_ceiling
+
+lmgeo:
+    data_root: /vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/lm-o
+    models_folder: models_eval
+    object_ids: all
+    reference_split: train
+    test_query_split: test
+    new_val_query_split: new_val
+    query_scene_ids: all
+    query_subscene_ids: all
+    query_window_size: 25
+    reference_rgb_masking: false
+    query_rgb_masking: false
+    depth_masking: true
+    mask_type: mask_visib
+    visibility_min: 0.1
+    reference_selection: uniform
+    depth_unit_scale: 0.001
+    filter_center_crop_visibility: true
+    min_center_crop_bbox_area: 1.0
+    filter_preprocessed_query_depth: false
+    min_preprocessed_query_depth_pixels: 1
+    allow_repeat: false
+    symmetric_ids: [10, 11]
+
+lmgeo_ceiling:
+    max_reference: 24
+    min_reference: 2
+    query_frame_strategy: random
+    min_query_records: 3
+    max_query_subsequences: null
+    skip_ambiguous_instances: true
+
+_same_scene_dataset_base: &same_scene_dataset_base
+    _target_: datasets.lmgeo_dataset.LMGeoSameSceneCeilingDataset
+    data_root: ${lmgeo.data_root}
+    object_ids: ${lmgeo.object_ids}
+    reference_split: ${lmgeo.reference_split}
+    query_scene_ids: ${lmgeo.query_scene_ids}
+    query_subscene_ids: ${lmgeo.query_subscene_ids}
+    query_window_size: ${lmgeo.query_window_size}
+    query_source: windows
+    max_reference: ${lmgeo_ceiling.max_reference}
+    min_reference: ${lmgeo_ceiling.min_reference}
+    query_frame_strategy: ${lmgeo_ceiling.query_frame_strategy}
+    min_query_records: ${lmgeo_ceiling.min_query_records}
+    max_query_subsequences: ${lmgeo_ceiling.max_query_subsequences}
+    skip_ambiguous_instances: ${lmgeo_ceiling.skip_ambiguous_instances}
+    reference_rgb_masking: ${lmgeo.reference_rgb_masking}
+    query_rgb_masking: ${lmgeo.query_rgb_masking}
+    depth_masking: ${lmgeo.depth_masking}
+    mask_type: ${lmgeo.mask_type}
+    visibility_min: ${lmgeo.visibility_min}
+    reference_selection: ${lmgeo.reference_selection}
+    query_selection: first
+    depth_unit_scale: ${lmgeo.depth_unit_scale}
+    filter_center_crop_visibility: ${lmgeo.filter_center_crop_visibility}
+    min_center_crop_bbox_area: ${lmgeo.min_center_crop_bbox_area}
+    filter_preprocessed_query_depth: ${lmgeo.filter_preprocessed_query_depth}
+    min_preprocessed_query_depth_pixels: ${lmgeo.min_preprocessed_query_depth_pixels}
+    allow_repeat: ${lmgeo.allow_repeat}
+    aug_crop: false
+    aug_focal: false
+    z_far: 0
+    resolution: ${train.resolution}
+    transform:
+        _partial_: true
+        _target_: datasets.base.transforms.ImgToTensor
+    shuffle: false
+    mode: test
+
+_real_same_scene_dataset: &real_same_scene_dataset
+    <<: *same_scene_dataset_base
+    query_split: ${lmgeo.test_query_split}
+
+_pbr_same_scene_dataset: &pbr_same_scene_dataset
+    <<: *same_scene_dataset_base
+    query_split: ${lmgeo.new_val_query_split}
+    mode: val
+
+test_dataset: *real_same_scene_dataset
+test_dataloader: &default_test_dataloader
+    drop_last: false
+    shuffle: false
+
+val_datasets:
+    real_same_scene_ceiling:
+        dataset: *real_same_scene_dataset
+        dataloader: *default_test_dataloader
+        runtime:
+            image_num_range: [25, 25]
+            max_img_per_gpu: ${test.max_img_per_gpu}
+            iters_per_test: 0
+            num_workers: ${test.num_workers}
+            print_freq: ${test.print_freq}
+    pbr_same_scene_ceiling:
+        dataset: *pbr_same_scene_dataset
+        dataloader: *default_test_dataloader
+        runtime:
+            image_num_range: [25, 25]
+            max_img_per_gpu: ${test.max_img_per_gpu}
+            iters_per_test: 0
+            num_workers: ${test.num_workers}
+            print_freq: ${test.print_freq}

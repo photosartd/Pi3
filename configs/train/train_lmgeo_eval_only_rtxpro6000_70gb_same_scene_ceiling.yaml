@@ -1,0 +1,18 @@
+# @package _global_
+
+# Local RTX PRO 6000 Blackwell version of the same-scene ceiling diagnostic.
+# Keep the same 25-view logical sample as the A40 profile for comparability;
+# use the larger card mainly for a higher process cap and more validation
+# workers.
+defaults:
+  - train_lmgeo_eval_only_a40_40gb_same_scene_ceiling
+  - _self_
+
+test:
+  max_img_per_gpu: 25
+  num_workers: 4
+
+visuals:
+  enabled: true
+  train_enabled: false
+  val_enabled: true

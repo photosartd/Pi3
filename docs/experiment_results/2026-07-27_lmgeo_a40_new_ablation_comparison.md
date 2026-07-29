@@ -32,6 +32,7 @@ Related notes:
 - [2026-07-22 A40 baseline vs correspondence](2026-07-22_lmgeo_a40_baseline_vs_corr.md)
 - [2026-07-22 next moves](2026-07-22_next_moves_after_a40_corr_masked.md)
 - [2026-07-24 paired-query implementation](2026-07-24_lmgeo_paired_query_implementation.md)
+- [2026-07-29 A40 recenter paired/ray runs](2026-07-29_lmgeo_a40_recenter_zoom_paired_ray.md)
 
 ## Run Setup
 
@@ -39,6 +40,9 @@ Related notes:
 | --- | --- | --- | --- |
 | `lmgeo_a40_context_refs_28v` | `events.out.tfevents.1784676046.worker-10...` | A40 high-resolution context-reference training, roughly the context-ref version of the 28-view/baseline family. | Validation includes render-reference real/PBR plus PBR context-reference eval. |
 | `lmgeo_a40_recenter_zoom_k1` | `events.out.tfevents.1784756052.worker-5...` | GT-bbox recenter+zoom K=1 diagnostic, unmasked query RGB. | References unchanged, query is object-centric recentered/zoomed. |
+| `lmgeo_a40_recenter_zoom_plus_original_k1` | `events.out.tfevents.1785140867.worker-7...` | Paired original+crop query diagnostic, no ray conditioning. | Adds the uncropped original query beside the recentered crop. |
+| `lmgeo_a40_recenter_zoom_ray_k1` | `events.out.tfevents.1785140596.worker-11...` | Recenter+zoom K=1 plus ray-map conditioning. | Crop-only ray-conditioning ablation. |
+| `lmgeo_a40_recenter_zoom_plus_original_ray_k1` | `events.out.tfevents.1785168888.worker-4...` | Paired original+crop query plus ray-map conditioning. | Logs both paired-query and ray-geometry diagnostics. |
 | `lmgeo_a40_gt_vis_pool_alpha1_warmup3k` | `events.out.tfevents.1784889635...` and `events.out.tfevents.1785005377...` | GT visibility mask used to weight `CameraHead` pooling with alpha warmup. | Two overlapping traces; full-count trace is used for main comparison. |
 | `lmgeo_a40_recenter_zoom_masked_context_refs_k1` | `events.out.tfevents.1784815424.worker-2...` | Recenter+zoom K=1 plus object-masked RGB and context-reference training. | Narrow validation: real/PBR N=5,K=1 only. |
 
@@ -48,6 +52,9 @@ Logged dynamic train averages at the last event point:
 | --- | ---: | ---: | ---: | ---: | --- |
 | `context_refs_28v` | 0.1733 | 1.73 | 16.35 | 22.65 | `420x560` |
 | `recenter_zoom_k1` | 0.0091 | 3.43 | 9.61 | 23.90 | `420x560` |
+| `recenter_zoom_plus_original_k1` | 0.0194 | - | 11.09 | 22.69 | `420x560` |
+| `recenter_zoom_ray_k1` | 0.0185 | - | 10.15 | 23.23 | `420x560` |
+| `recenter_zoom_plus_original_ray_k1` | 0.0203 | - | 11.29 | 22.49 | `420x560` |
 | `gt_vis_pool` | 0.0081 | 1.73 | 16.35 | 22.65 | `420x560` |
 | `recenter_zoom_masked_context_refs_k1` | 0.1524 | 3.05 | 10.23 | 23.27 | `420x560` |
 
@@ -184,6 +191,9 @@ the original event file was not present in the searched run folders.
 | A40 corr lambda 0.3 | A40 baseline + DINO-weighted corr loss | 722 | 27.3% @e19 | 0.239 @e16 | 7.7 deg | 0.038 m | 48.1% | K5 77.0%, K10 79.3% |
 | A40 context refs 28v | A40 context-ref training/eval | 722 | 24.7% @e19 | 0.242 @e25 | 7.5 deg | 0.037 m | 45.2% | context refs 7.1% |
 | A40 recenter zoom K1 | GT-bbox recenter+zoom query | 723 | 6.4% @e17 | 0.565 @e17 | 4.6 deg | 0.089 m | 48.8% | - |
+| A40 recenter+original K1 | paired uncropped+crop query, no rays | 723 | 27.1% @e6 | 0.200 @e19 | 4.8 deg | 0.034 m | 59.9% | PBR ref16 67.9% |
+| A40 recenter+ray K1 | recenter+zoom query + ray conditioning | 723 | 7.9% @e17 | 0.460 @e19 | 4.6 deg | 0.074 m | 46.0% | real ray reproj 15.8 px last |
+| A40 recenter+original+ray K1 | paired uncropped+crop query + ray conditioning | 723 | 23.9% @e13 | 0.195 @e12 | 5.1 deg | 0.035 m | 52.7% | PBR ref16 61.8% |
 | A40 GT visibility pool | GT visibility-weighted camera pooling | 1444 | 24.4% @e19 | 0.260 @e16 | 7.9 deg | 0.039 m | 43.4% | K5 70.5%, K10 70.4% |
 | A40 recenter zoom masked context | recenter+zoom + masked RGB + context refs | 723 | 11.3% @e12 | 0.373 @e12 | 4.0 deg | 0.065 m | 25.1% | - |
 
@@ -196,29 +206,29 @@ queries of the full-count rows.
 
 ### ADD(-S)<0.1d
 
-| Object | 224px | 560x420 | Masked query | A40 base | A40 corr | Context refs | Recenter | GT vis pool | Recenter+masked |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 0.6% | 6.9% | 21.7% | 8.1% | 15.1% | 11.6% | 3.5% | 8.6% | 12.8% |
-| 5 | 22.6% | 55.8% | 80.9% | 68.0% | 65.0% | 45.6% | 0.0% | 59.8% | 1.9% |
-| 6 | 0.0% | 1.2% | 15.2% | 3.7% | 0.0% | 4.9% | 8.5% | 0.0% | 8.5% |
-| 8 | 33.0% | 52.0% | 79.0% | 63.7% | 71.6% | 57.8% | 0.0% | 61.0% | 5.9% |
-| 9 | 3.3% | 7.8% | 14.4% | 11.2% | 12.4% | 14.6% | 0.0% | 13.3% | 5.6% |
-| 10 | 2.0% | 3.3% | 29.4% | 2.1% | 2.1% | 2.1% | 18.9% | 2.8% | 26.3% |
-| 11 | 10.0% | 54.0% | 48.2% | 33.8% | 43.1% | 50.8% | 20.0% | 42.4% | 26.2% |
-| 12 | 6.5% | 11.0% | 33.5% | 5.0% | 3.0% | 9.9% | 5.0% | 4.0% | 8.9% |
+| Object | 224px | 560x420 | Masked query | A40 base | A40 corr | Context refs | Recenter | Recenter+orig | Recenter+ray | Recenter+orig+ray | GT vis pool | Recenter+masked |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.6% | 6.9% | 21.7% | 8.1% | 15.1% | 11.6% | 3.5% | 7.0% | 4.7% | 18.6% | 8.6% | 12.8% |
+| 5 | 22.6% | 55.8% | 80.9% | 68.0% | 65.0% | 45.6% | 0.0% | 48.1% | 1.9% | 51.0% | 59.8% | 1.9% |
+| 6 | 0.0% | 1.2% | 15.2% | 3.7% | 0.0% | 4.9% | 8.5% | 4.9% | 6.1% | 4.9% | 0.0% | 8.5% |
+| 8 | 33.0% | 52.0% | 79.0% | 63.7% | 71.6% | 57.8% | 0.0% | 61.4% | 0.0% | 28.7% | 61.0% | 5.9% |
+| 9 | 3.3% | 7.8% | 14.4% | 11.2% | 12.4% | 14.6% | 0.0% | 5.6% | 0.0% | 2.2% | 13.3% | 5.6% |
+| 10 | 2.0% | 3.3% | 29.4% | 2.1% | 2.1% | 2.1% | 18.9% | 18.9% | 28.4% | 17.9% | 2.8% | 26.3% |
+| 11 | 10.0% | 54.0% | 48.2% | 33.8% | 43.1% | 50.8% | 20.0% | 60.0% | 23.1% | 67.7% | 42.4% | 26.2% |
+| 12 | 6.5% | 11.0% | 33.5% | 5.0% | 3.0% | 9.9% | 5.0% | 11.9% | 4.0% | 7.9% | 4.0% | 8.9% |
 
 ### Median Normalized Pose Error
 
-| Object | 224px | 560x420 | Masked query | A40 base | A40 corr | Context refs | Recenter | GT vis pool | Recenter+masked |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 0.901 | 0.356 | 0.172 | 0.299 | 0.285 | 0.269 | 0.391 | 0.281 | 0.251 |
-| 5 | 0.212 | 0.092 | 0.059 | 0.073 | 0.068 | 0.106 | 0.934 | 0.082 | 0.588 |
-| 6 | 1.294 | 0.792 | 0.181 | 0.819 | 0.743 | 0.619 | 0.261 | 1.154 | 0.240 |
-| 8 | 0.160 | 0.095 | 0.057 | 0.071 | 0.065 | 0.079 | 0.809 | 0.077 | 0.399 |
-| 9 | 0.573 | 0.250 | 0.198 | 0.275 | 0.223 | 0.259 | 0.618 | 0.230 | 0.529 |
-| 10 | 1.545 | 1.104 | 0.235 | 1.873 | 1.365 | 1.812 | 0.345 | 2.083 | 0.228 |
-| 11 | 1.129 | 0.091 | 0.104 | 0.126 | 0.116 | 0.091 | 0.358 | 0.139 | 0.302 |
-| 12 | 0.447 | 0.280 | 0.131 | 0.366 | 0.498 | 0.286 | 0.524 | 0.337 | 0.345 |
+| Object | 224px | 560x420 | Masked query | A40 base | A40 corr | Context refs | Recenter | Recenter+orig | Recenter+ray | Recenter+orig+ray | GT vis pool | Recenter+masked |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.901 | 0.356 | 0.172 | 0.299 | 0.285 | 0.269 | 0.391 | 0.304 | 0.388 | 0.205 | 0.281 | 0.251 |
+| 5 | 0.212 | 0.092 | 0.059 | 0.073 | 0.068 | 0.106 | 0.934 | 0.106 | 0.603 | 0.098 | 0.082 | 0.588 |
+| 6 | 1.294 | 0.792 | 0.181 | 0.819 | 0.743 | 0.619 | 0.261 | 0.378 | 0.286 | 0.296 | 1.154 | 0.240 |
+| 8 | 0.160 | 0.095 | 0.057 | 0.071 | 0.065 | 0.079 | 0.809 | 0.078 | 0.482 | 0.148 | 0.077 | 0.399 |
+| 9 | 0.573 | 0.250 | 0.198 | 0.275 | 0.223 | 0.259 | 0.618 | 0.295 | 0.590 | 0.350 | 0.230 | 0.529 |
+| 10 | 1.545 | 1.104 | 0.235 | 1.873 | 1.365 | 1.812 | 0.345 | 0.514 | 0.281 | 0.496 | 2.083 | 0.228 |
+| 11 | 1.129 | 0.091 | 0.104 | 0.126 | 0.116 | 0.091 | 0.358 | 0.082 | 0.197 | 0.075 | 0.139 | 0.302 |
+| 12 | 0.447 | 0.280 | 0.131 | 0.366 | 0.498 | 0.286 | 0.524 | 0.255 | 0.483 | 0.218 | 0.337 | 0.345 |
 
 ## Held-Out PBR Per-Object Comparison
 
@@ -238,34 +248,37 @@ Representative PBR K1 epochs:
 | A40 corr | 800 | 48.1% | 20 |
 | Context refs | 800 | 45.2% | 28 |
 | Recenter | 800 | 48.8% | 29 |
+| Recenter+orig | 800 | 59.9% | 18 |
+| Recenter+ray | 800 | 46.0% | 19 |
+| Recenter+orig+ray | 800 | 52.7% | 16 |
 | GT vis pool | 1600 | 43.4% | 19 |
 | Recenter+masked | 800 | 25.1% | 11 |
 
 ### ADD(-S)<0.1d
 
-| Object | 560x420 | Masked query | A40 base | A40 corr | Context refs | Recenter | GT vis pool | Recenter+masked |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 9.0% | 20.5% | 19.6% | 19.6% | 14.0% | 22.5% | 8.5% | 8.1% |
-| 5 | 57.0% | 76.0% | 63.5% | 61.5% | 62.5% | 43.3% | 62.5% | 20.0% |
-| 6 | 34.0% | 49.5% | 45.0% | 45.0% | 42.0% | 42.3% | 30.0% | 16.3% |
-| 8 | 65.0% | 81.0% | 80.2% | 71.4% | 71.4% | 53.9% | 68.5% | 32.6% |
-| 9 | 17.5% | 19.0% | 24.8% | 23.8% | 11.4% | 33.3% | 17.0% | 11.8% |
-| 10 | 55.0% | 73.5% | 55.2% | 70.8% | 67.7% | 83.3% | 63.5% | 45.1% |
-| 11 | 58.5% | 68.5% | 69.9% | 71.8% | 66.0% | 75.0% | 70.5% | 55.8% |
-| 12 | 33.0% | 37.5% | 38.2% | 27.5% | 34.3% | 37.8% | 27.0% | 12.2% |
+| Object | 560x420 | Masked query | A40 base | A40 corr | Context refs | Recenter | Recenter+orig | Recenter+ray | Recenter+orig+ray | GT vis pool | Recenter+masked |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 9.0% | 20.5% | 19.6% | 19.6% | 14.0% | 22.5% | 27.0% | 19.8% | 18.0% | 8.5% | 8.1% |
+| 5 | 57.0% | 76.0% | 63.5% | 61.5% | 62.5% | 43.3% | 72.2% | 52.2% | 54.4% | 62.5% | 20.0% |
+| 6 | 34.0% | 49.5% | 45.0% | 45.0% | 42.0% | 42.3% | 39.4% | 32.7% | 43.3% | 30.0% | 16.3% |
+| 8 | 65.0% | 81.0% | 80.2% | 71.4% | 71.4% | 53.9% | 88.8% | 58.4% | 70.8% | 68.5% | 32.6% |
+| 9 | 17.5% | 19.0% | 24.8% | 23.8% | 11.4% | 33.3% | 39.2% | 25.5% | 31.4% | 17.0% | 11.8% |
+| 10 | 55.0% | 73.5% | 55.2% | 70.8% | 67.7% | 83.3% | 86.3% | 78.4% | 81.4% | 63.5% | 45.1% |
+| 11 | 58.5% | 68.5% | 69.9% | 71.8% | 66.0% | 75.0% | 83.7% | 76.9% | 85.6% | 70.5% | 55.8% |
+| 12 | 33.0% | 37.5% | 38.2% | 27.5% | 34.3% | 37.8% | 50.0% | 27.6% | 41.8% | 27.0% | 12.2% |
 
 ### Median Normalized Pose Error
 
-| Object | 560x420 | Masked query | A40 base | A40 corr | Context refs | Recenter | GT vis pool | Recenter+masked |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 0.304 | 0.224 | 0.209 | 0.222 | 0.315 | 0.186 | 0.283 | 0.243 |
-| 5 | 0.078 | 0.059 | 0.057 | 0.068 | 0.070 | 0.117 | 0.077 | 0.184 |
-| 6 | 0.140 | 0.101 | 0.119 | 0.111 | 0.130 | 0.118 | 0.151 | 0.187 |
-| 8 | 0.076 | 0.057 | 0.057 | 0.060 | 0.053 | 0.095 | 0.070 | 0.158 |
-| 9 | 0.277 | 0.198 | 0.198 | 0.189 | 0.255 | 0.130 | 0.241 | 0.262 |
-| 10 | 0.089 | 0.050 | 0.088 | 0.046 | 0.063 | 0.051 | 0.070 | 0.113 |
-| 11 | 0.078 | 0.065 | 0.054 | 0.050 | 0.069 | 0.049 | 0.064 | 0.090 |
-| 12 | 0.157 | 0.130 | 0.138 | 0.159 | 0.163 | 0.136 | 0.195 | 0.233 |
+| Object | 560x420 | Masked query | A40 base | A40 corr | Context refs | Recenter | Recenter+orig | Recenter+ray | Recenter+orig+ray | GT vis pool | Recenter+masked |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.304 | 0.224 | 0.209 | 0.222 | 0.315 | 0.186 | 0.170 | 0.185 | 0.163 | 0.283 | 0.243 |
+| 5 | 0.078 | 0.059 | 0.057 | 0.068 | 0.070 | 0.117 | 0.057 | 0.096 | 0.090 | 0.077 | 0.184 |
+| 6 | 0.140 | 0.101 | 0.119 | 0.111 | 0.130 | 0.118 | 0.117 | 0.128 | 0.112 | 0.151 | 0.187 |
+| 8 | 0.076 | 0.057 | 0.057 | 0.060 | 0.053 | 0.095 | 0.045 | 0.088 | 0.063 | 0.070 | 0.158 |
+| 9 | 0.277 | 0.198 | 0.198 | 0.189 | 0.255 | 0.130 | 0.117 | 0.167 | 0.134 | 0.241 | 0.262 |
+| 10 | 0.089 | 0.050 | 0.088 | 0.046 | 0.063 | 0.051 | 0.039 | 0.051 | 0.059 | 0.070 | 0.113 |
+| 11 | 0.078 | 0.065 | 0.054 | 0.050 | 0.069 | 0.049 | 0.046 | 0.048 | 0.052 | 0.064 | 0.090 |
+| 12 | 0.157 | 0.130 | 0.138 | 0.159 | 0.163 | 0.136 | 0.103 | 0.173 | 0.116 | 0.195 | 0.233 |
 
 ## Insights
 
@@ -282,6 +295,14 @@ Representative PBR K1 epochs:
   says the crop/virtual-camera experiment is either introducing a real-domain
   shift, losing calibration/context that real images need, or still has a
   conditioning/intrinsics mismatch that is not visible on held-out PBR.
+- The paired original+crop variant is the best recenter-family result so far.
+  `lmgeo_a40_recenter_zoom_plus_original_k1` reaches `27.1%` real ADD(-S) and
+  `59.9%` held-out PBR K1 ADD(-S), restoring real performance to the A40
+  baseline/corr range and improving PBR clearly over plain recenter.
+- Ray conditioning learns the ray/intrinsics diagnostic but is not yet the pose
+  winner. Crop-only rays improve real median error (`0.565d` to `0.460d`) but
+  keep strict real ADD(-S) low; paired original+crop+rays has much cleaner ray
+  reprojection logs, yet lower ADD(-S) than paired original+crop without rays.
 - Recenter+zoom plus query masking/context refs is worse than both useful
   parents. It reaches only `11.3%` real and `25.1%` PBR. This makes the current
   crop+mask combination a poor next baseline until we debug what signal it
@@ -316,9 +337,14 @@ Representative PBR K1 epochs:
   predicted/available mask can recover most of that gain without hiding the
   entire query context from the network.
 - Do not promote recenter+zoom as a default yet. Its real/PBR split is too
-  suspicious. Use paired original+crop/ray-conditioning diagnostics to find
-  whether the issue is loss of context, missing intrinsic conditioning,
-  virtual-camera distribution shift, or a remaining crop geometry bug.
+  suspicious. The paired original+crop result says loss of original query
+  context is a major part of the failure. Ray-conditioning diagnostics say
+  missing virtual-camera geometry is learnable, but it is not yet the limiting
+  term for ADD(-S) under the current branch/LR/warmup.
+- If the recenter direction is continued, use paired original+crop as the
+  recenter-family baseline. Retry ray conditioning only with a controlled
+  schedule and judge it by paired pose disagreement plus ADD(-S), not by ray
+  reprojection alone.
 - Treat context references as a separate onboarding/reference problem. They may
   still be useful, but current context-reference validation shows the alignment
   side is not robust enough for them to replace clean render refs.
