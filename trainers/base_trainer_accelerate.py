@@ -650,6 +650,13 @@ class BaseTrainer:
             metric_logger.add_meter(
                 "ray_lr", SmoothedValue(window_size=1, fmt="{value:.6f}")
             )
+        if any(
+            group.get("group_name") == "visibility_mask"
+            for group in self.optimizer.param_groups
+        ):
+            metric_logger.add_meter(
+                "visibility_mask_lr", SmoothedValue(window_size=1, fmt="{value:.6f}")
+            )
         # metric_logger.add_meter(
         #     "dataloader", SmoothedValue(window_size=1, fmt="{value:.6f}")
         # )
@@ -799,6 +806,12 @@ class BaseTrainer:
                 if "ray" in named_lrs:
                     metric_logger.update(ray_lr=named_lrs["ray"])
                     self.accelerator.log({"ray_lr": named_lrs["ray"]}, step=start_steps)
+                if "visibility_mask" in named_lrs:
+                    metric_logger.update(visibility_mask_lr=named_lrs["visibility_mask"])
+                    self.accelerator.log(
+                        {"visibility_mask_lr": named_lrs["visibility_mask"]},
+                        step=start_steps,
+                    )
 
                 weight_decay_value = None
                 for group in self.optimizer.param_groups:

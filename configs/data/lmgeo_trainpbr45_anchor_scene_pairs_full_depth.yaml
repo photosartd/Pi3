@@ -1,0 +1,12 @@
+# @package _global_
+
+# Same-object scene-pair anchor-mask conditioning, but with full valid scene
+# depth supervision.  The model conditioning is still reference-only object
+# visibility [mask, known] and query [0, 0]; only the loss-side depth/valid mask
+# differs from the masked-depth profile.
+defaults:
+  - lmgeo_trainpbr45_anchor_scene_pairs_masked_depth
+  - _self_
+
+lmgeo:
+    depth_masking: false

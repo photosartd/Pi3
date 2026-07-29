@@ -14,6 +14,11 @@ model:
     # module is not constructed and historical Pi3 checkpoints/configs retain
     # their original model structure.
     use_ray_conditioning: false
+    # Optional reference-only anchor-object visibility mask conditioning. This
+    # branch is zero-initialized and disabled by default, so historical Pi3
+    # checkpoints/configs keep their original model structure and behavior.
+    use_visibility_mask_conditioning: false
+    visibility_mask_conditioning_alpha: 1.0
     ckpt: null # <path-to-your-pretrain-checkpoint>
 
 loss:

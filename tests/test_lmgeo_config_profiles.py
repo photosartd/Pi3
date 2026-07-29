@@ -492,6 +492,58 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
                 self.assertEqual(list(dataset.num_query_range), [1, 1])
                 self.assertEqual(list(runtime.image_num_range), [6, 6])
 
+    def test_anchor_scene_pair_mask_conditioning_profiles_are_leak_free(self):
+        train_name = "train_lmgeo_finetune_a40_40gb_anchor_mask_conditioning"
+        masked = compose_job(
+            train_name,
+            "lmgeo_trainpbr45_anchor_scene_pairs_masked_depth",
+        )
+        full = compose_job(
+            train_name,
+            "lmgeo_trainpbr45_anchor_scene_pairs_full_depth",
+        )
+
+        for cfg in (masked, full):
+            self.assertTrue(cfg.model.use_visibility_mask_conditioning)
+            self.assertEqual(cfg.model.visibility_mask_conditioning_alpha, 1.0)
+            self.assertEqual(cfg.train.optimizer.visibility_mask_lr, 5e-5)
+            self.assertEqual(list(cfg.train.image_num_range), [3, 26])
+            self.assertEqual(cfg.train.max_img_per_gpu, 28)
+            self.assertEqual(list(cfg.lmgeo.num_reference_range), [2, 16])
+            self.assertEqual(list(cfg.lmgeo.num_query_range), [1, 10])
+            self.assertFalse(cfg.lmgeo.reference_rgb_masking)
+            self.assertFalse(cfg.lmgeo.query_rgb_masking)
+            self.assertEqual(
+                cfg.train_dataset.LMGeoAnchorScenePair._target_,
+                "datasets.lmgeo_dataset.LMGeoAnchorScenePairSequenceDataset",
+            )
+            self.assertTrue(cfg.train_dataset.LMGeoAnchorScenePair.visibility_mask_conditioning)
+            self.assertTrue(cfg.train_dataset.LMGeoAnchorScenePair.condition_reference_visibility)
+            self.assertFalse(cfg.train_dataset.LMGeoAnchorScenePair.condition_query_visibility)
+            self.assertTrue(cfg.train_dataset.LMGeoAnchorScenePair.anchor_allow_same_scene)
+            self.assertTrue(cfg.train_dataset.LMGeoAnchorScenePair.anchor_allow_same_subscene)
+            self.assertIn("visibility_condition", cfg.visuals["items"])
+            self.assertEqual(
+                active_val_loader_names(cfg),
+                ["real_anchor_pairs", "pbr_anchor_pairs"],
+            )
+            for name in active_val_loader_names(cfg):
+                dataset = cfg.val_datasets[name].dataset
+                runtime = cfg.val_datasets[name].runtime
+                self.assertEqual(
+                    dataset._target_,
+                    "datasets.lmgeo_dataset.LMGeoAnchorScenePairSequenceDataset",
+                )
+                self.assertEqual(list(dataset.num_reference_range), [5, 5])
+                self.assertEqual(list(dataset.num_query_range), [1, 1])
+                self.assertFalse(dataset.condition_query_visibility)
+                self.assertEqual(list(runtime.image_num_range), [6, 6])
+
+        self.assertTrue(masked.lmgeo.depth_masking)
+        self.assertTrue(masked.train_dataset.LMGeoAnchorScenePair.depth_masking)
+        self.assertFalse(full.lmgeo.depth_masking)
+        self.assertFalse(full.train_dataset.LMGeoAnchorScenePair.depth_masking)
+
     def test_generic_pi3_profile_is_unchanged(self):
         cfg = compose_job("train_pi3_lowres", "example")
 
@@ -500,6 +552,7 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         self.assertEqual(OmegaConf.to_container(cfg.train.resolution), [[224, 224]])
         self.assertNotIn("lmgeo_profile", cfg)
         self.assertFalse(cfg.model.use_ray_conditioning)
+        self.assertFalse(cfg.model.use_visibility_mask_conditioning)
 
 
 if __name__ == "__main__":

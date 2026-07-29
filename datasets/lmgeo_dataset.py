@@ -113,6 +113,9 @@ class LMGeoDataset(BaseDataset):
         photometric_jpeg_quality=(20, 100),
         photometric_blur_prob=0.5,
         photometric_blur_resize_ratio=(0.25, 1.0),
+        visibility_mask_conditioning=False,
+        condition_reference_visibility=True,
+        condition_query_visibility=False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -151,6 +154,9 @@ class LMGeoDataset(BaseDataset):
         self.photometric_jpeg_quality = tuple(int(value) for value in photometric_jpeg_quality)
         self.photometric_blur_prob = float(photometric_blur_prob)
         self.photometric_blur_resize_ratio = tuple(float(value) for value in photometric_blur_resize_ratio)
+        self.visibility_mask_conditioning = bool(visibility_mask_conditioning)
+        self.condition_reference_visibility = bool(condition_reference_visibility)
+        self.condition_query_visibility = bool(condition_query_visibility)
         self._photometric_role_specs = {}
 
         if self.mask_type not in {"mask", "mask_visib"}:
@@ -501,6 +507,15 @@ class LMGeoDataset(BaseDataset):
         force_object_masking = bool(view_role == "reference" and reference_source == "context_scene")
         return bool(self.depth_masking or force_object_masking)
 
+    def _should_condition_visibility_view(self, *, view_role):
+        if not self.visibility_mask_conditioning:
+            return False
+        if view_role == "reference":
+            return self.condition_reference_visibility
+        if view_role == "query":
+            return self.condition_query_visibility
+        return False
+
     def _load_view(self, record, rgb_masking, view_role):
         object_id = int(record.get("object_id", getattr(self, "object_id", -1)))
         query_scene_id = int(record.get("query_scene_id", getattr(self, "query_scene_id", -1)))
@@ -518,6 +533,7 @@ class LMGeoDataset(BaseDataset):
             rgb = np.array(image.convert("RGB"))
         depthmap = self._read_depth_meters(record["depth_path"], record["depth_scale"])
         mask = self._read_mask(record["mask_path"], depthmap.shape)
+        object_mask = mask.copy()
         force_object_masking = bool(view_role == "reference" and reference_source == "context_scene")
 
         if self._should_depth_mask_view(view_role=view_role, reference_source=reference_source):
@@ -550,19 +566,29 @@ class LMGeoDataset(BaseDataset):
             view_role=view_role,
         )
 
-        rgb, depthmap, intrinsics = self._crop_resize_if_necessary(
+        object_mask = mask.astype(np.uint8)
+        crop_outputs = self._crop_resize_if_necessary(
             rgb,
             depthmap,
             intrinsics,
             self._current_resolution,
             rng=self._rng,
             info=record["rgb_path"],
+            far_mask=object_mask,
         )
+        rgb, depthmap, intrinsics, object_mask = crop_outputs
         rgb = self._apply_sample_photometric_augmentation(rgb, view_role)
+        object_mask = np.asarray(object_mask > 0, dtype=np.float32)
+        visibility_known = self._should_condition_visibility_view(view_role=view_role)
+        visibility_condition = object_mask if visibility_known else np.zeros_like(object_mask, dtype=np.float32)
+        visibility_known_map = np.full_like(object_mask, 1.0 if visibility_known else 0.0, dtype=np.float32)
 
         view = {
             "img": rgb,
             "depthmap": depthmap.astype(np.float32),
+            "object_visibility_mask": object_mask.astype(np.float32),
+            "visibility_mask_condition": visibility_condition.astype(np.float32),
+            "visibility_mask_known": visibility_known_map.astype(np.float32),
             "camera_pose": camera_pose.astype(np.float32),
             "T_C_O": T_C_O.astype(np.float32),
             "camera_intrinsics": intrinsics.astype(np.float32),
@@ -697,6 +723,9 @@ class LMGeoSequenceDataset(LMGeoDataset):
         photometric_jpeg_quality=(20, 100),
         photometric_blur_prob=0.5,
         photometric_blur_resize_ratio=(0.25, 1.0),
+        visibility_mask_conditioning=False,
+        condition_reference_visibility=True,
+        condition_query_visibility=False,
         min_query_records=None,
         max_query_subsequences=None,
         sort_query_windows_by_visibility=True,
@@ -742,6 +771,9 @@ class LMGeoSequenceDataset(LMGeoDataset):
         self.photometric_jpeg_quality = tuple(int(value) for value in photometric_jpeg_quality)
         self.photometric_blur_prob = float(photometric_blur_prob)
         self.photometric_blur_resize_ratio = tuple(float(value) for value in photometric_blur_resize_ratio)
+        self.visibility_mask_conditioning = bool(visibility_mask_conditioning)
+        self.condition_reference_visibility = bool(condition_reference_visibility)
+        self.condition_query_visibility = bool(condition_query_visibility)
         self._photometric_role_specs = {}
         default_min_query_records = self.num_query_range[0] if self.allow_repeat else self.num_query_range[1]
         self.min_query_records = int(min_query_records) if min_query_records is not None else default_min_query_records
@@ -1300,6 +1332,246 @@ class LMGeoSequenceDataset(LMGeoDataset):
 
         views = [
             self._load_view(record, rgb_masking=self.reference_rgb_masking, view_role="reference")
+            for record in reference_records
+        ]
+        for query_index, record in enumerate(query_records):
+            query_views = self._load_query_views(record)
+            for view in query_views:
+                view["query_pair_index"] = np.int64(query_index)
+            views.extend(query_views)
+        return views
+
+
+class LMGeoAnchorScenePairSequenceDataset(LMGeoSequenceDataset):
+    """Same-object scene-pair dataset with reference-only mask conditioning.
+
+    A sample chooses one anchor object, references from one scene/window where
+    that object is visible, and queries from another selected scene/window where
+    the same object is visible.  The two windows may be identical when
+    configured, but selected query records are always removed from the reference
+    candidate pool.  All poses remain in the anchor object's CAD frame, so the
+    existing Pi3 loss and reference-only pose alignment metrics keep their
+    object-centric meaning.
+    """
+
+    def __init__(
+        self,
+        *args,
+        anchor_allow_same_scene=True,
+        anchor_allow_same_subscene=True,
+        anchor_selection_attempts=50,
+        **kwargs,
+    ):
+        kwargs.setdefault("query_source", "windows")
+        kwargs.setdefault("visibility_mask_conditioning", True)
+        kwargs.setdefault("condition_reference_visibility", True)
+        kwargs.setdefault("condition_query_visibility", False)
+        super().__init__(*args, **kwargs)
+
+        self.dataset_label = "LMGeoAnchorScenePair"
+        self.anchor_allow_same_scene = bool(anchor_allow_same_scene)
+        self.anchor_allow_same_subscene = bool(anchor_allow_same_subscene)
+        self.anchor_selection_attempts = max(1, int(anchor_selection_attempts))
+        self.anchor_reference_samples_by_object = self._build_anchor_reference_sample_index()
+
+        candidate_count = sum(
+            len(samples)
+            for samples in self.anchor_reference_samples_by_object.values()
+        )
+        print(
+            f"[{self.dataset_label}] anchor reference windows={candidate_count}, "
+            f"allow_same_scene={self.anchor_allow_same_scene}, "
+            f"allow_same_subscene={self.anchor_allow_same_subscene}, "
+            f"condition_reference_visibility={self.condition_reference_visibility}, "
+            f"condition_query_visibility={self.condition_query_visibility}, "
+            f"depth_masking={self.depth_masking}"
+        )
+
+    def _build_reference_records(self, object_id=None):
+        # This dataset uses scene frames as references.  Avoid walking the
+        # render split and keep render-reference experiments fully separate.
+        return []
+
+    def _build_anchor_reference_sample_index(self):
+        samples_by_object = {}
+        for sample in self.samples:
+            samples_by_object.setdefault(int(sample["object_id"]), []).append(sample)
+        return samples_by_object
+
+    @staticmethod
+    def _sample_scene_key(sample):
+        return int(sample.get("query_scene_id", -1))
+
+    @staticmethod
+    def _sample_subscene_key(sample):
+        return (
+            int(sample.get("query_scene_id", -1)),
+            int(sample.get("query_subscene_id", -1)),
+        )
+
+    @staticmethod
+    def _record_identity(record):
+        return (
+            str(record.get("split", "")),
+            str(record.get("scene_dir", "")),
+            int(record.get("im_id", -1)),
+            int(record.get("gt_id", -1)),
+            int(record.get("object_id", -1)),
+        )
+
+    def _anchor_reference_candidates(self, query_sample):
+        object_id = int(query_sample["object_id"])
+        candidates = []
+        for sample in self.anchor_reference_samples_by_object.get(object_id, []):
+            if (
+                not self.anchor_allow_same_scene
+                and self._sample_scene_key(sample) == self._sample_scene_key(query_sample)
+            ):
+                continue
+            if (
+                not self.anchor_allow_same_subscene
+                and self._sample_subscene_key(sample) == self._sample_subscene_key(query_sample)
+            ):
+                continue
+            candidates.append(sample)
+        return candidates
+
+    def _tag_anchor_reference(self, record, reference_sample):
+        item = dict(record)
+        item["reference_source"] = "anchor_scene"
+        item["anchor_reference_scene_id"] = int(reference_sample.get("query_scene_id", -1))
+        item["anchor_reference_subscene_id"] = int(reference_sample.get("query_subscene_id", -1))
+        return item
+
+    def _load_anchor_reference_view(self, record, reference_sample):
+        view = self._load_view(
+            record,
+            rgb_masking=self.reference_rgb_masking,
+            view_role="reference",
+        )
+        view["reference_source"] = "anchor_scene"
+        view["is_anchor_scene_reference"] = True
+        view["scene_id"] = np.int64(reference_sample.get("query_scene_id", -1))
+        view["source_scene_id"] = np.int64(record.get("query_scene_id", -1))
+        view["source_subscene_id"] = np.int64(record.get("query_subscene_id", -1))
+        return view
+
+    def _select_anchor_record_sets(self, query_sample, total_frames, rng):
+        candidates = self._anchor_reference_candidates(query_sample)
+        if not candidates:
+            raise ValueError(
+                f"No same-object anchor reference candidates for object "
+                f"{int(query_sample['object_id'])}"
+            )
+
+        errors = []
+        query_pool = list(query_sample["query_records"])
+        for _ in range(self.anchor_selection_attempts):
+            reference_sample = candidates[int(rng.integers(0, len(candidates)))]
+            reference_pool = list(reference_sample["query_records"])
+            try:
+                ref_count, query_count = self._sample_counts(
+                    total_frames,
+                    reference_pool,
+                    query_pool,
+                    rng,
+                )
+                query_records = self._select_records(
+                    query_pool,
+                    query_count,
+                    self.query_selection,
+                    rng=rng,
+                )
+                query_identities = {self._record_identity(record) for record in query_records}
+                reference_pool = [
+                    record
+                    for record in reference_pool
+                    if self._record_identity(record) not in query_identities
+                ]
+                if not reference_pool:
+                    errors.append("reference pool empty after removing selected queries")
+                    continue
+                if len(reference_pool) < ref_count and not self.allow_repeat:
+                    errors.append(
+                        f"only {len(reference_pool)} reference records remain for ref_count={ref_count}"
+                    )
+                    continue
+                reference_records = self._select_records(
+                    reference_pool,
+                    ref_count,
+                    self.reference_selection,
+                    rng=rng,
+                )
+            except ValueError as exc:
+                errors.append(str(exc))
+                continue
+
+            reference_identities = {self._record_identity(record) for record in reference_records}
+            if reference_identities & query_identities:
+                errors.append("query/reference identity overlap")
+                continue
+            return reference_sample, reference_records, query_records, ref_count, query_count
+
+        joined = "; ".join(errors[-3:]) if errors else "no detailed errors"
+        raise ValueError(
+            f"Could not select leak-free anchor record sets after "
+            f"{self.anchor_selection_attempts} attempts: {joined}"
+        )
+
+    def _get_views(self, index, resolution, rng):
+        query_sample = self.samples[int(index) % len(self.samples)]
+        object_id = int(query_sample["object_id"])
+        (
+            reference_sample,
+            reference_records,
+            query_records,
+            ref_count,
+            query_count,
+        ) = self._select_anchor_record_sets(query_sample, self.frame_num, rng)
+
+        self._current_resolution = resolution
+        self._prepare_sample_photometric_augmentation(rng)
+        reference_records = [
+            self._tag_anchor_reference(record, reference_sample)
+            for record in reference_records
+        ]
+
+        self.this_views_info = {
+            "object_id": object_id,
+            "reference_scene_id": int(reference_sample.get("query_scene_id", -1)),
+            "reference_subscene_id": int(reference_sample.get("query_subscene_id", -1)),
+            "query_scene_id": int(query_sample.get("query_scene_id", -1)),
+            "query_subscene_id": int(query_sample.get("query_subscene_id", -1)),
+            "reference_count": ref_count,
+            "query_count": query_count,
+            "reference_visibility_conditioned": bool(self.condition_reference_visibility),
+            "query_visibility_conditioned": bool(self.condition_query_visibility),
+            "depth_masking": bool(self.depth_masking),
+            "reference": [
+                (
+                    "anchor_scene",
+                    r["split"],
+                    int(r.get("query_scene_id", -1)),
+                    int(r.get("query_subscene_id", -1)),
+                    int(r["im_id"]),
+                    int(r["gt_id"]),
+                )
+                for r in reference_records
+            ],
+            "query": [
+                (
+                    r["split"],
+                    int(r.get("query_scene_id", -1)),
+                    int(r.get("query_subscene_id", -1)),
+                    int(r["im_id"]),
+                    int(r["gt_id"]),
+                )
+                for r in query_records
+            ],
+        }
+
+        views = [
+            self._load_anchor_reference_view(record, reference_sample)
             for record in reference_records
         ]
         for query_index, record in enumerate(query_records):

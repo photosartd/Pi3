@@ -36,6 +36,7 @@ _LOCAL_OPTIMIZER_KEYS = {
     "verbose",
     "encoder_lr",
     "ray_lr",
+    "visibility_mask_lr",
     "foreach",
 }
 

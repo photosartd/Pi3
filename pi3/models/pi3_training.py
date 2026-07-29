@@ -36,6 +36,8 @@ class Pi3(nn.Module):
             num_dec_blk_not_to_checkpoint=4,
             dino_output_layers=None,
             use_ray_conditioning=False,
+            use_visibility_mask_conditioning=False,
+            visibility_mask_conditioning_alpha=1.0,
             ckpt=None,
         ):
         super().__init__()
@@ -119,6 +121,27 @@ class Pi3(nn.Module):
             )
             nn.init.zeros_(self.ray_embed.proj.weight)
             nn.init.zeros_(self.ray_embed.proj.bias)
+
+        # ----------------------
+        #  Visibility Mask Condition
+        # ----------------------
+        self.use_visibility_mask_conditioning = bool(use_visibility_mask_conditioning)
+        self.visibility_mask_conditioning_alpha = float(visibility_mask_conditioning_alpha)
+        if self.use_visibility_mask_conditioning:
+            # Two channels mirror sparse-depth conditioning conventions:
+            # channel 0 stores the anchor-object visibility mask, channel 1
+            # says whether that mask is intentionally supplied.  For the main
+            # no-leak experiment, references are [mask, 1] and queries are
+            # [0, 0].  The zero init preserves exact Pi3 checkpoint behavior at
+            # step 0 while gradients still flow into this branch immediately.
+            self.visibility_mask_embed = PatchEmbed(
+                img_size=224,
+                patch_size=self.patch_size,
+                in_chans=2,
+                embed_dim=self.dec_embed_dim,
+            )
+            nn.init.zeros_(self.visibility_mask_embed.proj.weight)
+            nn.init.zeros_(self.visibility_mask_embed.proj.bias)
 
         # ----------------------
         #     Register_token
@@ -292,7 +315,7 @@ class Pi3(nn.Module):
         }
         return hidden, dino_features
 
-    def forward(self, imgs, intrinsics=None):
+    def forward(self, imgs, intrinsics=None, visibility_mask_condition=None, visibility_mask_known=None):
         imgs = (imgs - self.image_mean) / self.image_std
 
         B, N, _, H, W = imgs.shape
@@ -318,8 +341,55 @@ class Pi3(nn.Module):
                 raise RuntimeError(
                     "Ray/image token shape mismatch: "
                     f"{tuple(ray_tokens.shape)} vs {tuple(hidden.shape)}"
-                )
+            )
             hidden = hidden + ray_tokens.to(dtype=hidden.dtype)
+
+        visibility_mask_stats = {}
+        if self.use_visibility_mask_conditioning:
+            if visibility_mask_condition is None:
+                raise ValueError(
+                    "visibility_mask_condition is required when "
+                    "visibility mask conditioning is enabled"
+                )
+            if tuple(visibility_mask_condition.shape[:2]) != (B, N):
+                raise ValueError(
+                    "Expected visibility_mask_condition with leading shape "
+                    f"{(B, N)}, got {tuple(visibility_mask_condition.shape)}"
+                )
+            if visibility_mask_known is None:
+                visibility_mask_known = torch.zeros_like(visibility_mask_condition)
+            if visibility_mask_known.shape != visibility_mask_condition.shape:
+                raise ValueError(
+                    "visibility_mask_known must match visibility_mask_condition, got "
+                    f"{tuple(visibility_mask_known.shape)} vs "
+                    f"{tuple(visibility_mask_condition.shape)}"
+                )
+
+            mask_input = torch.stack(
+                [
+                    visibility_mask_condition.to(device=hidden.device, dtype=torch.float32),
+                    visibility_mask_known.to(device=hidden.device, dtype=torch.float32),
+                ],
+                dim=2,
+            ).reshape(B * N, 2, H, W)
+            mask_tokens = self.visibility_mask_embed(mask_input)
+            if mask_tokens.shape != hidden.shape:
+                raise RuntimeError(
+                    "Visibility mask/image token shape mismatch: "
+                    f"{tuple(mask_tokens.shape)} vs {tuple(hidden.shape)}"
+                )
+            alpha = torch.as_tensor(
+                self.visibility_mask_conditioning_alpha,
+                device=hidden.device,
+                dtype=hidden.dtype,
+            )
+            hidden = hidden + alpha * mask_tokens.to(dtype=hidden.dtype)
+            visibility_mask_stats = {
+                "visibility_mask_conditioning_alpha": alpha.detach().float(),
+                "visibility_mask_token_abs_mean": mask_tokens.detach().float().abs().mean(),
+                "visibility_mask_token_norm": mask_tokens.detach().float().norm(),
+                "visibility_mask_embed_weight_norm": self.visibility_mask_embed.proj.weight.detach().float().norm(),
+            }
 
         hidden, pos = self.decode(hidden, N, H, W)
 
@@ -372,4 +442,6 @@ class Pi3(nn.Module):
                 layer: features.reshape(B, N, patch_h * patch_w, -1)
                 for layer, features in dino_features.items()
             }
+        if visibility_mask_stats:
+            output["visibility_mask_conditioning_stats"] = visibility_mask_stats
         return output

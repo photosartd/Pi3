@@ -1,0 +1,44 @@
+# @package _global_
+
+# A40/40 GiB profile for same-object scene-pair training with reference-only
+# anchor visibility-mask conditioning.  The model sees full RGB inputs, receives
+# GT anchor masks only on reference/keyframe views, and must infer the same
+# anchor object in query views without query-mask conditioning.
+defaults:
+  - train_lmgeo_finetune_a40_46gb
+  - _self_
+
+lmgeo_profile:
+  num_reference_range: [2, 16]
+  num_query_range: [1, 10]
+  filter_preprocessed_query_depth: false
+  allow_repeat: true
+  max_refetch: 50
+
+model:
+  use_visibility_mask_conditioning: true
+  visibility_mask_conditioning_alpha: 1.0
+
+train:
+  image_num_range: [3, 26]
+  max_img_per_gpu: 28
+  lr_scheduler:
+    pct_start: 0.10
+  optimizer:
+    visibility_mask_lr: 5e-5
+
+test:
+  image_num_range: [6, 6]
+  max_img_per_gpu: 128
+  num_workers: 2
+
+visuals:
+  enabled: true
+  train_enabled: false
+  val_enabled: true
+  items:
+    visibility_condition:
+      _target_: pi3.visualizations.visibility_condition.VisibilityConditionVisualizer
+      max_reference_views: 3
+      max_query_views: 3
+      thumbnail_size: 112

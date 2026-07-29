@@ -218,14 +218,68 @@ if [[ "$RUN_MODE" == "smoke" ]]; then
   COMMON_OVERRIDES+=(
     "lmgeo_profile.filter_preprocessed_query_depth=false"
     "lmgeo.filter_preprocessed_query_depth=false"
-    "test_dataset.filter_target_preprocessed_depth=false"
-    "val_datasets.real_test.dataset.filter_target_preprocessed_depth=false"
-    "val_datasets.real_test_ref16.dataset.filter_target_preprocessed_depth=false"
   )
+  if [[ "$DATA_CONFIG" == *"anchor_scene_pairs"* ]] || [[ "$TRAIN_CONFIG" == *"anchor_mask_conditioning"* ]]; then
+    COMMON_OVERRIDES+=(
+      "test_dataset.filter_preprocessed_query_depth=false"
+      "val_datasets.real_anchor_pairs.dataset.filter_preprocessed_query_depth=false"
+      "val_datasets.pbr_anchor_pairs.dataset.filter_preprocessed_query_depth=false"
+    )
+  else
+    COMMON_OVERRIDES+=(
+      "test_dataset.filter_target_preprocessed_depth=false"
+      "val_datasets.real_test.dataset.filter_target_preprocessed_depth=false"
+      "val_datasets.real_test_ref16.dataset.filter_target_preprocessed_depth=false"
+    )
+  fi
 fi
 
 if [[ "$RUN_MODE" == "smoke" ]]; then
-  if [[ "$DATA_CONFIG" == *"recenter_zoom_plus_original_k1"* ]]; then
+  if [[ "$DATA_CONFIG" == *"anchor_scene_pairs"* ]] || [[ "$TRAIN_CONFIG" == *"anchor_mask_conditioning"* ]]; then
+    echo "Running ${SMOKE_ITERS}-step max-view 26-view anchor-mask-conditioning smoke."
+    accelerate launch --config_file configs/accelerate/ddp.yaml \
+      --num_processes "$NUM_GPUS" --num_machines 1 \
+      scripts/train_pi3.py \
+      "${COMMON_OVERRIDES[@]}" \
+      'train.image_num_range=[26,26]' \
+      train.max_img_per_gpu=28 \
+      'lmgeo_profile.num_reference_range=[16,16]' \
+      'lmgeo_profile.num_query_range=[10,10]' \
+      train.num_epoch=1 \
+      train.iters_per_epoch="$SMOKE_ITERS" \
+      val_datasets.real_anchor_pairs.runtime.iters_per_test=1 \
+      val_datasets.real_anchor_pairs.runtime.max_img_per_gpu=6 \
+      val_datasets.pbr_anchor_pairs.runtime.iters_per_test=1 \
+      val_datasets.pbr_anchor_pairs.runtime.max_img_per_gpu=6 \
+      metrics.enabled=false \
+      visuals.enabled=false \
+      log.use_tensorboard=false \
+      log.save_best=false \
+      log.save_checkpoints=false \
+      extras.print_config=false
+
+    echo "Running ${SMOKE_ITERS}-step packed-min 9 x 3-view anchor-mask-conditioning smoke."
+    accelerate launch --config_file configs/accelerate/ddp.yaml \
+      --num_processes "$NUM_GPUS" --num_machines 1 \
+      scripts/train_pi3.py \
+      "${COMMON_OVERRIDES[@]}" \
+      'train.image_num_range=[3,3]' \
+      train.max_img_per_gpu=28 \
+      'lmgeo_profile.num_reference_range=[2,2]' \
+      'lmgeo_profile.num_query_range=[1,1]' \
+      train.num_epoch=1 \
+      train.iters_per_epoch="$SMOKE_ITERS" \
+      val_datasets.real_anchor_pairs.runtime.iters_per_test=1 \
+      val_datasets.real_anchor_pairs.runtime.max_img_per_gpu=6 \
+      val_datasets.pbr_anchor_pairs.runtime.iters_per_test=1 \
+      val_datasets.pbr_anchor_pairs.runtime.max_img_per_gpu=6 \
+      metrics.enabled=false \
+      visuals.enabled=false \
+      log.use_tensorboard=false \
+      log.save_best=false \
+      log.save_checkpoints=false \
+      extras.print_config=false
+  elif [[ "$DATA_CONFIG" == *"recenter_zoom_plus_original_k1"* ]]; then
     echo "Running ${SMOKE_ITERS}-step max-view 18-view paired K=1 recenter+zoom smoke."
     accelerate launch --config_file configs/accelerate/ddp.yaml \
       --num_processes "$NUM_GPUS" --num_machines 1 \
