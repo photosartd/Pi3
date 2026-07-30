@@ -1,0 +1,70 @@
+# @package _global_
+
+# Compact from-scratch LMGeo anchor-mask-conditioning profile.
+#
+# This keeps the successful A40/560x420 anchor scene-pair data regime, but
+# replaces the pretrained Pi3-L/14 stack with a frozen pretrained DINOv2-S/14
+# encoder plus randomly initialized 384-dim Pi3 decoders/heads.  Use it with
+# `lmgeo_trainpbr45_anchor_scene_pairs_masked_depth_query_masks` when queries
+# should receive oracle visibility masks too.
+defaults:
+  - train_lmgeo_finetune_a40_40gb_anchor_mask_conditioning
+  - _self_
+
+model:
+  encoder_size: small
+  encoder_pretrained: true
+  encoder_ckpt: null
+  decoder_size: small
+  head_dim: 384
+  point_decoder_dim: 384
+  point_decoder_heads: 6
+  point_decoder_depth: 5
+  camera_decoder_dim: 384
+  camera_decoder_heads: 6
+  camera_decoder_depth: 5
+  camera_head_dim: 256
+  global_point_decoder_dim: 384
+  global_point_decoder_heads: 6
+  global_point_decoder_depth: 5
+  load_vggt: false
+  freeze_encoder: true
+  train_conf: false
+  ckpt: null
+  use_visibility_mask_conditioning: true
+  visibility_mask_conditioning_alpha: 1.0
+
+train:
+  # Same total-view constraints as the current A40 mask-conditioning profile.
+  image_num_range: [3, 26]
+  max_img_per_gpu: 28
+  num_epoch: 30
+  iters_per_epoch: 500
+  val_every_n_epochs: 1
+  print_freq: 1
+  lr_scheduler:
+    pct_start: 0.10
+  optimizer:
+    # Randomly initialized compact decoders need the historical base LR rather
+    # than the 5e-6 fine-tuning LR used for a pretrained Pi3 decoder.
+    lr: 5e-5
+    encoder_lr: 0.0
+    visibility_mask_lr: 5e-4
+
+test:
+  image_num_range: [6, 6]
+  max_img_per_gpu: 128
+  num_workers: 2
+  iters_per_test: 0
+  print_freq: 1
+
+visuals:
+  enabled: true
+  train_enabled: false
+  val_enabled: true
+  val_every_n_epochs: 1
+
+log:
+  ckpt_interval: 5
+  max_checkpoints: 3
+  save_best: false

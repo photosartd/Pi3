@@ -1,0 +1,24 @@
+# @package _global_
+
+# Local RTX PRO 6000 / 70 GiB cap profile for the compact frozen-DINOv2-S
+# anchor-mask-conditioning model.
+#
+# Only the training image budget is increased.  Validation intentionally keeps
+# the A40 compact profile's smaller runtime batches because those loaders are
+# limited more by host RAM and data/refetch cost than by model parameter memory.
+defaults:
+  - train_lmgeo_scratch_dinos_small_a40_40gb_anchor_mask_conditioning
+  - _self_
+
+train:
+  # Dynamic sampler packs floor(max_img_per_gpu / sampled_views) samples/rank.
+  # Probed locally under PI3_CUDA_MEMORY_LIMIT_GIB=70:
+  # - 26-view samples: 5 samples/rank, 130 images/rank, ~53.0 GiB allocated /
+  #   ~54.7 GiB reserved.
+  # - 3-view samples: 46 samples/rank, 138 images/rank, ~56.2 GiB allocated /
+  #   ~58.4 GiB reserved.
+  max_img_per_gpu: 140
+
+test:
+  # Do not raise this in the 70 GiB profile; eval is host-RAM/refetch sensitive.
+  max_img_per_gpu: 128

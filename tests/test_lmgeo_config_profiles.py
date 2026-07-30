@@ -561,6 +561,63 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         for name in active_val_loader_names(cfg):
             self.assertTrue(cfg.val_datasets[name].dataset.condition_query_visibility)
 
+    def test_scratch_dinos_small_anchor_mask_profile_is_isolated(self):
+        cfg = compose_job(
+            "train_lmgeo_scratch_dinos_small_a40_40gb_anchor_mask_conditioning",
+            "lmgeo_trainpbr45_anchor_scene_pairs_masked_depth_query_masks",
+        )
+
+        self.assertEqual(cfg.model.encoder_size, "small")
+        self.assertTrue(cfg.model.encoder_pretrained)
+        self.assertIsNone(cfg.model.encoder_ckpt)
+        self.assertEqual(cfg.model.decoder_size, "small")
+        self.assertEqual(cfg.model.head_dim, 384)
+        self.assertEqual(cfg.model.point_decoder_dim, 384)
+        self.assertEqual(cfg.model.point_decoder_heads, 6)
+        self.assertEqual(cfg.model.camera_decoder_dim, 384)
+        self.assertEqual(cfg.model.camera_decoder_heads, 6)
+        self.assertEqual(cfg.model.camera_head_dim, 256)
+        self.assertFalse(cfg.model.load_vggt)
+        self.assertTrue(cfg.model.freeze_encoder)
+        self.assertIsNone(cfg.model.ckpt)
+        self.assertTrue(cfg.model.use_visibility_mask_conditioning)
+        self.assertEqual(float(cfg.train.optimizer.lr), 5e-5)
+        self.assertEqual(float(cfg.train.optimizer.encoder_lr), 0.0)
+        self.assertEqual(float(cfg.train.optimizer.visibility_mask_lr), 5e-4)
+        self.assertEqual(list(cfg.train.image_num_range), [3, 26])
+        self.assertEqual(cfg.train.max_img_per_gpu, 28)
+        self.assertTrue(cfg.lmgeo.depth_masking)
+        self.assertTrue(cfg.lmgeo_anchor.condition_reference_visibility)
+        self.assertTrue(cfg.lmgeo_anchor.condition_query_visibility)
+        self.assertTrue(cfg.train_dataset.LMGeoAnchorScenePair.condition_reference_visibility)
+        self.assertTrue(cfg.train_dataset.LMGeoAnchorScenePair.condition_query_visibility)
+        self.assertEqual(
+            active_val_loader_names(cfg),
+            ["real_anchor_pairs", "pbr_anchor_pairs"],
+        )
+        for name in active_val_loader_names(cfg):
+            self.assertTrue(cfg.val_datasets[name].dataset.condition_query_visibility)
+
+    def test_scratch_dinos_small_70gb_profile_increases_train_only_budget(self):
+        cfg = compose_job(
+            "train_lmgeo_scratch_dinos_small_rtxpro6000_70gb_anchor_mask_conditioning",
+            "lmgeo_trainpbr45_anchor_scene_pairs_masked_depth_query_masks",
+        )
+
+        self.assertEqual(cfg.model.encoder_size, "small")
+        self.assertEqual(cfg.model.decoder_size, "small")
+        self.assertTrue(cfg.model.use_visibility_mask_conditioning)
+        self.assertTrue(cfg.lmgeo_anchor.condition_reference_visibility)
+        self.assertTrue(cfg.lmgeo_anchor.condition_query_visibility)
+        self.assertEqual(list(cfg.train.image_num_range), [3, 26])
+        self.assertEqual(cfg.train.max_img_per_gpu, 140)
+        self.assertEqual(cfg.test.max_img_per_gpu, 128)
+        for name in active_val_loader_names(cfg):
+            runtime = cfg.val_datasets[name].runtime
+            self.assertEqual(list(runtime.image_num_range), [6, 6])
+            self.assertEqual(runtime.max_img_per_gpu, 128)
+            self.assertTrue(cfg.val_datasets[name].dataset.condition_query_visibility)
+
     def test_anchor_scene_overfit_query_masks_profile_has_mask_controls(self):
         cfg = compose_job(
             "train_lmgeo_overfit_a40_40gb_anchor_mask_conditioning",
@@ -716,6 +773,17 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         self.assertEqual(cfg.train.max_img_per_gpu, 64)
         self.assertEqual(OmegaConf.to_container(cfg.train.resolution), [[224, 224]])
         self.assertNotIn("lmgeo_profile", cfg)
+        self.assertEqual(cfg.model.encoder_size, "large")
+        self.assertFalse(cfg.model.encoder_pretrained)
+        self.assertIsNone(cfg.model.encoder_ckpt)
+        self.assertEqual(cfg.model.decoder_size, "large")
+        self.assertEqual(cfg.model.head_dim, 1024)
+        self.assertEqual(cfg.model.point_decoder_dim, 1024)
+        self.assertEqual(cfg.model.point_decoder_heads, 16)
+        self.assertEqual(cfg.model.camera_decoder_dim, 1024)
+        self.assertEqual(cfg.model.camera_decoder_heads, 16)
+        self.assertEqual(cfg.model.camera_head_dim, 512)
+        self.assertTrue(cfg.model.load_vggt)
         self.assertFalse(cfg.model.use_ray_conditioning)
         self.assertFalse(cfg.model.use_visibility_mask_conditioning)
 

@@ -11,7 +11,11 @@ from .layers.block import BlockRope
 from .layers.attention import FlashAttentionRope
 from .layers.transformer_head import TransformerDecoder, LinearPts3d, ContextTransformerDecoder
 from .layers.camera_head import CameraHead
-from .dinov2.hub.backbones import dinov2_vitl14, dinov2_vitl14_reg
+from .dinov2.hub.backbones import (
+    dinov2_vitb14_reg,
+    dinov2_vitl14_reg,
+    dinov2_vits14_reg,
+)
 from torch.utils.checkpoint import checkpoint
 from safetensors.torch import load_file
 
@@ -24,11 +28,71 @@ def freeze_all_params(modules):
             # module is directly a parameter
             module.requires_grad = False
 
+
+_ENCODER_FACTORIES = {
+    "small": (dinov2_vits14_reg, 384),
+    "base": (dinov2_vitb14_reg, 768),
+    "large": (dinov2_vitl14_reg, 1024),
+}
+
+_DECODER_SPECS = {
+    "small": dict(dec_embed_dim=384, dec_num_heads=6, mlp_ratio=4, dec_depth=24),
+    "base": dict(dec_embed_dim=768, dec_num_heads=12, mlp_ratio=4, dec_depth=24),
+    "large": dict(dec_embed_dim=1024, dec_num_heads=16, mlp_ratio=4, dec_depth=36),
+}
+
+
+def _is_none_like(value):
+    return value is None or str(value).lower() in {"none", "null", ""}
+
+
+def _unwrap_state_dict(checkpoint):
+    if not isinstance(checkpoint, dict):
+        return checkpoint
+    for key in ("model", "state_dict", "teacher", "student"):
+        value = checkpoint.get(key)
+        if isinstance(value, dict):
+            return value
+    return checkpoint
+
+
+def _strip_prefix_if_present(state_dict, prefixes):
+    keys = list(state_dict.keys())
+    for prefix in prefixes:
+        if any(key.startswith(prefix) for key in keys):
+            return {
+                key[len(prefix):]: value
+                for key, value in state_dict.items()
+                if key.startswith(prefix)
+            }
+    return state_dict
+
+
+def _positive_int(name, value):
+    value = int(value)
+    if value <= 0:
+        raise ValueError(f"{name} must be positive, got {value}")
+    return value
+
 class Pi3(nn.Module):
     def __init__(
             self,
             pos_type='rope100',
+            encoder_size='large',
+            encoder_pretrained=False,
+            encoder_ckpt=None,
             decoder_size='large',
+            head_dim=None,
+            point_decoder_dim=1024,
+            point_decoder_heads=16,
+            point_decoder_depth=5,
+            camera_decoder_dim=1024,
+            camera_decoder_heads=16,
+            camera_decoder_depth=5,
+            camera_head_dim=512,
+            global_point_decoder_dim=None,
+            global_point_decoder_heads=None,
+            global_point_decoder_depth=5,
             load_vggt=True,
             freeze_encoder=True,
             use_global_points=False,
@@ -45,9 +109,45 @@ class Pi3(nn.Module):
         # ----------------------
         #        Encoder
         # ----------------------
-        self.encoder = dinov2_vitl14_reg(pretrained=False)
+        encoder_size = str(encoder_size).lower()
+        if encoder_size not in _ENCODER_FACTORIES:
+            raise ValueError(
+                f"Unsupported encoder_size={encoder_size!r}; "
+                f"expected one of {sorted(_ENCODER_FACTORIES)}"
+            )
+        encoder_factory, expected_encoder_dim = _ENCODER_FACTORIES[encoder_size]
+        encoder_ckpt = None if _is_none_like(encoder_ckpt) else str(encoder_ckpt)
+        if load_vggt and (bool(encoder_pretrained) or encoder_ckpt is not None):
+            raise ValueError(
+                "load_vggt and encoder_pretrained/encoder_ckpt are mutually "
+                "exclusive because they both initialize the DINO encoder"
+            )
+        self.encoder = encoder_factory(
+            pretrained=bool(encoder_pretrained) and encoder_ckpt is None
+        )
         self.patch_size = 14
         del self.encoder.mask_token
+        enc_embed_dim = int(getattr(self.encoder, "embed_dim", expected_encoder_dim))
+        if enc_embed_dim != expected_encoder_dim:
+            raise RuntimeError(
+                f"encoder_size={encoder_size!r} expected dim "
+                f"{expected_encoder_dim}, got {enc_embed_dim}"
+            )
+        if encoder_ckpt is not None:
+            checkpoint = torch.load(
+                encoder_ckpt,
+                weights_only=False,
+                map_location=torch.device("cpu"),
+            )
+            encoder_state = _strip_prefix_if_present(
+                _unwrap_state_dict(checkpoint),
+                ("encoder.", "module.encoder.", "backbone.", "module.backbone."),
+            )
+            print(
+                "Loading DINO encoder",
+                self.encoder.load_state_dict(encoder_state, strict=False),
+            )
+            del checkpoint
         self.dino_output_layers = [] if dino_output_layers is None else [int(layer) for layer in dino_output_layers]
 
         # ----------------------
@@ -67,23 +167,75 @@ class Pi3(nn.Module):
         # ----------------------
         #        Decoder
         # ----------------------
-        if decoder_size == 'small':
-            dec_embed_dim = 384
-            dec_num_heads = 6
-            mlp_ratio = 4
-            dec_depth = 24
-        elif decoder_size == 'base':
-            dec_embed_dim = 768
-            dec_num_heads = 12
-            mlp_ratio = 4
-            dec_depth = 24
-        elif decoder_size == 'large':
-            dec_embed_dim = 1024
-            dec_num_heads = 16
-            mlp_ratio = 4
-            dec_depth = 36
-        else:
-            raise NotImplementedError
+        decoder_size = str(decoder_size).lower()
+        if decoder_size not in _DECODER_SPECS:
+            raise ValueError(
+                f"Unsupported decoder_size={decoder_size!r}; "
+                f"expected one of {sorted(_DECODER_SPECS)}"
+            )
+        decoder_spec = _DECODER_SPECS[decoder_size]
+        dec_embed_dim = int(decoder_spec["dec_embed_dim"])
+        dec_num_heads = int(decoder_spec["dec_num_heads"])
+        mlp_ratio = int(decoder_spec["mlp_ratio"])
+        dec_depth = int(decoder_spec["dec_depth"])
+        if enc_embed_dim != dec_embed_dim:
+            raise ValueError(
+                "encoder and decoder dimensions must match unless an explicit "
+                f"projection is added; got encoder_dim={enc_embed_dim}, "
+                f"decoder_dim={dec_embed_dim}"
+            )
+        if dec_embed_dim % dec_num_heads != 0:
+            raise ValueError(
+                f"decoder dim {dec_embed_dim} must be divisible by "
+                f"decoder heads {dec_num_heads}"
+            )
+
+        if head_dim is not None and point_decoder_dim is not None:
+            if int(head_dim) != int(point_decoder_dim):
+                raise ValueError(
+                    "head_dim is a legacy alias for point_decoder_dim; "
+                    f"got head_dim={head_dim} and "
+                    f"point_decoder_dim={point_decoder_dim}"
+                )
+        if point_decoder_dim is None:
+            point_decoder_dim = head_dim if head_dim is not None else 1024
+        point_decoder_dim = _positive_int("point_decoder_dim", point_decoder_dim)
+        point_decoder_heads = _positive_int("point_decoder_heads", point_decoder_heads)
+        point_decoder_depth = _positive_int("point_decoder_depth", point_decoder_depth)
+        camera_decoder_dim = _positive_int("camera_decoder_dim", camera_decoder_dim)
+        camera_decoder_heads = _positive_int("camera_decoder_heads", camera_decoder_heads)
+        camera_decoder_depth = _positive_int("camera_decoder_depth", camera_decoder_depth)
+        camera_head_dim = _positive_int("camera_head_dim", camera_head_dim)
+        if global_point_decoder_dim is None:
+            global_point_decoder_dim = point_decoder_dim
+        if global_point_decoder_heads is None:
+            global_point_decoder_heads = point_decoder_heads
+        global_point_decoder_dim = _positive_int("global_point_decoder_dim", global_point_decoder_dim)
+        global_point_decoder_heads = _positive_int("global_point_decoder_heads", global_point_decoder_heads)
+        global_point_decoder_depth = _positive_int("global_point_decoder_depth", global_point_decoder_depth)
+
+        for name, dim, heads in (
+            ("point_decoder", point_decoder_dim, point_decoder_heads),
+            ("camera_decoder", camera_decoder_dim, camera_decoder_heads),
+            ("global_point_decoder", global_point_decoder_dim, global_point_decoder_heads),
+        ):
+            if dim % heads != 0:
+                raise ValueError(
+                    f"{name} dim {dim} must be divisible by heads {heads}"
+                )
+        if load_vggt and (
+            encoder_size != "large"
+            or decoder_size != "large"
+            or point_decoder_dim != 1024
+            or point_decoder_heads != 16
+            or camera_decoder_dim != 1024
+            or camera_decoder_heads != 16
+            or camera_head_dim != 512
+        ):
+            raise ValueError(
+                "load_vggt=true is only compatible with the historical large "
+                "Pi3 dimensions"
+            )
         self.decoder = nn.ModuleList([
             BlockRope(
                 dim=dec_embed_dim,
@@ -156,25 +308,27 @@ class Pi3(nn.Module):
         # ----------------------
         self.point_decoder = TransformerDecoder(
             in_dim=2*self.dec_embed_dim, 
-            dec_embed_dim=1024,
-            dec_num_heads=16,
-            out_dim=1024,
+            dec_embed_dim=point_decoder_dim,
+            dec_num_heads=point_decoder_heads,
+            depth=point_decoder_depth,
+            out_dim=point_decoder_dim,
             rope=self.rope,
         )
-        self.point_head = LinearPts3d(patch_size=14, dec_embed_dim=1024, output_dim=3)
+        self.point_head = LinearPts3d(patch_size=14, dec_embed_dim=point_decoder_dim, output_dim=3)
 
         # ----------------------
         #  Camera Pose Decoder
         # ----------------------
         self.camera_decoder = TransformerDecoder(
             in_dim=2*self.dec_embed_dim, 
-            dec_embed_dim=1024,
-            dec_num_heads=16,                # 8
-            out_dim=512,
+            dec_embed_dim=camera_decoder_dim,
+            dec_num_heads=camera_decoder_heads,
+            depth=camera_decoder_depth,
+            out_dim=camera_head_dim,
             rope=self.rope,
             use_checkpoint=False
         )
-        self.camera_head = CameraHead(dim=512)
+        self.camera_head = CameraHead(dim=camera_head_dim)
         
 
         # ----------------------
@@ -184,12 +338,13 @@ class Pi3(nn.Module):
         if use_global_points:
             self.global_points_decoder = ContextTransformerDecoder(
                 in_dim=2*self.dec_embed_dim, 
-                dec_embed_dim=1024,
-                dec_num_heads=16,
-                out_dim=1024,
+                dec_embed_dim=global_point_decoder_dim,
+                dec_num_heads=global_point_decoder_heads,
+                depth=global_point_decoder_depth,
+                out_dim=global_point_decoder_dim,
                 rope=self.rope,
             )
-            self.global_point_head = LinearPts3d(patch_size=14, dec_embed_dim=1024, output_dim=3)
+            self.global_point_head = LinearPts3d(patch_size=14, dec_embed_dim=global_point_decoder_dim, output_dim=3)
 
         # For ImageNet Normalize
         image_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
@@ -227,7 +382,7 @@ class Pi3(nn.Module):
             #     Conf Decoder
             # ----------------------
             self.conf_decoder = deepcopy(self.point_decoder)
-            self.conf_head = LinearPts3d(patch_size=14, dec_embed_dim=1024, output_dim=1)
+            self.conf_head = LinearPts3d(patch_size=14, dec_embed_dim=point_decoder_dim, output_dim=1)
 
             freeze_all_params([self.encoder, self.decoder, self.point_decoder, self.point_head, self.camera_decoder,  self.camera_head, self.register_token])
             if use_global_points:
@@ -239,13 +394,13 @@ class Pi3(nn.Module):
 
         self.num_dec_blk_not_to_checkpoint = num_dec_blk_not_to_checkpoint
 
+        ckpt = None if _is_none_like(ckpt) else ckpt
         if ckpt is not None:
             if str(ckpt).endswith(".safetensors"):
                 checkpoint = load_file(ckpt)
             else:
                 checkpoint = torch.load(ckpt, weights_only=False, map_location='cpu')
-                if isinstance(checkpoint, dict):
-                    checkpoint = checkpoint.get("model", checkpoint.get("state_dict", checkpoint))
+                checkpoint = _unwrap_state_dict(checkpoint)
 
             res = self.load_state_dict(checkpoint, strict=False)
             print(f'[Pi3] Load checkpoints from {ckpt}: {res}')

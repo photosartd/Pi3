@@ -77,9 +77,15 @@ if [[ -z "${PI3_CKPT:-}" ]]; then
   fi
 fi
 
-if [[ ! -f "$PI3_CKPT" ]]; then
+case "${PI3_CKPT,,}" in
+  none|null)
+    PI3_CKPT="null"
+    ;;
+esac
+
+if [[ "$PI3_CKPT" != "null" && ! -f "$PI3_CKPT" ]]; then
   echo "ERROR: Pi3 checkpoint not found: $PI3_CKPT" >&2
-  echo "Set PI3_CKPT=/path/to/model.safetensors, place it at $SHARED_CKPT, or place it at ckpts/Pi3/model.safetensors." >&2
+  echo "Set PI3_CKPT=/path/to/model.safetensors, PI3_CKPT=none for scratch runs, place it at $SHARED_CKPT, or place it at ckpts/Pi3/model.safetensors." >&2
   exit 2
 fi
 

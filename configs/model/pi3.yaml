@@ -3,7 +3,24 @@
 model:
     _target_: pi3.models.pi3_training.Pi3
     pos_type: rope100
+    encoder_size: large
+    encoder_pretrained: false
+    encoder_ckpt: null
     decoder_size: large
+    # Historical Pi3-compatible head/decoder dimensions.  Keep these defaults
+    # in sync with ckpts/Pi3/model.safetensors; compact experiments must opt in
+    # explicitly from a train profile.
+    head_dim: 1024
+    point_decoder_dim: 1024
+    point_decoder_heads: 16
+    point_decoder_depth: 5
+    camera_decoder_dim: 1024
+    camera_decoder_heads: 16
+    camera_decoder_depth: 5
+    camera_head_dim: 512
+    global_point_decoder_dim: 1024
+    global_point_decoder_heads: 16
+    global_point_decoder_depth: 5
     load_vggt: true
     freeze_encoder: true
     use_global_points: false
