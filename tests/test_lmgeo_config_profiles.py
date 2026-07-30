@@ -544,6 +544,23 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         self.assertFalse(full.lmgeo.depth_masking)
         self.assertFalse(full.train_dataset.LMGeoAnchorScenePair.depth_masking)
 
+    def test_anchor_scene_pair_query_mask_oracle_conditions_queries(self):
+        cfg = compose_job(
+            "train_lmgeo_finetune_a40_40gb_anchor_mask_conditioning",
+            "lmgeo_trainpbr45_anchor_scene_pairs_masked_depth_query_masks",
+        )
+
+        self.assertTrue(cfg.model.use_visibility_mask_conditioning)
+        self.assertTrue(cfg.lmgeo.depth_masking)
+        self.assertEqual(list(cfg.train.image_num_range), [3, 26])
+        self.assertEqual(cfg.train.max_img_per_gpu, 28)
+        self.assertTrue(cfg.lmgeo_anchor.condition_reference_visibility)
+        self.assertTrue(cfg.lmgeo_anchor.condition_query_visibility)
+        self.assertTrue(cfg.train_dataset.LMGeoAnchorScenePair.condition_reference_visibility)
+        self.assertTrue(cfg.train_dataset.LMGeoAnchorScenePair.condition_query_visibility)
+        for name in active_val_loader_names(cfg):
+            self.assertTrue(cfg.val_datasets[name].dataset.condition_query_visibility)
+
     def test_generic_pi3_profile_is_unchanged(self):
         cfg = compose_job("train_pi3_lowres", "example")
 

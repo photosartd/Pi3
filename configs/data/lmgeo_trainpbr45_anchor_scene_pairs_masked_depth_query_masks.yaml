@@ -1,0 +1,12 @@
+# @package _global_
+
+# Same as lmgeo_trainpbr45_anchor_scene_pairs_masked_depth, but query frames
+# also receive the GT anchor-object visibility mask as model-side conditioning.
+# This is an oracle/ceiling variant: RGB is still unmasked, and masked-depth
+# supervision stays object-only.
+defaults:
+  - lmgeo_trainpbr45_anchor_scene_pairs_masked_depth
+  - _self_
+
+lmgeo_anchor:
+    condition_query_visibility: true
