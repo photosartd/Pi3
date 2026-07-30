@@ -116,6 +116,8 @@ class LMGeoDataset(BaseDataset):
         visibility_mask_conditioning=False,
         condition_reference_visibility=True,
         condition_query_visibility=False,
+        visibility_condition_corruption="none",
+        visibility_condition_shift_fraction=0.5,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -157,6 +159,8 @@ class LMGeoDataset(BaseDataset):
         self.visibility_mask_conditioning = bool(visibility_mask_conditioning)
         self.condition_reference_visibility = bool(condition_reference_visibility)
         self.condition_query_visibility = bool(condition_query_visibility)
+        self.visibility_condition_corruption = str(visibility_condition_corruption)
+        self.visibility_condition_shift_fraction = float(visibility_condition_shift_fraction)
         self._photometric_role_specs = {}
 
         if self.mask_type not in {"mask", "mask_visib"}:
@@ -169,6 +173,13 @@ class LMGeoDataset(BaseDataset):
             raise ValueError("photometric_jpeg_prob must be in [0, 1]")
         if not 0.0 <= self.photometric_blur_prob <= 1.0:
             raise ValueError("photometric_blur_prob must be in [0, 1]")
+        if self.visibility_condition_corruption not in {"none", "shift"}:
+            raise ValueError(
+                "visibility_condition_corruption must be 'none' or 'shift', "
+                f"got {visibility_condition_corruption!r}"
+            )
+        if self.visibility_condition_shift_fraction < 0.0:
+            raise ValueError("visibility_condition_shift_fraction must be non-negative")
 
         self.reference_records = self._build_reference_records()
         self.query_records = self._build_query_records()
@@ -516,6 +527,64 @@ class LMGeoDataset(BaseDataset):
             return self.condition_query_visibility
         return False
 
+    @staticmethod
+    def _shift_mask_zero(mask, *, dx, dy):
+        mask = np.asarray(mask)
+        shifted = np.zeros_like(mask)
+        height, width = mask.shape[:2]
+
+        if abs(int(dx)) >= width or abs(int(dy)) >= height:
+            return shifted
+
+        src_x0 = max(0, -int(dx))
+        src_x1 = min(width, width - int(dx))
+        dst_x0 = max(0, int(dx))
+        dst_x1 = min(width, width + int(dx))
+        src_y0 = max(0, -int(dy))
+        src_y1 = min(height, height - int(dy))
+        dst_y0 = max(0, int(dy))
+        dst_y1 = min(height, height + int(dy))
+
+        if src_x1 <= src_x0 or src_y1 <= src_y0:
+            return shifted
+        shifted[dst_y0:dst_y1, dst_x0:dst_x1] = mask[src_y0:src_y1, src_x0:src_x1]
+        return shifted
+
+    def _corrupt_visibility_condition(self, condition, *, view_role, rng):
+        """Alter only the model-side mask condition, not GT masks/loss targets."""
+
+        if self.visibility_condition_corruption == "none":
+            return condition
+        condition = np.asarray(condition, dtype=np.float32)
+        if self.visibility_condition_corruption == "shift":
+            ys, xs = np.nonzero(condition > 0.5)
+            if len(xs) == 0:
+                return condition
+
+            bbox_w = int(xs.max() - xs.min() + 1)
+            bbox_h = int(ys.max() - ys.min() + 1)
+            shift_fraction = float(self.visibility_condition_shift_fraction)
+            max_axis = "x" if bbox_w >= bbox_h else "y"
+
+            # Move by about half an object footprint while keeping the mask
+            # shape itself intact.  This gives a deliberately wrong object cue
+            # without changing any supervision target.
+            if max_axis == "x":
+                dx = max(1, int(round(bbox_w * shift_fraction)))
+                dy = 0
+            else:
+                dx = 0
+                dy = max(1, int(round(bbox_h * shift_fraction)))
+            if rng.integers(0, 2):
+                dx = -dx
+                dy = -dy
+
+            shifted = self._shift_mask_zero(condition, dx=dx, dy=dy).astype(np.float32)
+            if shifted.sum() > 0:
+                return shifted
+            return condition
+        raise ValueError(f"Unsupported visibility condition corruption {self.visibility_condition_corruption!r}")
+
     def _load_view(self, record, rgb_masking, view_role):
         object_id = int(record.get("object_id", getattr(self, "object_id", -1)))
         query_scene_id = int(record.get("query_scene_id", getattr(self, "query_scene_id", -1)))
@@ -581,6 +650,12 @@ class LMGeoDataset(BaseDataset):
         object_mask = np.asarray(object_mask > 0, dtype=np.float32)
         visibility_known = self._should_condition_visibility_view(view_role=view_role)
         visibility_condition = object_mask if visibility_known else np.zeros_like(object_mask, dtype=np.float32)
+        if visibility_known:
+            visibility_condition = self._corrupt_visibility_condition(
+                visibility_condition,
+                view_role=view_role,
+                rng=self._rng,
+            )
         visibility_known_map = np.full_like(object_mask, 1.0 if visibility_known else 0.0, dtype=np.float32)
 
         view = {
@@ -726,6 +801,8 @@ class LMGeoSequenceDataset(LMGeoDataset):
         visibility_mask_conditioning=False,
         condition_reference_visibility=True,
         condition_query_visibility=False,
+        visibility_condition_corruption="none",
+        visibility_condition_shift_fraction=0.5,
         min_query_records=None,
         max_query_subsequences=None,
         sort_query_windows_by_visibility=True,
@@ -774,6 +851,8 @@ class LMGeoSequenceDataset(LMGeoDataset):
         self.visibility_mask_conditioning = bool(visibility_mask_conditioning)
         self.condition_reference_visibility = bool(condition_reference_visibility)
         self.condition_query_visibility = bool(condition_query_visibility)
+        self.visibility_condition_corruption = str(visibility_condition_corruption)
+        self.visibility_condition_shift_fraction = float(visibility_condition_shift_fraction)
         self._photometric_role_specs = {}
         default_min_query_records = self.num_query_range[0] if self.allow_repeat else self.num_query_range[1]
         self.min_query_records = int(min_query_records) if min_query_records is not None else default_min_query_records
@@ -801,6 +880,13 @@ class LMGeoSequenceDataset(LMGeoDataset):
             raise ValueError("photometric_jpeg_prob must be in [0, 1]")
         if not 0.0 <= self.photometric_blur_prob <= 1.0:
             raise ValueError("photometric_blur_prob must be in [0, 1]")
+        if self.visibility_condition_corruption not in {"none", "shift"}:
+            raise ValueError(
+                "visibility_condition_corruption must be 'none' or 'shift', "
+                f"got {visibility_condition_corruption!r}"
+            )
+        if self.visibility_condition_shift_fraction < 0.0:
+            raise ValueError("visibility_condition_shift_fraction must be non-negative")
         if not 0.0 <= self.context_reference_fraction <= 1.0:
             raise ValueError(
                 f"context_reference_fraction must be in [0, 1], got {context_reference_fraction}"
@@ -924,8 +1010,11 @@ class LMGeoSequenceDataset(LMGeoDataset):
         if self.query_windows is None:
             return self._build_scene_window_samples(query_scene_ids, query_subscene_ids)
 
+        return self._build_samples_from_query_windows(self._candidate_windows(query_scene_ids, query_subscene_ids))
+
+    def _build_samples_from_query_windows(self, windows, *, apply_limits=True):
         samples = []
-        for window in self._candidate_windows(query_scene_ids, query_subscene_ids):
+        for window in windows:
             object_id = int(window["object_id"])
             scene_id = int(window["query_scene_id"])
             subscene_id = int(window["query_subscene_id"])
@@ -957,7 +1046,7 @@ class LMGeoSequenceDataset(LMGeoDataset):
 
         if self.sort_query_windows_by_visibility:
             samples.sort(key=lambda item: (-item["mean_visibility"], item["object_id"], item["query_scene_id"], item["query_subscene_id"]))
-        if self.max_query_subsequences is not None:
+        if apply_limits and self.max_query_subsequences is not None:
             samples = samples[: self.max_query_subsequences]
         return samples
 
@@ -1357,6 +1446,8 @@ class LMGeoAnchorScenePairSequenceDataset(LMGeoSequenceDataset):
     def __init__(
         self,
         *args,
+        anchor_reference_windows=None,
+        anchor_reference_query_split=None,
         anchor_allow_same_scene=True,
         anchor_allow_same_subscene=True,
         anchor_selection_attempts=50,
@@ -1369,9 +1460,20 @@ class LMGeoAnchorScenePairSequenceDataset(LMGeoSequenceDataset):
         super().__init__(*args, **kwargs)
 
         self.dataset_label = "LMGeoAnchorScenePair"
+        self.anchor_reference_windows = (
+            None
+            if anchor_reference_windows is None
+            else self._normalize_query_windows(anchor_reference_windows)
+        )
+        self.anchor_reference_query_split = (
+            self.query_split
+            if anchor_reference_query_split is None
+            else str(anchor_reference_query_split)
+        )
         self.anchor_allow_same_scene = bool(anchor_allow_same_scene)
         self.anchor_allow_same_subscene = bool(anchor_allow_same_subscene)
         self.anchor_selection_attempts = max(1, int(anchor_selection_attempts))
+        self.anchor_reference_samples = self._build_anchor_reference_samples()
         self.anchor_reference_samples_by_object = self._build_anchor_reference_sample_index()
 
         candidate_count = sum(
@@ -1379,7 +1481,8 @@ class LMGeoAnchorScenePairSequenceDataset(LMGeoSequenceDataset):
             for samples in self.anchor_reference_samples_by_object.values()
         )
         print(
-            f"[{self.dataset_label}] anchor reference windows={candidate_count}, "
+            f"[{self.dataset_label}] query windows={len(self.samples)}, "
+            f"anchor reference windows={candidate_count}, "
             f"allow_same_scene={self.anchor_allow_same_scene}, "
             f"allow_same_subscene={self.anchor_allow_same_subscene}, "
             f"condition_reference_visibility={self.condition_reference_visibility}, "
@@ -1392,9 +1495,23 @@ class LMGeoAnchorScenePairSequenceDataset(LMGeoSequenceDataset):
         # render split and keep render-reference experiments fully separate.
         return []
 
+    def _build_anchor_reference_samples(self):
+        if self.anchor_reference_windows is None:
+            return list(self.samples)
+
+        original_query_split = self.query_split
+        try:
+            self.query_split = self.anchor_reference_query_split
+            return self._build_samples_from_query_windows(
+                self.anchor_reference_windows,
+                apply_limits=False,
+            )
+        finally:
+            self.query_split = original_query_split
+
     def _build_anchor_reference_sample_index(self):
         samples_by_object = {}
-        for sample in self.samples:
+        for sample in self.anchor_reference_samples:
             samples_by_object.setdefault(int(sample["object_id"]), []).append(sample)
         return samples_by_object
 

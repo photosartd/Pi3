@@ -1,0 +1,16 @@
+# @package _global_
+
+# No-mask training control for the fixed cross-scene anchor overfit probe.
+# The model architecture is unchanged, but both reference and query visibility
+# condition maps are zero/unknown during training.
+
+defaults:
+  - lmgeo_anchor_cross_scene_overfit_scene13_sub19_to_scene3_sub25_query_masks
+  - _self_
+
+primary_val: cross_scene_no_masks
+
+lmgeo_anchor:
+    condition_reference_visibility: false
+    condition_query_visibility: false
+    visibility_condition_corruption: none

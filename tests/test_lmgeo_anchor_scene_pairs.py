@@ -45,6 +45,7 @@ class LMGeoAnchorScenePairTest(unittest.TestCase):
             make_sample(2, 0, [25, 26, 27]),
             make_sample(1, 0, [100, 101, 102], object_id=2),
         ]
+        dataset.anchor_reference_samples = list(dataset.samples)
         dataset.anchor_reference_samples_by_object = dataset._build_anchor_reference_sample_index()
         return dataset
 
@@ -79,6 +80,40 @@ class LMGeoAnchorScenePairTest(unittest.TestCase):
         query_ids = {dataset._record_identity(record) for record in query_records}
         self.assertFalse(reference_ids & query_ids)
         self.assertEqual(reference_sample["object_id"], 1)
+
+    def test_fixed_anchor_reference_samples_force_cross_scene_candidates(self):
+        dataset = self.make_dataset_shell()
+        query_sample = make_sample(3, 25, [625, 626, 627], object_id=1)
+        reference_sample = make_sample(13, 19, [475, 476, 477], object_id=1)
+        same_scene_sample = make_sample(3, 25, [628, 629, 630], object_id=1)
+
+        dataset.samples = [query_sample]
+        dataset.anchor_reference_samples = [reference_sample, same_scene_sample]
+        dataset.anchor_reference_samples_by_object = dataset._build_anchor_reference_sample_index()
+        dataset.anchor_allow_same_scene = False
+        dataset.anchor_allow_same_subscene = False
+
+        candidates = dataset._anchor_reference_candidates(query_sample)
+
+        self.assertEqual(candidates, [reference_sample])
+
+    def test_visibility_condition_shift_changes_only_condition_mask(self):
+        dataset = self.make_dataset_shell()
+        dataset.visibility_condition_corruption = "shift"
+        dataset.visibility_condition_shift_fraction = 0.5
+
+        mask = np.zeros((10, 12), dtype=np.float32)
+        mask[3:7, 4:8] = 1.0
+        shifted = dataset._corrupt_visibility_condition(
+            mask,
+            view_role="query",
+            rng=np.random.default_rng(0),
+        )
+
+        self.assertEqual(shifted.shape, mask.shape)
+        self.assertGreater(float(shifted.sum()), 0.0)
+        self.assertEqual(float(shifted.sum()), float(mask.sum()))
+        self.assertFalse(np.array_equal(shifted, mask))
 
 
 if __name__ == "__main__":

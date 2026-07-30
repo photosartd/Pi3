@@ -1,15 +1,14 @@
 # @package _global_
 
-# Same-object scene-pair LMGeo training.
+# Tiny same-scene/window anchor overfit probe.
 #
-# Each sample chooses one anchor object, keyframes from one scene/window where
-# that object is visible, and query frames from another compatible scene/window
-# where the same object is visible.  The reference and query windows may be the
-# same, but selected query records are excluded from keyframes.  Model-side
-# visibility conditioning is reference-only: references receive [mask, known],
-# queries receive [0, 0].  This variant also uses object-only depth supervision.
+# All train and validation samples come from train_pbr scene 13, subscene 19.
+# Each sample is still one anchor object in object-centric coordinates, so the
+# model sees multiple masks/objects as separate samples rather than as multiple
+# targets inside one sample.  RGB stays unmasked; the visibility mask is supplied
+# to the conditioning branch for both keyframes and the single query frame.
 
-primary_val: real_anchor_pairs
+primary_val: overfit_scene_correct_masks
 
 lmgeo:
     data_root: /vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/lm-o
@@ -17,10 +16,10 @@ lmgeo:
     object_ids: all
     reference_split: train
     train_query_split: train_pbr
-    test_query_split: test
-    new_val_query_split: new_val
-    query_scene_ids: all
-    query_subscene_ids: all
+    test_query_split: train_pbr
+    new_val_query_split: train_pbr
+    query_scene_ids: [13]
+    query_subscene_ids: [19]
     query_window_size: 25
     num_reference_range: ${lmgeo_profile.num_reference_range}
     num_query_range: ${lmgeo_profile.num_query_range}
@@ -39,20 +38,25 @@ lmgeo:
     allow_repeat: ${lmgeo_profile.allow_repeat}
     symmetric_ids: [10, 11]
 
+lmgeo_profile:
+    num_reference_range: [5, 5]
+    num_query_range: [1, 1]
+    filter_preprocessed_query_depth: false
+    allow_repeat: false
+    max_refetch: 50
+
 lmgeo_anchor:
-    anchor_reference_windows: null
-    anchor_reference_query_split: ${lmgeo.train_query_split}
     anchor_allow_same_scene: true
     anchor_allow_same_subscene: true
     anchor_selection_attempts: 50
     visibility_mask_conditioning: true
     condition_reference_visibility: true
-    condition_query_visibility: false
+    condition_query_visibility: true
     visibility_condition_corruption: none
     visibility_condition_shift_fraction: 0.5
     val_min_query_records: 6
 
-_anchor_pair_train_base: &anchor_pair_train_base
+_overfit_train_base: &overfit_train_base
     _target_: datasets.lmgeo_dataset.LMGeoAnchorScenePairSequenceDataset
     data_root: ${lmgeo.data_root}
     object_ids: ${lmgeo.object_ids}
@@ -82,8 +86,6 @@ _anchor_pair_train_base: &anchor_pair_train_base
     condition_query_visibility: ${lmgeo_anchor.condition_query_visibility}
     visibility_condition_corruption: ${lmgeo_anchor.visibility_condition_corruption}
     visibility_condition_shift_fraction: ${lmgeo_anchor.visibility_condition_shift_fraction}
-    anchor_reference_windows: ${lmgeo_anchor.anchor_reference_windows}
-    anchor_reference_query_split: ${lmgeo_anchor.anchor_reference_query_split}
     anchor_allow_same_scene: ${lmgeo_anchor.anchor_allow_same_scene}
     anchor_allow_same_subscene: ${lmgeo_anchor.anchor_allow_same_subscene}
     anchor_selection_attempts: ${lmgeo_anchor.anchor_selection_attempts}
@@ -99,17 +101,18 @@ _anchor_pair_train_base: &anchor_pair_train_base
 train_dataset:
     length: auto
     weights:
-        LMGeoAnchorScenePair: 10000
+        LMGeoAnchorScenePair: 256
     LMGeoAnchorScenePair:
-        <<: *anchor_pair_train_base
+        <<: *overfit_train_base
         mode: train
 
 train_dataloader:
     drop_last: true
     shuffle: true
 
-_anchor_pair_val_base: &anchor_pair_val_base
-    <<: *anchor_pair_train_base
+_overfit_val_correct_dataset: &overfit_val_correct_dataset
+    <<: *overfit_train_base
+    query_split: ${lmgeo.test_query_split}
     num_reference_range: [5, 5]
     num_query_range: [1, 1]
     reference_selection: random
@@ -117,37 +120,50 @@ _anchor_pair_val_base: &anchor_pair_val_base
     filter_preprocessed_query_depth: false
     allow_repeat: false
     min_query_records: ${lmgeo_anchor.val_min_query_records}
+    condition_reference_visibility: true
+    condition_query_visibility: true
+    visibility_condition_corruption: none
     resolution: ${train.resolution}
     mode: val
 
-_real_anchor_pair_dataset: &real_anchor_pair_dataset
-    <<: *anchor_pair_val_base
-    query_split: ${lmgeo.test_query_split}
-    mode: test
+_overfit_val_shifted_dataset: &overfit_val_shifted_dataset
+    <<: *overfit_val_correct_dataset
+    visibility_condition_corruption: shift
+    visibility_condition_shift_fraction: 0.5
 
-_pbr_anchor_pair_dataset: &pbr_anchor_pair_dataset
-    <<: *anchor_pair_val_base
-    query_split: ${lmgeo.new_val_query_split}
-    mode: val
+_overfit_val_no_masks_dataset: &overfit_val_no_masks_dataset
+    <<: *overfit_val_correct_dataset
+    condition_reference_visibility: false
+    condition_query_visibility: false
+    visibility_condition_corruption: none
 
-test_dataset: *real_anchor_pair_dataset
-test_dataloader: &default_test_dataloader
+test_dataset: *overfit_val_correct_dataset
+test_dataloader: &overfit_test_dataloader
     drop_last: false
     shuffle: false
 
 val_datasets:
-    real_anchor_pairs:
-        dataset: *real_anchor_pair_dataset
-        dataloader: *default_test_dataloader
+    overfit_scene_correct_masks:
+        dataset: *overfit_val_correct_dataset
+        dataloader: *overfit_test_dataloader
         runtime:
             image_num_range: [6, 6]
             max_img_per_gpu: ${test.max_img_per_gpu}
             iters_per_test: 0
             num_workers: ${test.num_workers}
             print_freq: ${test.print_freq}
-    pbr_anchor_pairs:
-        dataset: *pbr_anchor_pair_dataset
-        dataloader: *default_test_dataloader
+    overfit_scene_shifted_masks:
+        dataset: *overfit_val_shifted_dataset
+        dataloader: *overfit_test_dataloader
+        runtime:
+            image_num_range: [6, 6]
+            max_img_per_gpu: ${test.max_img_per_gpu}
+            iters_per_test: 0
+            num_workers: ${test.num_workers}
+            print_freq: ${test.print_freq}
+    overfit_scene_no_masks:
+        dataset: *overfit_val_no_masks_dataset
+        dataloader: *overfit_test_dataloader
         runtime:
             image_num_range: [6, 6]
             max_img_per_gpu: ${test.max_img_per_gpu}

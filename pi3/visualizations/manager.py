@@ -46,6 +46,8 @@ class VisualManager:
         visualizers = []
         if enabled and items:
             for _, visualizer_cfg in items.items():
+                if visualizer_cfg is None or visualizer_cfg is False:
+                    continue
                 visualizers.append(hydra.utils.instantiate(visualizer_cfg))
         return cls(
             visualizers,

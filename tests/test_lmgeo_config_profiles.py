@@ -561,6 +561,154 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         for name in active_val_loader_names(cfg):
             self.assertTrue(cfg.val_datasets[name].dataset.condition_query_visibility)
 
+    def test_anchor_scene_overfit_query_masks_profile_has_mask_controls(self):
+        cfg = compose_job(
+            "train_lmgeo_overfit_a40_40gb_anchor_mask_conditioning",
+            "lmgeo_anchor_scene_overfit_scene13_sub19_query_masks",
+        )
+
+        self.assertTrue(cfg.model.use_visibility_mask_conditioning)
+        self.assertEqual(OmegaConf.to_container(cfg.train.resolution), [[560, 420]])
+        self.assertEqual(list(cfg.train.image_num_range), [6, 6])
+        self.assertEqual(cfg.train.max_img_per_gpu, 28)
+        self.assertEqual(cfg.train.iters_per_epoch, 20)
+        self.assertEqual(list(cfg.lmgeo.query_scene_ids), [13])
+        self.assertEqual(list(cfg.lmgeo.query_subscene_ids), [19])
+        self.assertEqual(list(cfg.lmgeo.num_reference_range), [5, 5])
+        self.assertEqual(list(cfg.lmgeo.num_query_range), [1, 1])
+        self.assertFalse(cfg.lmgeo.reference_rgb_masking)
+        self.assertFalse(cfg.lmgeo.query_rgb_masking)
+        self.assertTrue(cfg.lmgeo.depth_masking)
+        self.assertEqual(cfg.primary_val, "overfit_scene_correct_masks")
+        self.assertEqual(
+            cfg.train_dataset.LMGeoAnchorScenePair._target_,
+            "datasets.lmgeo_dataset.LMGeoAnchorScenePairSequenceDataset",
+        )
+        self.assertEqual(list(cfg.train_dataset.LMGeoAnchorScenePair.query_scene_ids), [13])
+        self.assertEqual(list(cfg.train_dataset.LMGeoAnchorScenePair.query_subscene_ids), [19])
+        self.assertTrue(cfg.train_dataset.LMGeoAnchorScenePair.condition_reference_visibility)
+        self.assertTrue(cfg.train_dataset.LMGeoAnchorScenePair.condition_query_visibility)
+        self.assertEqual(cfg.train_dataset.LMGeoAnchorScenePair.visibility_condition_corruption, "none")
+        self.assertEqual(
+            active_val_loader_names(cfg),
+            [
+                "overfit_scene_correct_masks",
+                "overfit_scene_shifted_masks",
+                "overfit_scene_no_masks",
+            ],
+        )
+
+        correct = cfg.val_datasets.overfit_scene_correct_masks.dataset
+        shifted = cfg.val_datasets.overfit_scene_shifted_masks.dataset
+        no_masks = cfg.val_datasets.overfit_scene_no_masks.dataset
+        self.assertTrue(correct.condition_reference_visibility)
+        self.assertTrue(correct.condition_query_visibility)
+        self.assertEqual(correct.visibility_condition_corruption, "none")
+        self.assertTrue(shifted.condition_reference_visibility)
+        self.assertTrue(shifted.condition_query_visibility)
+        self.assertEqual(shifted.visibility_condition_corruption, "shift")
+        self.assertEqual(shifted.visibility_condition_shift_fraction, 0.5)
+        self.assertFalse(no_masks.condition_reference_visibility)
+        self.assertFalse(no_masks.condition_query_visibility)
+        self.assertEqual(no_masks.visibility_condition_corruption, "none")
+        for name in active_val_loader_names(cfg):
+            runtime = cfg.val_datasets[name].runtime
+            dataset = cfg.val_datasets[name].dataset
+            self.assertEqual(list(runtime.image_num_range), [6, 6])
+            self.assertEqual(runtime.max_img_per_gpu, 28)
+            self.assertEqual(list(dataset.num_reference_range), [5, 5])
+            self.assertEqual(list(dataset.num_query_range), [1, 1])
+
+        self.assertIsNone(cfg.metrics["items"].chamfer)
+        self.assertIsNone(cfg.visuals["items"].query_pose_overlay)
+        self.assertIsNone(cfg.visuals["items"].reference_reconstruction)
+        self.assertIn("visibility_condition", cfg.visuals["items"])
+
+    def test_anchor_scene_overfit_no_masks_profile_disables_train_conditioning(self):
+        cfg = compose_job(
+            "train_lmgeo_overfit_a40_40gb_anchor_mask_conditioning",
+            "lmgeo_anchor_scene_overfit_scene13_sub19_no_masks",
+        )
+
+        self.assertTrue(cfg.model.use_visibility_mask_conditioning)
+        self.assertEqual(cfg.primary_val, "overfit_scene_no_masks")
+        self.assertFalse(cfg.lmgeo_anchor.condition_reference_visibility)
+        self.assertFalse(cfg.lmgeo_anchor.condition_query_visibility)
+        self.assertFalse(cfg.train_dataset.LMGeoAnchorScenePair.condition_reference_visibility)
+        self.assertFalse(cfg.train_dataset.LMGeoAnchorScenePair.condition_query_visibility)
+        self.assertFalse(cfg.val_datasets.overfit_scene_no_masks.dataset.condition_reference_visibility)
+        self.assertFalse(cfg.val_datasets.overfit_scene_no_masks.dataset.condition_query_visibility)
+
+    def test_anchor_cross_scene_overfit_profile_forces_reference_and_query_windows(self):
+        cfg = compose_job(
+            "train_lmgeo_overfit_a40_40gb_anchor_mask_conditioning_biglr",
+            "lmgeo_anchor_cross_scene_overfit_scene13_sub19_to_scene3_sub25_query_masks",
+        )
+
+        self.assertTrue(cfg.model.use_visibility_mask_conditioning)
+        self.assertEqual(cfg.train.optimizer.lr, 1e-5)
+        self.assertEqual(cfg.train.optimizer.visibility_mask_lr, 1e-4)
+        self.assertEqual(list(cfg.train.image_num_range), [6, 6])
+        self.assertEqual(cfg.train.max_img_per_gpu, 28)
+        self.assertEqual(list(cfg.lmgeo.query_scene_ids), [3])
+        self.assertEqual(list(cfg.lmgeo.query_subscene_ids), [25])
+        self.assertEqual(list(cfg.lmgeo.num_reference_range), [5, 5])
+        self.assertEqual(list(cfg.lmgeo.num_query_range), [1, 1])
+        self.assertEqual(cfg.primary_val, "cross_scene_correct_masks")
+
+        train_dataset = cfg.train_dataset.LMGeoAnchorScenePair
+        self.assertEqual(train_dataset._target_, "datasets.lmgeo_dataset.LMGeoAnchorScenePairSequenceDataset")
+        self.assertFalse(train_dataset.anchor_allow_same_scene)
+        self.assertFalse(train_dataset.anchor_allow_same_subscene)
+        self.assertTrue(train_dataset.condition_reference_visibility)
+        self.assertTrue(train_dataset.condition_query_visibility)
+        self.assertEqual(list(train_dataset.query_scene_ids), [3])
+        self.assertEqual(list(train_dataset.query_subscene_ids), [25])
+        self.assertEqual(len(train_dataset.anchor_reference_windows), 8)
+        for window in train_dataset.anchor_reference_windows:
+            self.assertEqual(window.query_scene_id, 13)
+            self.assertEqual(window.query_subscene_id, 19)
+
+        self.assertEqual(
+            active_val_loader_names(cfg),
+            [
+                "cross_scene_correct_masks",
+                "cross_scene_shifted_masks",
+                "cross_scene_no_masks",
+            ],
+        )
+        correct = cfg.val_datasets.cross_scene_correct_masks.dataset
+        shifted = cfg.val_datasets.cross_scene_shifted_masks.dataset
+        no_masks = cfg.val_datasets.cross_scene_no_masks.dataset
+        self.assertTrue(correct.condition_reference_visibility)
+        self.assertTrue(correct.condition_query_visibility)
+        self.assertEqual(correct.visibility_condition_corruption, "none")
+        self.assertEqual(shifted.visibility_condition_corruption, "shift")
+        self.assertFalse(no_masks.condition_reference_visibility)
+        self.assertFalse(no_masks.condition_query_visibility)
+        for name in active_val_loader_names(cfg):
+            runtime = cfg.val_datasets[name].runtime
+            dataset = cfg.val_datasets[name].dataset
+            self.assertEqual(list(runtime.image_num_range), [6, 6])
+            self.assertEqual(runtime.max_img_per_gpu, 28)
+            self.assertEqual(list(dataset.query_scene_ids), [3])
+            self.assertEqual(list(dataset.query_subscene_ids), [25])
+            self.assertEqual(len(dataset.anchor_reference_windows), 8)
+
+    def test_anchor_cross_scene_overfit_no_masks_profile_disables_train_conditioning(self):
+        cfg = compose_job(
+            "train_lmgeo_overfit_a40_40gb_anchor_mask_conditioning_biglr",
+            "lmgeo_anchor_cross_scene_overfit_scene13_sub19_to_scene3_sub25_no_masks",
+        )
+
+        self.assertEqual(cfg.primary_val, "cross_scene_no_masks")
+        self.assertFalse(cfg.lmgeo_anchor.condition_reference_visibility)
+        self.assertFalse(cfg.lmgeo_anchor.condition_query_visibility)
+        self.assertFalse(cfg.train_dataset.LMGeoAnchorScenePair.condition_reference_visibility)
+        self.assertFalse(cfg.train_dataset.LMGeoAnchorScenePair.condition_query_visibility)
+        self.assertFalse(cfg.val_datasets.cross_scene_no_masks.dataset.condition_reference_visibility)
+        self.assertFalse(cfg.val_datasets.cross_scene_no_masks.dataset.condition_query_visibility)
+
     def test_generic_pi3_profile_is_unchanged(self):
         cfg = compose_job("train_pi3_lowres", "example")
 

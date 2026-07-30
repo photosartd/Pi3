@@ -264,6 +264,12 @@ class ObjectPoseMetric(BaseMetric):
             "alignment_underconstrained": float(self.num_underconstrained),
         }
         if self.used_d_by_obj:
+            output["query_add_0_1d_macro_obj"] = safe_mean(
+                [recall_below(values, 0.1) for values in self.add_d_by_obj.values()]
+            )
+            output["query_adds_0_1d_macro_obj"] = safe_mean(
+                [recall_below(values, 0.1) for values in self.adds_d_by_obj.values()]
+            )
             output["query_add_s_0_1d_macro_obj"] = safe_mean(
                 [recall_below(values, 0.1) for values in self.used_d_by_obj.values()]
             )
@@ -279,6 +285,8 @@ class ObjectPoseMetric(BaseMetric):
             for obj_id in sorted(self.used_d_by_obj):
                 prefix = f"obj_{obj_id:06d}"
                 output[f"{prefix}_query_count"] = float(len(self.used_d_by_obj[obj_id]))
+                output[f"{prefix}_query_add_0_1d"] = recall_below(self.add_d_by_obj[obj_id], 0.1)
+                output[f"{prefix}_query_adds_0_1d"] = recall_below(self.adds_d_by_obj[obj_id], 0.1)
                 output[f"{prefix}_query_add_s_0_1d"] = recall_below(self.used_d_by_obj[obj_id], 0.1)
                 output[f"{prefix}_query_used_median_d"] = safe_median(self.used_d_by_obj[obj_id])
                 output[f"{prefix}_query_rot_median_deg"] = safe_median(self.rot_deg_by_obj[obj_id])

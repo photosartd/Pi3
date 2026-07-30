@@ -1,0 +1,25 @@
+# @package _global_
+
+# Higher-LR overfit profile for quick mask-conditioning diagnostics.  It keeps
+# the 560x420 A40 memory budget, but uses the older overfit-style peak LR for
+# the pretrained Pi3 trainable blocks and a larger peak LR for the newly added
+# visibility-mask embedding branch.
+defaults:
+  - train_lmgeo_overfit_a40_40gb_anchor_mask_conditioning
+  - _self_
+
+train:
+  num_epoch: 10
+  iters_per_epoch: 20
+  print_freq: 1
+  lr_scheduler:
+    pct_start: 0.20
+  optimizer:
+    lr: 1e-5
+    encoder_lr: 0.0
+    visibility_mask_lr: 1e-4
+
+log:
+  ckpt_interval: 5
+  max_checkpoints: 2
+  save_best: false

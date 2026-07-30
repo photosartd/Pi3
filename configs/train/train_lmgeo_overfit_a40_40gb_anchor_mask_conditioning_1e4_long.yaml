@@ -1,0 +1,25 @@
+# @package _global_
+
+# Longer version of the successful 1e-4 visibility-mask overfit probe.
+# It keeps the previous peak LRs but extends the OneCycle tail, so we can test
+# whether the correct-mask split keeps improving instead of stopping when the
+# short 200-step schedule has already annealed to nearly zero.
+defaults:
+  - train_lmgeo_overfit_a40_40gb_anchor_mask_conditioning_biglr
+  - _self_
+
+train:
+  num_epoch: 30
+  iters_per_epoch: 20
+  lr_scheduler:
+    # 40 warmup steps / 600 total steps ~= previous 200-step run's peak step.
+    pct_start: 0.067
+  optimizer:
+    lr: 1e-5
+    encoder_lr: 0.0
+    visibility_mask_lr: 1e-4
+
+log:
+  ckpt_interval: 10
+  max_checkpoints: 3
+  save_best: true

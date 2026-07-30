@@ -1,0 +1,62 @@
+# @package _global_
+
+# Short high-resolution overfit profile for testing whether the GT visibility
+# mask-conditioning branch is actually used.  One "epoch" is only a small
+# artificial chunk so validation happens quickly.
+defaults:
+  - train_lmgeo_finetune_a40_40gb_anchor_mask_conditioning
+  - _self_
+
+lmgeo_profile:
+  num_reference_range: [5, 5]
+  num_query_range: [1, 1]
+  filter_preprocessed_query_depth: false
+  allow_repeat: false
+  max_refetch: 50
+
+train:
+  image_num_range: [6, 6]
+  max_img_per_gpu: 28
+  num_workers: 0
+  num_epoch: 20
+  iters_per_epoch: 20
+  print_freq: 1
+  val_every_n_epochs: 1
+  lr_scheduler:
+    pct_start: 0.20
+  optimizer:
+    visibility_mask_lr: 5e-5
+
+test:
+  image_num_range: [6, 6]
+  max_img_per_gpu: 28
+  num_workers: 0
+  iters_per_test: 0
+  print_freq: 1
+
+metrics:
+  enabled: true
+  train_enabled: false
+  val_enabled: true
+  items:
+    chamfer: null
+
+visuals:
+  enabled: true
+  train_enabled: true
+  val_enabled: true
+  train_every_n_steps: 10
+  val_every_n_epochs: 1
+  items:
+    query_pose_overlay: null
+    reference_reconstruction: null
+    visibility_condition:
+      _target_: pi3.visualizations.visibility_condition.VisibilityConditionVisualizer
+      max_reference_views: 5
+      max_query_views: 1
+      thumbnail_size: 112
+
+log:
+  ckpt_interval: 5
+  max_checkpoints: 2
+  save_best: false
