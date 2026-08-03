@@ -1,0 +1,18 @@
+# @package _global_
+
+# A40/40 GiB profile for same-object scene-pair fine-tuning with one query
+# frame and 5-25 scene keyframes.  The model-side visibility-mask conditioning
+# is enabled here, while the data profile decides whether query masks are known.
+defaults:
+  - train_lmgeo_finetune_a40_40gb_anchor_mask_conditioning_n25_k1
+  - _self_
+
+lmgeo_profile:
+  num_reference_range: [5, 25]
+  num_query_range: [1, 1]
+
+train:
+  # Dynamic sampler total views are N + K, so this samples N=5..25 with K=1.
+  image_num_range: [6, 26]
+  max_img_per_gpu: 28
+

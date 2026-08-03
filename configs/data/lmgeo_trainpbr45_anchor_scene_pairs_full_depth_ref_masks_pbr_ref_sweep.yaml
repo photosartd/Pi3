@@ -1,0 +1,18 @@
+# @package _global_
+
+# Same synthetic/PBR N=5/10/20/25 reference sweep as the query-mask oracle
+# profile, but for the practical reference-mask-only setup:
+#   - RGB inputs are unmasked.
+#   - References/keyframes receive GT object visibility as conditioning.
+#   - Query frames do not receive visibility-mask conditioning.
+#   - Depth supervision uses the full valid scene depth, not object-only depth.
+defaults:
+  - lmgeo_trainpbr45_anchor_scene_pairs_masked_depth_query_masks_pbr_ref_sweep
+  - _self_
+
+lmgeo:
+    depth_masking: false
+
+lmgeo_anchor:
+    condition_query_visibility: false
+
