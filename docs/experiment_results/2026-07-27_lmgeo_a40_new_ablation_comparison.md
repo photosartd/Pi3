@@ -33,6 +33,7 @@ Related notes:
 - [2026-07-22 next moves](2026-07-22_next_moves_after_a40_corr_masked.md)
 - [2026-07-24 paired-query implementation](2026-07-24_lmgeo_paired_query_implementation.md)
 - [2026-07-29 A40 recenter paired/ray runs](2026-07-29_lmgeo_a40_recenter_zoom_paired_ray.md)
+- [2026-08-03 A40 anchor mask-conditioning ablation](2026-08-03_lmgeo_a40_anchor_mask_conditioning.md)
 
 ## Run Setup
 
@@ -45,6 +46,7 @@ Related notes:
 | `lmgeo_a40_recenter_zoom_plus_original_ray_k1` | `events.out.tfevents.1785168888.worker-4...` | Paired original+crop query plus ray-map conditioning. | Logs both paired-query and ray-geometry diagnostics. |
 | `lmgeo_a40_gt_vis_pool_alpha1_warmup3k` | `events.out.tfevents.1784889635...` and `events.out.tfevents.1785005377...` | GT visibility mask used to weight `CameraHead` pooling with alpha warmup. | Two overlapping traces; full-count trace is used for main comparison. |
 | `lmgeo_a40_recenter_zoom_masked_context_refs_k1` | `events.out.tfevents.1784815424.worker-2...` | Recenter+zoom K=1 plus object-masked RGB and context-reference training. | Narrow validation: real/PBR N=5,K=1 only. |
+| `lmgeo_a40_anchor_maskcond_query_masks_20260730_095637` | `events.out.tfevents.1785522995.worker-1...` | Same-object scene-pair anchor training with GT mask conditioning on both reference and query views. | Added on 2026-08-03; oracle query-mask variant. Ref-only anchor-mask failures are kept in the separate 2026-08-03 note. |
 
 Logged dynamic train averages at the last event point:
 
@@ -181,6 +183,9 @@ The table uses best observed real-test ADD(-S) for each run, and best observed
 median normalized error. `Q` is the logged real-test query count at the best
 ADD(-S) point. The 224px low-res row is taken from the 2026-07-10 note because
 the original event file was not present in the searched run folders.
+The anchor-mask-conditioning row uses `real_anchor_pairs`/`pbr_anchor_pairs`,
+not the normal render-reference `real_test`/`pbr_new_val`, so it is included as
+an oracle scene-pair comparison rather than as a strict baseline replacement.
 
 | Run | Main change | Q | Best real ADD(-S) | Best median d | Best rot med | Best trans med | Best PBR K1 ADD(-S) | Other PBR/context |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
@@ -196,6 +201,7 @@ the original event file was not present in the searched run folders.
 | A40 recenter+original+ray K1 | paired uncropped+crop query + ray conditioning | 723 | 23.9% @e13 | 0.195 @e12 | 5.1 deg | 0.035 m | 52.7% | PBR ref16 61.8% |
 | A40 GT visibility pool | GT visibility-weighted camera pooling | 1444 | 24.4% @e19 | 0.260 @e16 | 7.9 deg | 0.039 m | 43.4% | K5 70.5%, K10 70.4% |
 | A40 recenter zoom masked context | recenter+zoom + masked RGB + context refs | 723 | 11.3% @e12 | 0.373 @e12 | 4.0 deg | 0.065 m | 25.1% | - |
+| A40 anchor maskcond query masks | scene-pair refs + GT mask conditioning on refs and query | 39 | 46.2% @e17 | 0.107 @e17 | 4.7 deg | 0.021 m | 40.9% | PBR anchor-pair oracle; ref-only variants <1% PBR |
 
 ## Real-Test Per-Object Comparison
 
@@ -236,7 +242,10 @@ The tables below mirror the real-test object comparison, but use the
 `pbr_new_val` K=1 split. Each run is sampled at its own best aggregate
 `pbr_new_val` ADD(-S)<0.1d epoch. The 224px low-resolution run is omitted
 because that run did not log held-out PBR validation. A40 half-count rows again
-use `800` PBR queries, while full-count rows use `1600`.
+use `800` PBR queries, while full-count rows use `1600`. The
+`Anchor maskcond query masks` column is the later `pbr_anchor_pairs` oracle
+split from the 2026-08-03 note: same held-out PBR query source, but scene-pair
+references and GT query-mask conditioning.
 
 Representative PBR K1 epochs:
 
@@ -253,32 +262,33 @@ Representative PBR K1 epochs:
 | Recenter+orig+ray | 800 | 52.7% | 16 |
 | GT vis pool | 1600 | 43.4% | 19 |
 | Recenter+masked | 800 | 25.1% | 11 |
+| Anchor maskcond query masks | 800 | 40.9% | 26 |
 
 ### ADD(-S)<0.1d
 
-| Object | 560x420 | Masked query | A40 base | A40 corr | Context refs | Recenter | Recenter+orig | Recenter+ray | Recenter+orig+ray | GT vis pool | Recenter+masked |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 9.0% | 20.5% | 19.6% | 19.6% | 14.0% | 22.5% | 27.0% | 19.8% | 18.0% | 8.5% | 8.1% |
-| 5 | 57.0% | 76.0% | 63.5% | 61.5% | 62.5% | 43.3% | 72.2% | 52.2% | 54.4% | 62.5% | 20.0% |
-| 6 | 34.0% | 49.5% | 45.0% | 45.0% | 42.0% | 42.3% | 39.4% | 32.7% | 43.3% | 30.0% | 16.3% |
-| 8 | 65.0% | 81.0% | 80.2% | 71.4% | 71.4% | 53.9% | 88.8% | 58.4% | 70.8% | 68.5% | 32.6% |
-| 9 | 17.5% | 19.0% | 24.8% | 23.8% | 11.4% | 33.3% | 39.2% | 25.5% | 31.4% | 17.0% | 11.8% |
-| 10 | 55.0% | 73.5% | 55.2% | 70.8% | 67.7% | 83.3% | 86.3% | 78.4% | 81.4% | 63.5% | 45.1% |
-| 11 | 58.5% | 68.5% | 69.9% | 71.8% | 66.0% | 75.0% | 83.7% | 76.9% | 85.6% | 70.5% | 55.8% |
-| 12 | 33.0% | 37.5% | 38.2% | 27.5% | 34.3% | 37.8% | 50.0% | 27.6% | 41.8% | 27.0% | 12.2% |
+| Object | 560x420 | Masked query | A40 base | A40 corr | Context refs | Recenter | Recenter+orig | Recenter+ray | Recenter+orig+ray | GT vis pool | Recenter+masked | Anchor maskcond query masks |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 9.0% | 20.5% | 19.6% | 19.6% | 14.0% | 22.5% | 27.0% | 19.8% | 18.0% | 8.5% | 8.1% | 8.4% |
+| 5 | 57.0% | 76.0% | 63.5% | 61.5% | 62.5% | 43.3% | 72.2% | 52.2% | 54.4% | 62.5% | 20.0% | 57.3% |
+| 6 | 34.0% | 49.5% | 45.0% | 45.0% | 42.0% | 42.3% | 39.4% | 32.7% | 43.3% | 30.0% | 16.3% | 23.0% |
+| 8 | 65.0% | 81.0% | 80.2% | 71.4% | 71.4% | 53.9% | 88.8% | 58.4% | 70.8% | 68.5% | 32.6% | 73.6% |
+| 9 | 17.5% | 19.0% | 24.8% | 23.8% | 11.4% | 33.3% | 39.2% | 25.5% | 31.4% | 17.0% | 11.8% | 12.4% |
+| 10 | 55.0% | 73.5% | 55.2% | 70.8% | 67.7% | 83.3% | 86.3% | 78.4% | 81.4% | 63.5% | 45.1% | 60.4% |
+| 11 | 58.5% | 68.5% | 69.9% | 71.8% | 66.0% | 75.0% | 83.7% | 76.9% | 85.6% | 70.5% | 55.8% | 67.0% |
+| 12 | 33.0% | 37.5% | 38.2% | 27.5% | 34.3% | 37.8% | 50.0% | 27.6% | 41.8% | 27.0% | 12.2% | 32.4% |
 
 ### Median Normalized Pose Error
 
-| Object | 560x420 | Masked query | A40 base | A40 corr | Context refs | Recenter | Recenter+orig | Recenter+ray | Recenter+orig+ray | GT vis pool | Recenter+masked |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 0.304 | 0.224 | 0.209 | 0.222 | 0.315 | 0.186 | 0.170 | 0.185 | 0.163 | 0.283 | 0.243 |
-| 5 | 0.078 | 0.059 | 0.057 | 0.068 | 0.070 | 0.117 | 0.057 | 0.096 | 0.090 | 0.077 | 0.184 |
-| 6 | 0.140 | 0.101 | 0.119 | 0.111 | 0.130 | 0.118 | 0.117 | 0.128 | 0.112 | 0.151 | 0.187 |
-| 8 | 0.076 | 0.057 | 0.057 | 0.060 | 0.053 | 0.095 | 0.045 | 0.088 | 0.063 | 0.070 | 0.158 |
-| 9 | 0.277 | 0.198 | 0.198 | 0.189 | 0.255 | 0.130 | 0.117 | 0.167 | 0.134 | 0.241 | 0.262 |
-| 10 | 0.089 | 0.050 | 0.088 | 0.046 | 0.063 | 0.051 | 0.039 | 0.051 | 0.059 | 0.070 | 0.113 |
-| 11 | 0.078 | 0.065 | 0.054 | 0.050 | 0.069 | 0.049 | 0.046 | 0.048 | 0.052 | 0.064 | 0.090 |
-| 12 | 0.157 | 0.130 | 0.138 | 0.159 | 0.163 | 0.136 | 0.103 | 0.173 | 0.116 | 0.195 | 0.233 |
+| Object | 560x420 | Masked query | A40 base | A40 corr | Context refs | Recenter | Recenter+orig | Recenter+ray | Recenter+orig+ray | GT vis pool | Recenter+masked | Anchor maskcond query masks |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.304 | 0.224 | 0.209 | 0.222 | 0.315 | 0.186 | 0.170 | 0.185 | 0.163 | 0.283 | 0.243 | 0.368 |
+| 5 | 0.078 | 0.059 | 0.057 | 0.068 | 0.070 | 0.117 | 0.057 | 0.096 | 0.090 | 0.077 | 0.184 | 0.087 |
+| 6 | 0.140 | 0.101 | 0.119 | 0.111 | 0.130 | 0.118 | 0.117 | 0.128 | 0.112 | 0.151 | 0.187 | 0.191 |
+| 8 | 0.076 | 0.057 | 0.057 | 0.060 | 0.053 | 0.095 | 0.045 | 0.088 | 0.063 | 0.070 | 0.158 | 0.058 |
+| 9 | 0.277 | 0.198 | 0.198 | 0.189 | 0.255 | 0.130 | 0.117 | 0.167 | 0.134 | 0.241 | 0.262 | 0.292 |
+| 10 | 0.089 | 0.050 | 0.088 | 0.046 | 0.063 | 0.051 | 0.039 | 0.051 | 0.059 | 0.070 | 0.113 | 0.081 |
+| 11 | 0.078 | 0.065 | 0.054 | 0.050 | 0.069 | 0.049 | 0.046 | 0.048 | 0.052 | 0.064 | 0.090 | 0.064 |
+| 12 | 0.157 | 0.130 | 0.138 | 0.159 | 0.163 | 0.136 | 0.103 | 0.173 | 0.116 | 0.195 | 0.233 | 0.173 |
 
 ## Insights
 
@@ -313,6 +323,13 @@ Representative PBR K1 epochs:
   problem is not only uniform camera-head pooling over object/background
   tokens; useful/ harmful information is already entangled earlier in the
   representation or in the geometry/alignment pipeline.
+- Anchor-pair query-mask conditioning is the first scene-pair anchor setup that
+  becomes competitive on held-out PBR. Its `40.9%` PBR ADD(-S) is below the best
+  render-reference and paired-query PBR results (`48-60%`), but far above the
+  ref-only anchor-mask variants (`<1%`) and the older PBR context-reference
+  validation (`7.1-12.6%`). This says the query-side target selector is doing
+  real work; scene-scene anchoring is not hopeless, but it likely needs a query
+  mask or a learned proxy for one.
 - The correspondence loss remains a modest positive regularizer, not the main
   fix. It is still one of the few A40-side changes that improves real ADD(-S)
   over the A40 baseline, but the gain is small compared with oracle query
@@ -336,6 +353,10 @@ Representative PBR K1 epochs:
   clearest ceiling experiment so far; the next practical question is whether a
   predicted/available mask can recover most of that gain without hiding the
   entire query context from the network.
+- For scene-pair anchor training, prioritize a bridge from the `query_masks`
+  oracle to deployable inference: predicted query masks, mask corruption tests,
+  or a curriculum that starts with query masks and gradually removes/weakens
+  them. The two ref-only anchor-mask runs should remain as negative controls.
 - Do not promote recenter+zoom as a default yet. Its real/PBR split is too
   suspicious. The paired original+crop result says loss of original query
   context is a major part of the failure. Ray-conditioning diagnostics say

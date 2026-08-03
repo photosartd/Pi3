@@ -561,6 +561,57 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
         for name in active_val_loader_names(cfg):
             self.assertTrue(cfg.val_datasets[name].dataset.condition_query_visibility)
 
+    def test_anchor_scene_pair_query_mask_ref_sweep_uses_pbr_only(self):
+        cfg = compose_job(
+            "train_lmgeo_finetune_a40_40gb_anchor_mask_conditioning_n25_k1",
+            "lmgeo_trainpbr45_anchor_scene_pairs_masked_depth_query_masks_pbr_ref_sweep",
+        )
+
+        self.assertTrue(cfg.model.use_visibility_mask_conditioning)
+        self.assertTrue(cfg.lmgeo.depth_masking)
+        self.assertEqual(list(cfg.lmgeo.num_reference_range), [2, 25])
+        self.assertEqual(list(cfg.lmgeo.num_query_range), [1, 1])
+        self.assertEqual(list(cfg.train.image_num_range), [3, 26])
+        self.assertEqual(cfg.train.max_img_per_gpu, 28)
+        self.assertTrue(cfg.lmgeo_anchor.condition_reference_visibility)
+        self.assertTrue(cfg.lmgeo_anchor.condition_query_visibility)
+        self.assertEqual(cfg.lmgeo_anchor.anchor_selection_attempts, 200)
+        self.assertFalse(cfg.val_datasets.real_anchor_pairs.enabled)
+        self.assertFalse(cfg.val_datasets.pbr_anchor_pairs.enabled)
+        self.assertEqual(
+            active_val_loader_names(cfg),
+            [
+                "pbr_anchor_pairs_ref5",
+                "pbr_anchor_pairs_ref10",
+                "pbr_anchor_pairs_ref20",
+                "pbr_anchor_pairs_ref25",
+            ],
+        )
+
+        expected_refs = {
+            "pbr_anchor_pairs_ref5": 5,
+            "pbr_anchor_pairs_ref10": 10,
+            "pbr_anchor_pairs_ref20": 20,
+            "pbr_anchor_pairs_ref25": 25,
+        }
+        for name, ref_count in expected_refs.items():
+            dataset = cfg.val_datasets[name].dataset
+            runtime = cfg.val_datasets[name].runtime
+            self.assertEqual(
+                dataset._target_,
+                "datasets.lmgeo_dataset.LMGeoAnchorScenePairSequenceDataset",
+            )
+            self.assertEqual(dataset.query_split, cfg.lmgeo.new_val_query_split)
+            self.assertEqual(list(dataset.num_reference_range), [ref_count, ref_count])
+            self.assertEqual(list(dataset.num_query_range), [1, 1])
+            self.assertEqual(list(runtime.image_num_range), [ref_count + 1, ref_count + 1])
+            self.assertEqual(runtime.max_img_per_gpu, 26)
+            self.assertTrue(dataset.condition_reference_visibility)
+            self.assertTrue(dataset.condition_query_visibility)
+            self.assertTrue(dataset.depth_masking)
+            self.assertFalse(dataset.reference_rgb_masking)
+            self.assertFalse(dataset.query_rgb_masking)
+
     def test_scratch_dinos_small_anchor_mask_profile_is_isolated(self):
         cfg = compose_job(
             "train_lmgeo_scratch_dinos_small_a40_40gb_anchor_mask_conditioning",

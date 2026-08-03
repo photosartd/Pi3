@@ -1,0 +1,20 @@
+# @package _global_
+
+# A40/40 GiB profile for same-object scene-pair training with GT visibility
+# mask conditioning on references and queries.  Compared with the original
+# anchor-mask-conditioning profile, training uses only one query view and lets
+# the number of scene keyframes grow up to the 25-frame synthetic window limit.
+defaults:
+  - train_lmgeo_finetune_a40_40gb_anchor_mask_conditioning
+  - _self_
+
+lmgeo_profile:
+  num_reference_range: [2, 25]
+  num_query_range: [1, 1]
+
+train:
+  # Worst case is 25 references + 1 query = 26 total views, matching the
+  # previously smoke-tested 26-view anchor A40 budget.
+  image_num_range: [3, 26]
+  max_img_per_gpu: 28
+
