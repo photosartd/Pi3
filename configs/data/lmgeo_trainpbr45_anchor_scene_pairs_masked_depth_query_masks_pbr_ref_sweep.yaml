@@ -1,7 +1,7 @@
 # @package _global_
 
 # Query-mask oracle anchor-scene-pair data profile with synthetic/PBR-only
-# validation at N=5/10/20/25 keyframes and K=1 query.  RGB stays unmasked; depth
+# validation at N=5/10/15 keyframes and K=1 query.  RGB stays unmasked; depth
 # supervision stays object-mask-only; both reference and query views receive
 # GT visibility-mask conditioning.
 defaults:
@@ -11,10 +11,9 @@ defaults:
 primary_val: pbr_anchor_pairs_ref5
 
 lmgeo_anchor:
-    # N=25 selection can fail when a candidate reference sample is exactly the
-    # query sample, because the selected query record is removed from refs.
-    # More attempts keep sampling robust while preserving the existing random
-    # same-object scene-pair policy.
+    # Higher-N validation is more sensitive to unlucky same-scene/query overlap,
+    # because selected query records are removed from refs.  More attempts keep
+    # sampling robust while preserving the random same-object scene-pair policy.
     anchor_selection_attempts: 200
 
 _pbr_anchor_pair_val_base: &pbr_anchor_pair_val_base
@@ -97,29 +96,15 @@ val_datasets:
             num_workers: ${test.num_workers}
             print_freq: ${test.print_freq}
 
-    pbr_anchor_pairs_ref20:
+    pbr_anchor_pairs_ref15:
         dataset:
             <<: *pbr_anchor_pair_val_base
-            num_reference_range: [20, 20]
-            min_query_records: 20
+            num_reference_range: [15, 15]
+            min_query_records: 15
         dataloader: ${test_dataloader}
         runtime:
-            image_num_range: [21, 21]
+            image_num_range: [16, 16]
             max_img_per_gpu: 26
             iters_per_test: 0
             num_workers: ${test.num_workers}
             print_freq: ${test.print_freq}
-
-    pbr_anchor_pairs_ref25:
-        dataset:
-            <<: *pbr_anchor_pair_val_base
-            num_reference_range: [25, 25]
-            min_query_records: 25
-        dataloader: ${test_dataloader}
-        runtime:
-            image_num_range: [26, 26]
-            max_img_per_gpu: 26
-            iters_per_test: 0
-            num_workers: ${test.num_workers}
-            print_freq: ${test.print_freq}
-

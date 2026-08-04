@@ -1,6 +1,6 @@
 # @package _global_
 
-# Same synthetic/PBR N=5/10/20/25 reference sweep as the query-mask oracle
+# Same synthetic/PBR N=5/10/15 reference sweep as the query-mask oracle
 # profile, but for the practical reference-mask-only setup:
 #   - RGB inputs are unmasked.
 #   - References/keyframes receive GT object visibility as conditioning.
@@ -15,4 +15,3 @@ lmgeo:
 
 lmgeo_anchor:
     condition_query_visibility: false
-

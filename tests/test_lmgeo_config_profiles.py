@@ -583,16 +583,14 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
             [
                 "pbr_anchor_pairs_ref5",
                 "pbr_anchor_pairs_ref10",
-                "pbr_anchor_pairs_ref20",
-                "pbr_anchor_pairs_ref25",
+                "pbr_anchor_pairs_ref15",
             ],
         )
 
         expected_refs = {
             "pbr_anchor_pairs_ref5": 5,
             "pbr_anchor_pairs_ref10": 10,
-            "pbr_anchor_pairs_ref20": 20,
-            "pbr_anchor_pairs_ref25": 25,
+            "pbr_anchor_pairs_ref15": 15,
         }
         for name, ref_count in expected_refs.items():
             dataset = cfg.val_datasets[name].dataset
@@ -637,16 +635,14 @@ class LMGeoHardwareProfileConfigTest(unittest.TestCase):
             [
                 "pbr_anchor_pairs_ref5",
                 "pbr_anchor_pairs_ref10",
-                "pbr_anchor_pairs_ref20",
-                "pbr_anchor_pairs_ref25",
+                "pbr_anchor_pairs_ref15",
             ],
         )
 
         expected_refs = {
             "pbr_anchor_pairs_ref5": 5,
             "pbr_anchor_pairs_ref10": 10,
-            "pbr_anchor_pairs_ref20": 20,
-            "pbr_anchor_pairs_ref25": 25,
+            "pbr_anchor_pairs_ref15": 15,
         }
         for name, ref_count in expected_refs.items():
             dataset = cfg.val_datasets[name].dataset
