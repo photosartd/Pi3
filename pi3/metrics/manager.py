@@ -7,6 +7,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 
 from .base import BaseMetric
+from datasets.base.observation import batch_supports_capabilities
 
 
 class MetricManager:
@@ -27,6 +28,7 @@ class MetricManager:
         self.val_enabled = bool(val_enabled)
         self.train_every_n_steps = max(1, int(train_every_n_steps))
         self.last_update_times: dict[str, float] = {}
+        self.routing_counts: dict[str, dict[str, int]] = {}
 
     @classmethod
     def from_config(cls, cfg: DictConfig | dict | None) -> "MetricManager":
@@ -70,6 +72,10 @@ class MetricManager:
     def reset(self) -> None:
         """Reset all metrics."""
 
+        self.routing_counts = {
+            metric.name: {"eligible": 0, "skipped": 0}
+            for metric in self.metrics
+        }
         for metric in self.metrics:
             metric.reset()
 
@@ -94,6 +100,14 @@ class MetricManager:
             return
         self.last_update_times = {}
         for metric in self.metrics:
+            required = getattr(metric, "required_capabilities", frozenset())
+            counts = self.routing_counts.setdefault(
+                metric.name, {"eligible": 0, "skipped": 0}
+            )
+            if not batch_supports_capabilities(batch, required):
+                counts["skipped"] += 1
+                continue
+            counts["eligible"] += 1
             start = time.perf_counter()
             metric.update(prediction, batch, loss_output, mode=mode)
             self.last_update_times[metric.name] = time.perf_counter() - start
@@ -105,11 +119,21 @@ class MetricManager:
         if not self.enabled:
             return output
         for metric in self.metrics:
-            for key, value in metric.compute().items():
-                output[f"{metric.name}/{key}"] = float(value)
-            if hasattr(metric, "flush_artifacts"):
-                for key, value in metric.flush_artifacts(accelerator).items():
+            counts = self.routing_counts.get(
+                metric.name, {"eligible": 0, "skipped": 0}
+            )
+            if counts["eligible"] > 0:
+                for key, value in metric.compute().items():
                     output[f"{metric.name}/{key}"] = float(value)
+                if hasattr(metric, "flush_artifacts"):
+                    for key, value in metric.flush_artifacts(accelerator).items():
+                        output[f"{metric.name}/{key}"] = float(value)
+            output[f"routing/{metric.name}_eligible_batches"] = float(
+                counts["eligible"]
+            )
+            output[f"routing/{metric.name}_skipped_batches"] = float(
+                counts["skipped"]
+            )
         return output
 
     def compute_on_batch(

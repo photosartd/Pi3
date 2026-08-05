@@ -14,6 +14,8 @@ from .utils import add_title, choose_view_indices, make_grid, tensor_image_to_ui
 class InputFramesVisualizer(BaseVisualizer):
     """Stack a capped set of preprocessed input frames for one view role."""
 
+    required_capabilities = frozenset({"key_query"})
+
     def __init__(
         self,
         *,

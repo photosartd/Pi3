@@ -19,6 +19,13 @@ CONTINUE_MODE="${PI3_CONTINUE:-}"
 RESUME_PATH="${PI3_RESUME:-}"
 CKPT_INTERVAL="${PI3_CKPT_INTERVAL:-1}"
 MAX_CHECKPOINTS="${PI3_MAX_CHECKPOINTS:-5}"
+DATA_CONFIG_HINT="${PI3_DATA_CONFIG:-lmgeo_trainpbr45_real_and_new_val}"
+if [[ "$DATA_CONFIG_HINT" == megapose_gso_* ]]; then
+  DEFAULT_JOB_PREFIX="pi3-gso-a40"
+else
+  DEFAULT_JOB_PREFIX="pi3-lmgeo-a40"
+fi
+JOB_PREFIX="${PI3_SLURM_JOB_PREFIX:-$DEFAULT_JOB_PREFIX}"
 mkdir -p "$LOG_DIR"
 
 usage() {
@@ -120,7 +127,7 @@ fi
 case "$MODE" in
   preflight)
     SBATCH_OPTS=(
-      --job-name=pi3-preflight-a40
+      --job-name="$JOB_PREFIX-preflight"
       --gres=gpu:a40:1
       --cpus-per-task=8
       --mem=80G
@@ -131,7 +138,7 @@ case "$MODE" in
     ;;
   smoke)
     SBATCH_OPTS=(
-      --job-name=pi3-smoke-560x420-a40
+      --job-name="$JOB_PREFIX-smoke"
       --gres=gpu:a40:1
       --cpus-per-task=8
       --mem=160G
@@ -145,7 +152,7 @@ case "$MODE" in
     TRAIN_MEM="${PI3_TRAIN_MEM:-$((TRAIN_GPUS * 100))G}"
     TRAIN_TMP="${PI3_TRAIN_TMP:-$((TRAIN_GPUS * 25))G}"
     SBATCH_OPTS=(
-      --job-name=pi3-lmgeo-560x420
+      --job-name="$JOB_PREFIX-train"
       --gres=gpu:a40:"$TRAIN_GPUS"
       --cpus-per-task="$TRAIN_CPUS"
       --mem="$TRAIN_MEM"

@@ -21,6 +21,9 @@ class VisibilityConditionVisualizer(BaseVisualizer):
     """Show which anchor masks are supplied to the model-side conditioner."""
 
     name = "visibility_condition"
+    required_capabilities = frozenset(
+        {"key_query", "visibility_condition"}
+    )
 
     def __init__(
         self,
@@ -54,6 +57,16 @@ class VisibilityConditionVisualizer(BaseVisualizer):
         valid_mask = stack_view_tensor(batch, "valid_mask").astype(np.float32)
         ref_mask = view_bool_mask(batch, "is_reference")
         query_mask = view_bool_mask(batch, "is_query")
+        scene_multiplicity = (
+            stack_view_tensor(batch, "same_object_scene_track_count")
+            if "same_object_scene_track_count" in batch[0]
+            else None
+        )
+        frame_multiplicity = (
+            stack_view_tensor(batch, "same_object_frame_instance_count")
+            if "same_object_frame_instance_count" in batch[0]
+            else None
+        )
 
         indices = []
         indices.extend(
@@ -76,6 +89,12 @@ class VisibilityConditionVisualizer(BaseVisualizer):
         panels = []
         for view_idx in indices:
             role = "ref" if bool(ref_mask[batch_idx, view_idx]) else "query"
+            multiplicity = ""
+            if scene_multiplicity is not None and frame_multiplicity is not None:
+                multiplicity = (
+                    f" same-ID scene={int(scene_multiplicity[batch_idx, view_idx])}"
+                    f" frame={int(frame_multiplicity[batch_idx, view_idx])}"
+                )
             panels.append(
                 self._render_view(
                     images[batch_idx, view_idx],
@@ -83,7 +102,7 @@ class VisibilityConditionVisualizer(BaseVisualizer):
                     known[batch_idx, view_idx],
                     object_mask[batch_idx, view_idx],
                     valid_mask[batch_idx, view_idx],
-                    title=f"b{batch_idx} {role} v{int(view_idx)}",
+                    title=f"b{batch_idx} {role} v{int(view_idx)}{multiplicity}",
                 )
             )
 

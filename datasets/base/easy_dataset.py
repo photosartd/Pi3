@@ -26,6 +26,17 @@ class EasyDataset:
     def set_epoch(self, epoch, base_seed=None):
         pass  # nothing to do by default
 
+    def supported_frame_counts(self, image_num_range):
+        """Return model-view counts accepted by this dataset.
+
+        General scene datasets accept the full configured range. Specialized
+        datasets can narrow it so a homogeneous mixture sampler never asks a
+        component for an impossible key/query split.
+        """
+
+        lo, hi = [int(value) for value in image_num_range]
+        return list(range(lo, hi + 1))
+
     def make_sampler(self, batch_size, shuffle=True, world_size=1, rank=0, drop_last=True, frame_num_list=None):
         if not (shuffle):
             raise NotImplementedError()  # cannot deal yet

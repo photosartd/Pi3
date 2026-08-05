@@ -18,6 +18,7 @@ class CorrespondenceVisualizer(BaseVisualizer):
     """Show GT query/reference correspondences used by the auxiliary loss."""
 
     name = "correspondence"
+    required_capabilities = frozenset({"correspondence"})
 
     def __init__(
         self,

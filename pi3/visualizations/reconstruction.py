@@ -15,6 +15,7 @@ class ReferenceReconstructionVisualizer(BaseVisualizer):
     """Fixed-view projections of aligned reference reconstruction vs GT points."""
 
     name = "reference_reconstruction"
+    required_capabilities = frozenset({"key_query", "object_pose"})
 
     def __init__(
         self,

@@ -9,6 +9,10 @@ from ..utils.alignment import align_points_scale
 from .correspondence import build_query_reference_correspondences
 
 from datasets import __HIGH_QUALITY_DATASETS__, __MIDDLE_QUALITY_DATASETS__
+from datasets.base.observation import (
+    ObservationCapability,
+    batch_supports_capability,
+)
 
 # ---------------------------------------------------------------------------
 # Some functions from MoGe
@@ -515,10 +519,35 @@ class Pi3Loss(nn.Module):
         details.update(camera_loss_details)
 
         if self.correspondence_weight > 0:
-            correspondence_loss, correspondence_details = self.correspondence_loss(pred, gt_raw)
+            correspondence_eligible = batch_supports_capability(
+                gt_raw, ObservationCapability.CORRESPONDENCE
+            )
+            if correspondence_eligible:
+                correspondence_loss, correspondence_details = self.correspondence_loss(pred, gt_raw)
+            else:
+                correspondence_loss = final_loss * 0.0
+                correspondence_details = {
+                    key: correspondence_loss.detach()
+                    for key in (
+                        'correspondence_num_pairs',
+                        'correspondence_depth_error',
+                        'correspondence_dino_similarity',
+                        'correspondence_dino_weight',
+                        'correspondence_num_pairs_loss_stat',
+                        'correspondence_depth_error_loss_stat',
+                        'correspondence_dino_similarity_loss_stat',
+                        'correspondence_dino_weight_loss_stat',
+                    )
+                }
             final_loss += correspondence_loss * self.correspondence_weight
             details['correspondence_loss'] = correspondence_loss
             details['correspondence_weighted_loss'] = correspondence_loss * self.correspondence_weight
+            details['correspondence_eligible_batch_loss_stat'] = torch.as_tensor(
+                float(correspondence_eligible), device=correspondence_loss.device
+            )
+            details['correspondence_skipped_batch_loss_stat'] = torch.as_tensor(
+                float(not correspondence_eligible), device=correspondence_loss.device
+            )
             details.update(correspondence_details)
 
         return final_loss, details

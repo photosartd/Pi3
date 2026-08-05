@@ -5,8 +5,12 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from datasets.base.base_dataset import BaseDataset
 from datasets.base.transforms import *
+from datasets.object_centric import (
+    ObjectDatasetAdapter,
+    PlannedObjectView,
+    RawObjectView,
+)
 
 
 PHOTOMETRIC_INTERPOLATIONS = (lanczos, bicubic, bilinear)
@@ -63,7 +67,7 @@ def _apply_role_photometric_spec(image, spec):
     return image
 
 
-class LMGeoDataset(BaseDataset):
+class LMGeoDataset(ObjectDatasetAdapter):
     """LM-O object-centric overfit dataset for Pi3 training.
 
     The dataset builds one fixed multi-view sample from two sources:
@@ -192,6 +196,11 @@ class LMGeoDataset(BaseDataset):
 
     def __len__(self):
         return 1
+
+    def supported_frame_counts(self, image_num_range):
+        total = int(self.num_reference + self.num_query)
+        lo, hi = [int(value) for value in image_num_range]
+        return [total] if lo <= total <= hi else []
 
     def _load_json(self, path):
         path = Path(path)
@@ -421,30 +430,13 @@ class LMGeoDataset(BaseDataset):
         return records
 
     def _select_records(self, records, count, strategy, rng=None):
-        if count <= 0:
-            return []
-        if len(records) < count:
-            if not self.allow_repeat:
-                raise ValueError(
-                    f"Requested {count} records but only {len(records)} are available. "
-                    "Lower num_reference/num_query or set allow_repeat=true."
-                )
-            if strategy == "random":
-                rng = self._rng if rng is None else rng
-                indices = rng.choice(len(records), size=count, replace=True)
-                return [records[int(idx)] for idx in indices]
-            repeats = int(np.ceil(count / len(records)))
-            return (records * repeats)[:count]
-
-        if strategy == "first":
-            return records[:count]
-        if strategy == "random":
-            rng = self._rng if rng is None else rng
-            indices = rng.choice(len(records), size=count, replace=False)
-            return [records[int(idx)] for idx in np.sort(indices)]
-
-        idxs = np.linspace(0, len(records) - 1, count).astype(int)
-        return [records[idx] for idx in idxs]
+        return self.key_query_sampling_policy.select_records(
+            records,
+            count,
+            strategy,
+            rng=self._rng if rng is None else rng,
+            allow_repeat=self.allow_repeat,
+        )
 
     def _read_mask(self, path, shape_hw):
         mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
@@ -518,6 +510,9 @@ class LMGeoDataset(BaseDataset):
         force_object_masking = bool(view_role == "reference" and reference_source == "context_scene")
         return bool(self.depth_masking or force_object_masking)
 
+    def _force_rgb_object_masking(self, *, view_role, reference_source):
+        return bool(view_role == "reference" and reference_source == "context_scene")
+
     def _should_condition_visibility_view(self, *, view_role):
         if not self.visibility_mask_conditioning:
             return False
@@ -585,7 +580,30 @@ class LMGeoDataset(BaseDataset):
             return condition
         raise ValueError(f"Unsupported visibility condition corruption {self.visibility_condition_corruption!r}")
 
-    def _load_view(self, record, rgb_masking, view_role):
+    def load_raw_object_view(self, record):
+        """Decode a BOP record in meters without applying training policies."""
+
+        with Image.open(record["rgb_path"]) as image:
+            rgb = np.array(image.convert("RGB"))
+        depthmap = self._read_depth_meters(
+            record["depth_path"], record["depth_scale"]
+        )
+        mask = self._read_mask(record["mask_path"], depthmap.shape)
+        return RawObjectView(
+            rgb=rgb,
+            depthmap=depthmap,
+            object_mask=mask,
+            camera_intrinsics=record["K"].copy(),
+            T_C_O=record["T_C_O"].astype(np.float32),
+            camera_pose=record["camera_pose"].astype(np.float32),
+            record=record,
+        )
+
+    def assemble_processed_object_view(self, state, request):
+        """Assemble the historical LMGeo schema from a processed object view."""
+
+        record = state["record"]
+        view_role = request.view_role
         object_id = int(record.get("object_id", getattr(self, "object_id", -1)))
         query_scene_id = int(record.get("query_scene_id", getattr(self, "query_scene_id", -1)))
         query_subscene_id = int(record.get("query_subscene_id", getattr(self, "query_subscene_id", -1)))
@@ -598,65 +616,14 @@ class LMGeoDataset(BaseDataset):
             )
         )
 
-        with Image.open(record["rgb_path"]) as image:
-            rgb = np.array(image.convert("RGB"))
-        depthmap = self._read_depth_meters(record["depth_path"], record["depth_scale"])
-        mask = self._read_mask(record["mask_path"], depthmap.shape)
-        object_mask = mask.copy()
-        force_object_masking = bool(view_role == "reference" and reference_source == "context_scene")
-
-        if self._should_depth_mask_view(view_role=view_role, reference_source=reference_source):
-            depthmap = depthmap.copy()
-            depthmap[~mask] = 0.0
-
-        if rgb_masking or force_object_masking:
-            rgb = rgb.copy()
-            rgb[~mask] = 0
-
-        intrinsics = record["K"].copy()
-        T_C_O = record["T_C_O"].astype(np.float32)
-        camera_pose = record["camera_pose"].astype(np.float32)
-        (
-            rgb,
-            depthmap,
-            mask,
-            intrinsics,
-            T_C_O,
-            camera_pose,
-            transform_meta,
-        ) = self._maybe_transform_raw_view(
-            record=record,
-            rgb=rgb,
-            depthmap=depthmap,
-            mask=mask,
-            intrinsics=intrinsics,
-            T_C_O=T_C_O,
-            camera_pose=camera_pose,
-            view_role=view_role,
-        )
-
-        object_mask = mask.astype(np.uint8)
-        crop_outputs = self._crop_resize_if_necessary(
-            rgb,
-            depthmap,
-            intrinsics,
-            self._current_resolution,
-            rng=self._rng,
-            info=record["rgb_path"],
-            far_mask=object_mask,
-        )
-        rgb, depthmap, intrinsics, object_mask = crop_outputs
-        rgb = self._apply_sample_photometric_augmentation(rgb, view_role)
-        object_mask = np.asarray(object_mask > 0, dtype=np.float32)
-        visibility_known = self._should_condition_visibility_view(view_role=view_role)
-        visibility_condition = object_mask if visibility_known else np.zeros_like(object_mask, dtype=np.float32)
-        if visibility_known:
-            visibility_condition = self._corrupt_visibility_condition(
-                visibility_condition,
-                view_role=view_role,
-                rng=self._rng,
-            )
-        visibility_known_map = np.full_like(object_mask, 1.0 if visibility_known else 0.0, dtype=np.float32)
+        rgb = state["rgb"]
+        depthmap = state["depthmap"]
+        object_mask = state["object_mask"]
+        visibility_condition = state["visibility_mask_condition"]
+        visibility_known_map = state["visibility_mask_known"]
+        camera_pose = state["camera_pose"]
+        T_C_O = state["T_C_O"]
+        intrinsics = state["camera_intrinsics"]
 
         view = {
             "img": rgb,
@@ -669,6 +636,7 @@ class LMGeoDataset(BaseDataset):
             "camera_intrinsics": intrinsics.astype(np.float32),
             "dataset": self.dataset_label,
             "object_id": np.int64(object_id),
+            "object_model_available": True,
             "view_role": str(view_role),
             "is_reference": bool(view_role == "reference"),
             "is_query": bool(view_role == "query"),
@@ -695,8 +663,17 @@ class LMGeoDataset(BaseDataset):
             ),
             "instance": f"{record['split']}_{record['im_id']:06d}_{record['gt_id']:06d}",
         }
-        view.update(transform_meta)
+        view.update(state["transform_meta"])
         return view
+
+    def _load_view(self, record, rgb_masking, view_role):
+        request = PlannedObjectView(
+            record=record,
+            view_role=str(view_role),
+            rgb_masking=bool(rgb_masking),
+            reference_source=record.get("reference_source"),
+        )
+        return self.object_view_processor.process(self, request, rng=self._rng)
 
     def _load_query_views(self, record):
         """Expand one selected query record into one or more model views."""
@@ -734,22 +711,19 @@ class LMGeoDataset(BaseDataset):
             rng=rng,
         )
 
-        self.this_views_info = {
+        plan_metadata = {
             "object_id": self.object_id,
             "reference": [(r["split"], r["im_id"], r["gt_id"]) for r in reference_records],
             "query": [(r["split"], r["im_id"], r["gt_id"]) for r in query_records],
         }
-
-        views = [
-            self._load_view(record, rgb_masking=self.reference_rgb_masking, view_role="reference")
-            for record in reference_records
-        ]
-        for query_index, record in enumerate(query_records):
-            query_views = self._load_query_views(record)
-            for view in query_views:
-                view["query_pair_index"] = np.int64(query_index)
-            views.extend(query_views)
-        return views
+        plan = self.key_query_sampling_policy.plan(
+            reference_records=reference_records,
+            query_records=query_records,
+            reference_rgb_masking=self.reference_rgb_masking,
+            query_rgb_masking=self.query_rgb_masking,
+            metadata=plan_metadata,
+        )
+        return self._materialize_sample_plan(plan, rng=rng)
 
 
 class LMGeoSequenceDataset(LMGeoDataset):
@@ -813,7 +787,7 @@ class LMGeoSequenceDataset(LMGeoDataset):
         context_reference_exclude="scene",
         **kwargs,
     ):
-        BaseDataset.__init__(self, **kwargs)
+        ObjectDatasetAdapter.__init__(self, **kwargs)
 
         self.dataset_label = "LMGeoSequence"
         self._json_cache = {}
@@ -924,6 +898,24 @@ class LMGeoSequenceDataset(LMGeoDataset):
 
     def __len__(self):
         return len(self.samples)
+
+    def supported_frame_counts(self, image_num_range):
+        lo, hi = [int(value) for value in image_num_range]
+        query_cost = (
+            2
+            if bool(getattr(self, "query_recenter_include_original_query_view", False))
+            else 1
+        )
+        possible = {
+            reference_count + query_cost * query_count
+            for reference_count in range(
+                self.num_reference_range[0], self.num_reference_range[1] + 1
+            )
+            for query_count in range(
+                self.num_query_range[0], self.num_query_range[1] + 1
+            )
+        }
+        return sorted(count for count in possible if lo <= count <= hi)
 
     def convert_attributes(self):
         """Keep nested Python metadata as-is.
@@ -1354,26 +1346,16 @@ class LMGeoSequenceDataset(LMGeoDataset):
         return records
 
     def _sample_counts(self, total_frames, reference_records, query_records, rng):
-        total_frames = int(total_frames)
-        ref_min, ref_max = self.num_reference_range
-        query_min, query_max = self.num_query_range
-        if not self.allow_repeat:
-            ref_max = min(ref_max, len(reference_records))
-            query_max = min(query_max, len(query_records))
-
-        valid_refs = [
-            ref_count
-            for ref_count in range(ref_min, ref_max + 1)
-            if query_min <= total_frames - ref_count <= query_max
-        ]
-        if not valid_refs:
-            raise ValueError(
-                f"Cannot split frame_num={total_frames} into reference range {self.num_reference_range} "
-                f"and query range {self.num_query_range}"
-            )
-        ref_count = int(rng.choice(valid_refs))
-        query_count = total_frames - ref_count
-        return ref_count, query_count
+        return self.key_query_sampling_policy.sample_counts(
+            total_frames,
+            reference_range=self.num_reference_range,
+            query_range=self.num_query_range,
+            reference_available=len(reference_records),
+            query_available=len(query_records),
+            query_view_cost=1,
+            allow_repeat=self.allow_repeat,
+            rng=rng,
+        )
 
     def _get_views(self, index, resolution, rng):
         sample = self.samples[int(index) % len(self.samples)]
@@ -1398,7 +1380,7 @@ class LMGeoSequenceDataset(LMGeoDataset):
             rng=rng,
         )
 
-        self.this_views_info = {
+        plan_metadata = {
             "object_id": object_id,
             "query_scene_id": sample["query_scene_id"],
             "query_subscene_id": sample["query_subscene_id"],
@@ -1418,17 +1400,20 @@ class LMGeoSequenceDataset(LMGeoDataset):
             ],
             "query": [(r["split"], r["im_id"], r["gt_id"]) for r in query_records],
         }
-
-        views = [
-            self._load_view(record, rgb_masking=self.reference_rgb_masking, view_role="reference")
-            for record in reference_records
-        ]
-        for query_index, record in enumerate(query_records):
-            query_views = self._load_query_views(record)
-            for view in query_views:
-                view["query_pair_index"] = np.int64(query_index)
-            views.extend(query_views)
-        return views
+        query_view_cost = (
+            2
+            if bool(getattr(self, "query_recenter_include_original_query_view", False))
+            else 1
+        )
+        plan = self.key_query_sampling_policy.plan(
+            reference_records=reference_records,
+            query_records=query_records,
+            reference_rgb_masking=self.reference_rgb_masking,
+            query_rgb_masking=self.query_rgb_masking,
+            query_view_cost=query_view_cost,
+            metadata=plan_metadata,
+        )
+        return self._materialize_sample_plan(plan, rng=rng)
 
 
 class LMGeoAnchorScenePairSequenceDataset(LMGeoSequenceDataset):
@@ -1653,7 +1638,7 @@ class LMGeoAnchorScenePairSequenceDataset(LMGeoSequenceDataset):
             for record in reference_records
         ]
 
-        self.this_views_info = {
+        plan_metadata = {
             "object_id": object_id,
             "reference_scene_id": int(reference_sample.get("query_scene_id", -1)),
             "reference_subscene_id": int(reference_sample.get("query_subscene_id", -1)),
@@ -1686,17 +1671,25 @@ class LMGeoAnchorScenePairSequenceDataset(LMGeoSequenceDataset):
                 for r in query_records
             ],
         }
-
-        views = [
-            self._load_anchor_reference_view(record, reference_sample)
+        reference_updates = [
+            {
+                "reference_source": "anchor_scene",
+                "is_anchor_scene_reference": True,
+                "scene_id": np.int64(reference_sample.get("query_scene_id", -1)),
+                "source_scene_id": np.int64(record.get("query_scene_id", -1)),
+                "source_subscene_id": np.int64(record.get("query_subscene_id", -1)),
+            }
             for record in reference_records
         ]
-        for query_index, record in enumerate(query_records):
-            query_views = self._load_query_views(record)
-            for view in query_views:
-                view["query_pair_index"] = np.int64(query_index)
-            views.extend(query_views)
-        return views
+        plan = self.key_query_sampling_policy.plan(
+            reference_records=reference_records,
+            query_records=query_records,
+            reference_rgb_masking=self.reference_rgb_masking,
+            query_rgb_masking=self.query_rgb_masking,
+            metadata=plan_metadata,
+            reference_updates=reference_updates,
+        )
+        return self._materialize_sample_plan(plan, rng=rng)
 
 
 class LMGeoSameSceneCeilingDataset(LMGeoSequenceDataset):
@@ -1874,7 +1867,7 @@ class LMGeoSameSceneCeilingDataset(LMGeoSequenceDataset):
         if query_identity in reference_identities:
             raise AssertionError("Selected same-scene query leaked into references")
 
-        self.this_views_info = {
+        plan_metadata = {
             "object_id": object_id,
             "query_scene_id": sample["query_scene_id"],
             "query_subscene_id": sample["query_subscene_id"],
@@ -1902,13 +1895,23 @@ class LMGeoSameSceneCeilingDataset(LMGeoSequenceDataset):
             "query": [(query_record["split"], query_record["im_id"], query_record["gt_id"])],
             "leak_free": query_identity not in reference_identities,
         }
-
-        views = [
-            self._load_same_scene_reference_view(record, sample)
-            for record in reference_records
+        reference_updates = [
+            {
+                "reference_source": "same_scene",
+                "is_context_reference": False,
+                "is_same_scene_reference": True,
+                "scene_id": np.int64(sample["query_scene_id"]),
+                "source_scene_id": np.int64(sample["query_scene_id"]),
+                "source_subscene_id": np.int64(sample["query_subscene_id"]),
+            }
+            for _ in reference_records
         ]
-        query_views = self._load_query_views(query_record)
-        for view in query_views:
-            view["query_pair_index"] = np.int64(0)
-        views.extend(query_views)
-        return views
+        plan = self.key_query_sampling_policy.plan(
+            reference_records=reference_records,
+            query_records=[query_record],
+            reference_rgb_masking=self.reference_rgb_masking,
+            query_rgb_masking=self.query_rgb_masking,
+            metadata=plan_metadata,
+            reference_updates=reference_updates,
+        )
+        return self._materialize_sample_plan(plan, rng=rng)

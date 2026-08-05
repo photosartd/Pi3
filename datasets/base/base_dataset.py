@@ -9,6 +9,7 @@ from omegaconf import OmegaConf
 from .transforms import *
 import pandas as pd
 from .utils import *
+from .observation import capability_flags_for_view, validate_raw_observation
 
 class BaseDataset(EasyDataset):
     def __init__(
@@ -222,6 +223,7 @@ class BaseDataset(EasyDataset):
                         view['camera_pose'] = np.full((4, 4), np.nan, dtype=np.float32)
                     else:
                         assert np.isfinite(view['camera_pose']).all(), f'NaN in camera pose for view {view_name(view)}'
+                    validate_raw_observation(view)
                     assert 'pts3d' not in view
                     assert 'valid_mask' not in view
                     assert np.isfinite(view['depthmap']).all(), f'NaN in depthmap for view {view_name(view)}'
@@ -232,6 +234,12 @@ class BaseDataset(EasyDataset):
                     view['valid_mask'] = valid_mask & np.isfinite(pts3d).all(axis=-1)
 
                     view['depthmap'][~view['valid_mask']] = 0.0
+
+                    # Capability flags are descriptive metadata only.  They do
+                    # not widen the required BaseDataset contract and are
+                    # useful to route optional losses/metrics on homogeneous
+                    # batches.
+                    view.update(capability_flags_for_view(view))
 
                     valid_count = int(view['valid_mask'].sum())
                     assert valid_count > 0, f"empty valid_mask after preprocessing for view {view_name(view)}"

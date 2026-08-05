@@ -16,6 +16,7 @@ class CorrespondenceMetric(BaseMetric):
     """Diagnostic GT correspondence consistency without affecting gradients."""
 
     name = "correspondence"
+    required_capabilities = frozenset({"correspondence"})
 
     def __init__(
         self,

@@ -23,6 +23,7 @@ class DepthPanelVisualizer(BaseVisualizer):
     """Show RGB, GT depth, scale-aligned predicted depth, and depth error."""
 
     name = "depth_panel"
+    required_capabilities = frozenset({"key_query"})
 
     def __init__(self, *, include_reference: bool = True, include_query: bool = True):
         self.include_reference = bool(include_reference)

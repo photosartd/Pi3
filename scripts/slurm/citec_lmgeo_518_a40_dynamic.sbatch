@@ -14,7 +14,6 @@ set -euo pipefail
 REPO_DIR="${PI3_REPO_DIR:-/homes/dtrofimov/repositories/Pi3}"
 CONDA_ROOT="${PI3_CONDA_ROOT:-/homes/dtrofimov/miniconda3}"
 CONDA_ENV="${PI3_CONDA_ENV:-pi3-lmgeo}"
-DATA_ROOT="${PI3_DATA_ROOT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/lm-o}"
 RUNS_ROOT="${PI3_RUNS_ROOT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/runs/Pi3}"
 TENSORBOARD_ROOT="${PI3_TENSORBOARD_ROOT:-/homes/dtrofimov/logs/spott3r}"
 RUN_MODE="${PI3_RUN_MODE:-train}"
@@ -22,6 +21,29 @@ SHARED_CKPT="${PI3_SHARED_CKPT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/check
 FILTER_PREPROCESSED_QUERY_DEPTH="${PI3_FILTER_PREPROCESSED_QUERY_DEPTH:-false}"
 TRAIN_CONFIG="${PI3_TRAIN_CONFIG:-train_lmgeo_finetune_a40_46gb}"
 DATA_CONFIG="${PI3_DATA_CONFIG:-lmgeo_trainpbr45_real_and_new_val}"
+DATA_FAMILY="${PI3_DATA_FAMILY:-}"
+if [[ -z "$DATA_FAMILY" ]]; then
+  if [[ "$DATA_CONFIG" == megapose_gso_* ]]; then
+    DATA_FAMILY="megapose_gso"
+  else
+    DATA_FAMILY="lmgeo"
+  fi
+fi
+case "$DATA_FAMILY" in
+  lmgeo)
+    DEFAULT_DATA_ROOT="/vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/lm-o"
+    DEFAULT_RUN_PREFIX="lmgeo_a40_46gb"
+    ;;
+  megapose_gso)
+    DEFAULT_DATA_ROOT="/vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/MegaPose-GSO-fixed"
+    DEFAULT_RUN_PREFIX="megapose_gso_a40_46gb"
+    ;;
+  *)
+    echo "ERROR: PI3_DATA_FAMILY must be lmgeo or megapose_gso, got: $DATA_FAMILY" >&2
+    exit 2
+    ;;
+esac
+DATA_ROOT="${PI3_DATA_ROOT:-$DEFAULT_DATA_ROOT}"
 SMOKE_ITERS="${PI3_SMOKE_ITERS:-5}"
 CONTEXT_REFERENCE_FRACTION="${PI3_CONTEXT_REFERENCE_FRACTION:-}"
 CONTINUE_MODE="${PI3_CONTINUE:-}"
@@ -68,6 +90,18 @@ if [[ ! -d "$DATA_ROOT" ]]; then
   echo "ERROR: DATA_ROOT does not exist: $DATA_ROOT" >&2
   exit 2
 fi
+if [[ "$DATA_FAMILY" == "megapose_gso" ]]; then
+  if [[ ! -f "$DATA_ROOT/pi3_index/megapose_gso.sqlite" ]]; then
+    echo "ERROR: MegaPose-GSO index is missing: $DATA_ROOT/pi3_index/megapose_gso.sqlite" >&2
+    echo "Run datasets/preprocess/megapose_gso.py before submitting training." >&2
+    exit 2
+  fi
+  if [[ ! -f "$DATA_ROOT/pi3_index/megapose_gso.splits.json" ]]; then
+    echo "ERROR: MegaPose-GSO split manifest is missing: $DATA_ROOT/pi3_index/megapose_gso.splits.json" >&2
+    echo "Rerun datasets/preprocess/megapose_gso.py before submitting training." >&2
+    exit 2
+  fi
+fi
 
 if [[ -z "${PI3_CKPT:-}" ]]; then
   if [[ -f "$SHARED_CKPT" ]]; then
@@ -89,7 +123,7 @@ if [[ "$PI3_CKPT" != "null" && ! -f "$PI3_CKPT" ]]; then
   exit 2
 fi
 
-RUN_NAME="${PI3_RUN_NAME:-lmgeo_a40_46gb_${RUN_MODE}_${SLURM_JOB_ID}}"
+RUN_NAME="${PI3_RUN_NAME:-${DEFAULT_RUN_PREFIX}_${RUN_MODE}_${SLURM_JOB_ID}}"
 RUN_DIR="${PI3_RUN_DIR:-$RUNS_ROOT/$RUN_NAME}"
 if [[ -n "${PI3_TENSORBOARD_DIR+x}" ]]; then
   TENSORBOARD_DIR="$PI3_TENSORBOARD_DIR"
@@ -122,6 +156,7 @@ echo "TensorBoard: $TENSORBOARD_DIR"
 echo "Conda env: $CONDA_ENV at $CONDA_ROOT"
 echo "Train config: $TRAIN_CONFIG"
 echo "Data config: $DATA_CONFIG"
+echo "Data family: $DATA_FAMILY"
 echo "filter_preprocessed_query_depth=$FILTER_PREPROCESSED_QUERY_DEPTH"
 echo "context_reference_fraction_override=${CONTEXT_REFERENCE_FRACTION:-config}"
 echo "continue_mode=${CONTINUE_MODE:-config}"
@@ -180,15 +215,24 @@ COMMON_OVERRIDES=(
   "train=$TRAIN_CONFIG"
   "data=$DATA_CONFIG"
   "name=$RUN_NAME"
-  "lmgeo.data_root=$DATA_ROOT"
-  "lmgeo.filter_preprocessed_query_depth=$FILTER_PREPROCESSED_QUERY_DEPTH"
   "model.ckpt=$PI3_CKPT"
   "log.output_dir=$RUN_DIR"
   "log.tensorboard_dir=$TENSORBOARD_DIR"
   "log.ckpt_dir=$RUN_DIR/ckpts"
   "hydra.run.dir=$RUN_DIR"
 )
-if [[ -n "$CONTEXT_REFERENCE_FRACTION" ]]; then
+if [[ "$DATA_FAMILY" == "lmgeo" ]]; then
+  COMMON_OVERRIDES+=(
+    "lmgeo.data_root=$DATA_ROOT"
+    "lmgeo.filter_preprocessed_query_depth=$FILTER_PREPROCESSED_QUERY_DEPTH"
+  )
+else
+  COMMON_OVERRIDES+=("gso.data_root=$DATA_ROOT")
+fi
+if [[ -n "$CONTEXT_REFERENCE_FRACTION" && "$DATA_FAMILY" != "lmgeo" ]]; then
+  echo "ERROR: PI3_CONTEXT_REFERENCE_FRACTION is LMGeo-only." >&2
+  exit 2
+elif [[ -n "$CONTEXT_REFERENCE_FRACTION" ]]; then
   COMMON_OVERRIDES+=("lmgeo.context_reference_fraction=$CONTEXT_REFERENCE_FRACTION")
 fi
 if [[ -n "$CKPT_INTERVAL" ]]; then
@@ -217,7 +261,7 @@ elif [[ -n "$CONTINUE_MODE" ]]; then
       ;;
   esac
 fi
-if [[ "$RUN_MODE" == "smoke" ]]; then
+if [[ "$RUN_MODE" == "smoke" && "$DATA_FAMILY" == "lmgeo" ]]; then
   # Dataset construction must not dominate or stall a memory/forward smoke.
   # Keep every preprocessed-depth filter off, including the real BOP target
   # loaders that do not inherit lmgeo.filter_preprocessed_query_depth.
@@ -241,7 +285,47 @@ if [[ "$RUN_MODE" == "smoke" ]]; then
 fi
 
 if [[ "$RUN_MODE" == "smoke" ]]; then
-  if [[ "$DATA_CONFIG" == *"anchor_scene_pairs"* ]] || [[ "$TRAIN_CONFIG" == *"anchor_mask_conditioning"* ]]; then
+  if [[ "$DATA_FAMILY" == "megapose_gso" ]]; then
+    echo "Running ${SMOKE_ITERS}-step max-view 26-view MegaPose-GSO anchor-pair smoke."
+    accelerate launch --config_file configs/accelerate/ddp.yaml \
+      --num_processes "$NUM_GPUS" --num_machines 1 \
+      scripts/train_pi3.py \
+      "${COMMON_OVERRIDES[@]}" \
+      'train.image_num_range=[26,26]' \
+      train.max_img_per_gpu=28 \
+      'gso_profile.num_reference_range=[16,16]' \
+      'gso_profile.num_query_range=[10,10]' \
+      train.num_epoch=1 \
+      train.iters_per_epoch="$SMOKE_ITERS" \
+      val_datasets.gso_val.runtime.iters_per_test=1 \
+      val_datasets.gso_val.runtime.max_img_per_gpu=6 \
+      metrics.enabled=false \
+      visuals.enabled=false \
+      log.use_tensorboard=false \
+      log.save_best=false \
+      log.save_checkpoints=false \
+      extras.print_config=false
+
+    echo "Running ${SMOKE_ITERS}-step packed-min 9 x 3-view MegaPose-GSO anchor-pair smoke."
+    accelerate launch --config_file configs/accelerate/ddp.yaml \
+      --num_processes "$NUM_GPUS" --num_machines 1 \
+      scripts/train_pi3.py \
+      "${COMMON_OVERRIDES[@]}" \
+      'train.image_num_range=[3,3]' \
+      train.max_img_per_gpu=28 \
+      'gso_profile.num_reference_range=[2,2]' \
+      'gso_profile.num_query_range=[1,1]' \
+      train.num_epoch=1 \
+      train.iters_per_epoch="$SMOKE_ITERS" \
+      val_datasets.gso_val.runtime.iters_per_test=1 \
+      val_datasets.gso_val.runtime.max_img_per_gpu=6 \
+      metrics.enabled=false \
+      visuals.enabled=false \
+      log.use_tensorboard=false \
+      log.save_best=false \
+      log.save_checkpoints=false \
+      extras.print_config=false
+  elif [[ "$DATA_CONFIG" == *"anchor_scene_pairs"* ]] || [[ "$TRAIN_CONFIG" == *"anchor_mask_conditioning"* ]]; then
     echo "Running ${SMOKE_ITERS}-step max-view 26-view anchor-mask-conditioning smoke."
     accelerate launch --config_file configs/accelerate/ddp.yaml \
       --num_processes "$NUM_GPUS" --num_machines 1 \

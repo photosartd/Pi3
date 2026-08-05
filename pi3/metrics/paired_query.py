@@ -37,6 +37,7 @@ class PairedQueryConsistencyMetric(BaseMetric):
     """
 
     name = "paired_query"
+    required_capabilities = frozenset({"paired_query"})
 
     _POSE_ROLES = ("query_crop_canonical", "query_original")
 

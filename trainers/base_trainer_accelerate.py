@@ -691,6 +691,13 @@ class BaseTrainer:
                             "height": int(img.shape[-2]),
                             "width": int(img.shape[-1]),
                         }
+                batch_dataset_name = None
+                if batch and "dataset" in batch[0]:
+                    dataset_value = batch[0]["dataset"]
+                    if isinstance(dataset_value, (list, tuple)) and dataset_value:
+                        batch_dataset_name = str(dataset_value[0])
+                    else:
+                        batch_dataset_name = str(dataset_value)
                 if batch_shape_stats and self.accelerator.is_main_process:
                     self.log_info(
                         "Train batch shape: epoch={} iter={} samples/rank={} "
@@ -707,6 +714,12 @@ class BaseTrainer:
                 with self.accelerator.autocast():
                     forward_output = self.forward_batch(batch, mode='train')
                 next_step = start_steps + 1
+                if batch_dataset_name:
+                    safe_dataset_name = batch_dataset_name.replace("/", "_")
+                    self.accelerator.log(
+                        {f"train_dataset_batches/{safe_dataset_name}": 1.0},
+                        step=next_step,
+                    )
                 train_metric_stats = {}
                 if self.metric_manager.should_update("train", next_step):
                     train_metric_stats = self.metric_manager.compute_on_batch(

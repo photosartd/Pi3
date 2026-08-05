@@ -5,6 +5,7 @@ from datasets.base.base_dataset import sample_resolutions
 import hydra
 
 from pi3.models.loss import Pi3Loss
+from pi3.models.input_adapter import Pi3BatchAdapter
 
 class Pi3Trainer(BaseTrainer):
     def __init__(self, cfg):
@@ -12,6 +13,11 @@ class Pi3Trainer(BaseTrainer):
 
         self.train_loss = hydra.utils.instantiate(cfg.loss.train_loss)
         self.test_loss = hydra.utils.instantiate(cfg.loss.test_loss)
+        self.model_input_adapter = Pi3BatchAdapter(
+            use_visibility_mask_conditioning=bool(
+                cfg.model.get("use_visibility_mask_conditioning", False)
+            )
+        )
 
     def build_optimizer(self, cfg_optimizer, model):
         def param_group_fn(model_):
@@ -141,31 +147,14 @@ class Pi3Trainer(BaseTrainer):
             loader.batch_sampler.set_epoch(epoch, base_seed=self.cfg.train.base_seed)
             
     def forward_batch(self, batch, mode='train'):
-        imgs = torch.stack([view['img'] for view in batch], dim=1)
-        intrinsics = torch.stack([view['camera_intrinsics'] for view in batch], dim=1)
-        model_kwargs = {"intrinsics": intrinsics}
-        if bool(self.cfg.model.get("use_visibility_mask_conditioning", False)):
-            if "visibility_mask_condition" not in batch[0] or "visibility_mask_known" not in batch[0]:
-                raise ValueError(
-                    "model.use_visibility_mask_conditioning=true requires "
-                    "visibility_mask_condition and visibility_mask_known in the batch"
-                )
-            visibility_mask_condition = torch.stack(
-                [view["visibility_mask_condition"] for view in batch],
-                dim=1,
-            )
-            visibility_mask_known = torch.stack(
-                [view["visibility_mask_known"] for view in batch],
-                dim=1,
-            )
-            model_kwargs["visibility_mask_condition"] = visibility_mask_condition
-            model_kwargs["visibility_mask_known"] = visibility_mask_known
-
-        pred = self.model(imgs, **model_kwargs)
+        adapted = self.model_input_adapter.adapt(batch)
+        model_kwargs = dict(adapted.kwargs)
+        pred = self.model(adapted.inputs, **model_kwargs)
+        pred["observation_capabilities"] = dict(adapted.capabilities)
 
         if bool(self.cfg.model.get("use_visibility_mask_conditioning", False)):
-            ref_mask = torch.stack([view["is_reference"] for view in batch], dim=1).bool()
-            query_mask = torch.stack([view["is_query"] for view in batch], dim=1).bool()
+            ref_mask = adapted.role_masks["reference"]
+            query_mask = adapted.role_masks["query"]
             condition = model_kwargs["visibility_mask_condition"].detach().float()
             known = model_kwargs["visibility_mask_known"].detach().float()
 
@@ -201,6 +190,11 @@ class Pi3Trainer(BaseTrainer):
         for key, value in conditioning_stats.items():
             if torch.is_tensor(value):
                 details[f"{key}_loss_stat"] = value.detach()
+        capability_device = output["local_points"].device
+        for key, enabled in output.get("observation_capabilities", {}).items():
+            details[f"batch_capability_{key}_loss_stat"] = torch.as_tensor(
+                float(enabled), device=capability_device
+            )
 
         return EasyDict(
             loss=loss,

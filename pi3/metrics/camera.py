@@ -28,6 +28,7 @@ class CameraAlignmentMetric(BaseMetric):
     """
 
     name = "camera"
+    required_capabilities = frozenset({"key_query", "object_pose"})
 
     def __init__(self, *, solve_scale: bool = True):
         self.solve_scale = bool(solve_scale)

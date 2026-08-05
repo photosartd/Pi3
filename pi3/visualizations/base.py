@@ -15,6 +15,7 @@ class BaseVisualizer(ABC):
     """
 
     name: str = "visual"
+    required_capabilities: frozenset[str] = frozenset()
 
     @abstractmethod
     def render(

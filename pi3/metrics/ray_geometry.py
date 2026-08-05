@@ -14,6 +14,7 @@ class RayGeometryMetric(BaseMetric):
     """Measure whether predicted local XYZ agrees with each view's intrinsics."""
 
     name = "ray_geometry"
+    required_capabilities = frozenset({"key_query"})
     _ROLES = ("reference", "query", "query_context")
 
     def __init__(

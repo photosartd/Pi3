@@ -26,6 +26,9 @@ class QueryPoseOverlayVisualizer(BaseVisualizer):
     """Draw GT and predicted object poses over query frames."""
 
     name = "query_pose_overlay"
+    required_capabilities = frozenset(
+        {"key_query", "object_pose", "object_model"}
+    )
 
     def __init__(
         self,

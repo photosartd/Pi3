@@ -8,6 +8,7 @@ from omegaconf import DictConfig, OmegaConf
 from PIL import Image, ImageDraw
 
 from .base import BaseVisualizer
+from datasets.base.observation import batch_supports_capabilities
 
 
 class VisualManager:
@@ -32,6 +33,7 @@ class VisualManager:
         self.val_every_n_epochs = max(1, int(val_every_n_epochs))
         self.rng = np.random.default_rng(random_seed)
         self.last_render_info: dict[str, Any] = {}
+        self.routing_counts: dict[str, dict[str, int]] = {}
 
     @classmethod
     def from_config(cls, cfg: DictConfig | dict | None) -> "VisualManager":
@@ -102,8 +104,18 @@ class VisualManager:
             return images
         batch_idx = self._sample_batch_idx(batch)
         self.last_render_info = self._summarize_selection(batch, batch_idx=batch_idx, mode=mode)
-        images["selection/target"] = self._selection_image(self.last_render_info)
+        self.routing_counts = {}
         for visualizer in self.visualizers:
+            required = getattr(
+                visualizer, "required_capabilities", frozenset()
+            )
+            eligible = batch_supports_capabilities(batch, required)
+            self.routing_counts[visualizer.name] = {
+                "eligible": int(eligible),
+                "skipped": int(not eligible),
+            }
+            if not eligible:
+                continue
             for key, image in visualizer.render(
                 prediction,
                 batch,
@@ -113,6 +125,9 @@ class VisualManager:
                 rng=self.rng,
             ).items():
                 images[f"{visualizer.name}/{key}"] = image
+        self.last_render_info["routing"] = dict(self.routing_counts)
+        if images:
+            images["selection/target"] = self._selection_image(self.last_render_info)
         return images
 
     def _sample_batch_idx(self, batch: list[dict[str, Any]]) -> int:
@@ -138,6 +153,7 @@ class VisualManager:
             "mode": mode,
             "batch_idx": int(batch_idx),
             "batch_size": cls._batch_size(batch),
+            "dataset": cls._scalar_at(batch[0].get("dataset"), batch_idx) if batch else None,
             "object_id": cls._scalar_at(batch[0].get("object_id"), batch_idx) if batch else None,
             "reference_views": refs,
             "query_views": queries,
@@ -179,7 +195,7 @@ class VisualManager:
         queries = info.get("query_views", [])
         lines = [
             f"mode={info.get('mode')} batch_idx={info.get('batch_idx')}/{info.get('batch_size')} "
-            f"object_id={info.get('object_id')}",
+            f"dataset={info.get('dataset')} object_id={info.get('object_id')}",
             "references: " + VisualManager._format_views(refs),
             "queries: " + VisualManager._format_views(queries),
         ]

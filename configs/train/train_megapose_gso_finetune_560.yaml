@@ -1,0 +1,46 @@
+# @package _global_
+
+# Initial mesh-free MegaPose-GSO fine-tuning profile. It retains Pi3's 560x420
+# A40 memory envelope, enables reference and query visibility conditioning,
+# and disables only consumers that require unavailable GSO CAD models/diameters.
+defaults:
+  - train_lmgeo_finetune_518_a40_dynamic
+  - _self_
+
+gso_profile:
+  num_reference_range: [5, 27]
+  num_query_range: [1, 25]
+  max_refetch: 20
+
+model:
+  use_visibility_mask_conditioning: true
+  visibility_mask_conditioning_alpha: 1.0
+
+train:
+  image_num_range: [6, 28]
+  max_img_per_gpu: 28
+  resolution:
+    - [560, 420]
+  random_reslution: false
+  optimizer:
+    visibility_mask_lr: 5e-5
+
+test:
+  image_num_range: [6, 6]
+  max_img_per_gpu: 128
+
+metrics:
+  items:
+    # The image corpus has T_C_O but the local dataset has no GSO models,
+    # diameters, or symmetry metadata. Camera and correspondence metrics remain.
+    object_pose: null
+    chamfer: null
+
+visuals:
+  items:
+    query_pose_overlay: null
+    visibility_condition:
+      _target_: pi3.visualizations.visibility_condition.VisibilityConditionVisualizer
+      max_reference_views: 5
+      max_query_views: 2
+      thumbnail_size: 112

@@ -25,6 +25,13 @@ commands, output paths, and TensorBoard, see
 For downloading and placing the Pi3 base checkpoint, see
 [docs/checkpoints.md](docs/checkpoints.md).
 
+For the model-neutral dataset contract, object adapter extension recipe,
+homogeneous mixed-dataset batching, and capability-aware routing, see
+[docs/dataset_architecture.md](docs/dataset_architecture.md).
+
+For indexing and training from MegaPose-GSO tar shards without extraction, see
+[datasets/preprocess/README.md](datasets/preprocess/README.md).
+
 
 ## 💾 Data Preparation
 

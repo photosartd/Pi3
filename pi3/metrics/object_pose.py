@@ -37,6 +37,9 @@ class ObjectPoseMetric(BaseMetric):
     """
 
     name = "object_pose"
+    required_capabilities = frozenset(
+        {"key_query", "object_pose", "object_model"}
+    )
 
     def __init__(
         self,

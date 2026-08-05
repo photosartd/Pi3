@@ -102,7 +102,8 @@ class DynamicBatchSampler(Sampler):
                  epoch=0,
                  seed=42,
                  rank=0,
-                 max_img_per_gpu=48):
+                 max_img_per_gpu=48,
+                 frame_num_list=None):
         """
         Initializes the dynamic batch sampler.
 
@@ -123,8 +124,16 @@ class DynamicBatchSampler(Sampler):
         self.image_num_weights = {num_images: 1.0 for num_images in range(image_num_range[0], image_num_range[1]+1)}
 
         # Possible image numbers, e.g., [2, 3, 4, ..., 24]
-        self.possible_nums = np.array([n for n in self.image_num_weights.keys()
-                                       if self.image_num_range[0] <= n <= self.image_num_range[1]])
+        if frame_num_list is None:
+            frame_num_list = self.image_num_weights.keys()
+        allowed = set(self.image_num_weights)
+        possible_nums = sorted({int(value) for value in frame_num_list})
+        if not possible_nums or not set(possible_nums).issubset(allowed):
+            raise ValueError(
+                f"frame_num_list must be a non-empty subset of "
+                f"{sorted(allowed)}, got {possible_nums}"
+            )
+        self.possible_nums = np.asarray(possible_nums, dtype=np.int64)
         
         # Normalize weights for sampling
         weights = [self.image_num_weights[n] for n in self.possible_nums]
@@ -204,6 +213,149 @@ class DynamicBatchSampler(Sampler):
         min_sample_batch_size = int(np.floor(self.max_img_per_gpu / max_image_num))
         min_sample_batch_size = max(1, min_sample_batch_size)
         return max(1, int(np.ceil(len(self.sampler) / min_sample_batch_size)))
+
+
+class HomogeneousDynamicBatchSampler(Sampler):
+    """Dynamic sampler that chooses one dataset component per full batch.
+
+    Component choice and view count are synchronized across distributed ranks;
+    resolution remains rank-local, matching :class:`DynamicBatchSampler`.
+    Samples are drawn from the chosen component without crossing its index
+    range, which keeps optional observation schemas homogeneous.
+    """
+
+    def __init__(
+        self,
+        dataset,
+        *,
+        component_sizes,
+        component_frame_num_lists=None,
+        resolution_num,
+        image_num_range,
+        seed=42,
+        rank=0,
+        world_size=1,
+        max_img_per_gpu=48,
+    ):
+        self.dataset = dataset
+        self.component_sizes = np.asarray(component_sizes, dtype=np.int64)
+        if self.component_sizes.ndim != 1 or len(self.component_sizes) < 2:
+            raise ValueError(
+                "HomogeneousDynamicBatchSampler requires at least two components"
+            )
+        if np.any(self.component_sizes <= 0):
+            raise ValueError(
+                f"component_sizes must be positive, got {self.component_sizes.tolist()}"
+            )
+        if int(self.component_sizes.sum()) != len(dataset):
+            raise ValueError(
+                f"component sizes sum to {int(self.component_sizes.sum())}, "
+                f"but dataset length is {len(dataset)}"
+            )
+
+        self.component_starts = np.concatenate(
+            (np.array([0], dtype=np.int64), np.cumsum(self.component_sizes)[:-1])
+        )
+        self.component_weights = self.component_sizes.astype(np.float64)
+        self.component_weights /= self.component_weights.sum()
+        self.resolution_num = int(resolution_num)
+        self.image_num_range = tuple(int(value) for value in image_num_range)
+        self.possible_nums = np.arange(
+            self.image_num_range[0], self.image_num_range[1] + 1, dtype=np.int64
+        )
+        if len(self.possible_nums) == 0 or int(self.possible_nums[0]) <= 0:
+            raise ValueError(
+                f"image_num_range must be positive, got {image_num_range}"
+            )
+        if component_frame_num_lists is None:
+            component_frame_num_lists = [
+                self.possible_nums.tolist() for _ in self.component_sizes
+            ]
+        if len(component_frame_num_lists) != len(self.component_sizes):
+            raise ValueError(
+                "component_frame_num_lists must match component_sizes"
+            )
+        allowed = set(int(value) for value in self.possible_nums)
+        self.component_frame_num_lists = []
+        for component, values in enumerate(component_frame_num_lists):
+            values = sorted({int(value) for value in values})
+            if not values:
+                raise ValueError(
+                    f"Dataset component {component} supports no frame count in "
+                    f"configured range {self.image_num_range}"
+                )
+            if not set(values).issubset(allowed):
+                raise ValueError(
+                    f"Dataset component {component} returned frame counts "
+                    f"outside {self.image_num_range}: {values}"
+                )
+            self.component_frame_num_lists.append(np.asarray(values, dtype=np.int64))
+        self.max_img_per_gpu = int(max_img_per_gpu)
+        if self.max_img_per_gpu <= 0:
+            raise ValueError("max_img_per_gpu must be positive")
+        self.rank = int(rank)
+        self.world_size = int(world_size)
+        self.seed = int(seed)
+        self.total_samples_per_rank = max(1, len(dataset) // self.world_size)
+        self.component_batch_counts = np.zeros(
+            len(self.component_sizes), dtype=np.int64
+        )
+        self.set_epoch(0, base_seed=self.seed)
+
+    def set_epoch(self, epoch, base_seed=777):
+        self.epoch = int(epoch)
+        self.base_seed = int(base_seed)
+
+    def _schedule(self):
+        rng = np.random.default_rng(
+            self.base_seed + 1000003 * self.epoch
+        )
+        emitted = 0
+        batch_index = 0
+        while emitted < self.total_samples_per_rank:
+            component = int(
+                rng.choice(len(self.component_sizes), p=self.component_weights)
+            )
+            image_num = int(rng.choice(self.component_frame_num_lists[component]))
+            sample_batch_size = max(1, self.max_img_per_gpu // image_num)
+            yield batch_index, component, image_num, sample_batch_size
+            emitted += sample_batch_size
+            batch_index += 1
+
+    def __iter__(self):
+        resolution_rng = np.random.default_rng(
+            self.base_seed + 1000003 * self.epoch + 7919 * self.rank
+        )
+        self.component_batch_counts.fill(0)
+        for batch_index, component, image_num, sample_batch_size in self._schedule():
+            resolution_idx = int(resolution_rng.integers(self.resolution_num))
+            # Every rank constructs the same global draw and takes a disjoint
+            # contiguous slice. Tiny components use replacement deliberately,
+            # matching DistributedSampler's padding semantics.
+            draw_rng = np.random.default_rng(
+                self.base_seed
+                + 1000003 * self.epoch
+                + 104729 * batch_index
+                + 15485863 * component
+            )
+            global_draw_size = sample_batch_size * self.world_size
+            component_size = int(self.component_sizes[component])
+            offsets = draw_rng.choice(
+                component_size,
+                size=global_draw_size,
+                replace=global_draw_size > component_size,
+            )
+            start = self.rank * sample_batch_size
+            local_offsets = offsets[start : start + sample_batch_size]
+            dataset_start = int(self.component_starts[component])
+            self.component_batch_counts[component] += 1
+            yield [
+                (dataset_start + int(offset), resolution_idx, image_num)
+                for offset in local_offsets
+            ]
+
+    def __len__(self):
+        return sum(1 for _ in self._schedule())
 
 
 class DynamicDistributedSampler(DistributedSampler):

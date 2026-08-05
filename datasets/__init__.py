@@ -4,7 +4,11 @@ from utils.misc import get_world_size, get_rank
 from torch.utils.data import DataLoader
 import hydra
 from datasets.base.base_dataset import sample_resolutions, unified_collate_fn
-from datasets.base.batched_sampler import DynamicBatchSampler, DynamicDistributedSampler
+from datasets.base.batched_sampler import (
+    DynamicBatchSampler,
+    DynamicDistributedSampler,
+    HomogeneousDynamicBatchSampler,
+)
 
 __HIGH_QUALITY_DATASETS__ = ['BlinkVision', 'Game', 'GameNew', 'DynamicStereo', 'FlyingThings3D', 'GTA-sfm', 'Hypersim', 'MatrixCity', 'MidAir', 'Monkaa', 'PointOdyssey', 'Sintel', 'Spring', 'TarTanAir', 'Unreal4k', 'VirtualKitti', 'Habitat']
 __MIDDLE_QUALITY_DATASETS__ = ['BlendedMVG', 'BlendedMVS', 'DTU', 'ETH3D', 'ScanNet', 'Scannetpp', 'Taskonomy']
@@ -15,6 +19,10 @@ def create_dataloader(cfg, mode, *, dataset_cfg=None, dataloader_cfg=None, runti
     num_resolution = 1
     world_size = get_world_size()
     rank = get_rank()
+    mixture_component_sizes = None
+    mixture_component_names = None
+    mixture_component_frame_counts = None
+    dataset_frame_counts = None
 
     # pytorch dataset
     if mode == 'train':
@@ -114,35 +122,63 @@ def create_dataloader(cfg, mode, *, dataset_cfg=None, dataloader_cfg=None, runti
             weights = new_weights
             print(f'New weights for dataset (adjusting to dataset length {dataset_length}): {new_weights}')
 
+        mixture_component_names = [dataset_name for dataset_name, _, _ in datasets_all]
+        mixture_component_frame_counts = [
+            dataset_i.supported_frame_counts(image_num_range)
+            for _, _, dataset_i in datasets_all
+        ]
         datasets_all = [weights[dataset_name] @ dataset_i for dataset_name, _, dataset_i in datasets_all]
+        mixture_component_sizes = [len(dataset_i) for dataset_i in datasets_all]
         dataset = datasets_all[0]
         for dataset_ in datasets_all[1:]:
             dataset += dataset_
+        dataset.component_names = tuple(mixture_component_names)
     else:
         dataset = hydra.utils.instantiate(cfg_dataset)
         dataset.convert_attributes()
+        dataset_frame_counts = dataset.supported_frame_counts(image_num_range)
 
     if mode == 'train' and cfg.train.iters_per_epoch > 0:
         print('Needed batch number per epoch (per rank):', _needed_train_indices_per_rank())
         print('Dataset length per rank:', len(dataset) // world_size)
         assert _needed_train_indices_per_rank() < len(dataset) // world_size
 
-    sampler = DynamicDistributedSampler(
-        dataset,
-        num_replicas=world_size,
-        rank=rank,
-        seed=cfg.train.base_seed,
-        shuffle=cfg_dataloader.shuffle,
-        drop_last=cfg_dataloader.drop_last,
-    )
-    batch_sampler = DynamicBatchSampler(
-        sampler, 
-        num_resolution, 
-        image_num_range, 
-        seed=cfg.train.base_seed,
-        max_img_per_gpu=max_img_per_gpu,
-        rank=rank
-    )
+    if mode == 'train' and mixture_component_sizes is not None and len(mixture_component_sizes) > 1:
+        print(
+            'Using homogeneous mixed-dataset batches:',
+            dict(zip(mixture_component_names, mixture_component_sizes)),
+        )
+        batch_sampler = HomogeneousDynamicBatchSampler(
+            dataset,
+            component_sizes=mixture_component_sizes,
+            component_frame_num_lists=mixture_component_frame_counts,
+            resolution_num=num_resolution,
+            image_num_range=image_num_range,
+            seed=cfg.train.base_seed,
+            max_img_per_gpu=max_img_per_gpu,
+            rank=rank,
+            world_size=world_size,
+        )
+    else:
+        if mixture_component_frame_counts is not None:
+            dataset_frame_counts = mixture_component_frame_counts[0]
+        sampler = DynamicDistributedSampler(
+            dataset,
+            num_replicas=world_size,
+            rank=rank,
+            seed=cfg.train.base_seed,
+            shuffle=cfg_dataloader.shuffle,
+            drop_last=cfg_dataloader.drop_last,
+        )
+        batch_sampler = DynamicBatchSampler(
+            sampler,
+            num_resolution,
+            image_num_range,
+            seed=cfg.train.base_seed,
+            max_img_per_gpu=max_img_per_gpu,
+            rank=rank,
+            frame_num_list=dataset_frame_counts,
+        )
 
     loader_kwargs = dict(
         dataset=dataset,

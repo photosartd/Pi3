@@ -14,6 +14,7 @@ class BaseMetric(ABC):
     """
 
     name: str = "metric"
+    required_capabilities: frozenset[str] = frozenset()
 
     def reset(self) -> None:
         """Clear accumulated metric state."""

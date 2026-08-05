@@ -274,10 +274,52 @@ def transpose_to_landscape(view):
         view['camera_intrinsics'] = view['camera_intrinsics'][[1, 0, 2]]
 
 def unified_collate_fn(batch):
+    """Collate a homogeneous batch of variable-length view dictionaries.
+
+    Optional fields may differ between roles inside one sample (for example a
+    paired-query homography), but different samples in one batch must expose
+    the same union schema and number of model views.  This is the explicit v1
+    boundary: datasets may be mixed across batches, not silently inside one.
+    """
+
+    if not batch:
+        return []
     if isinstance(batch[0], dict):
         batch = [batch]
     views_num = len(batch[0])
-    all_keys = batch[0][0].keys()
+    if views_num == 0:
+        raise ValueError("Cannot collate an empty multi-view sample")
+    view_counts = [len(sample) for sample in batch]
+    if any(count != views_num for count in view_counts):
+        raise ValueError(
+            "All samples in a homogeneous batch must have the same model-view "
+            f"count, got {view_counts}"
+        )
+
+    def sample_schema(sample):
+        return frozenset(key for view in sample for key in view)
+
+    expected_schema = sample_schema(batch[0])
+    for sample_index, sample in enumerate(batch[1:], start=1):
+        actual_schema = sample_schema(sample)
+        if actual_schema != expected_schema:
+            missing = sorted(expected_schema.difference(actual_schema))
+            extra = sorted(actual_schema.difference(expected_schema))
+            raise ValueError(
+                "Incompatible observation schemas in one batch. v1 supports "
+                "homogeneous batches only; use the dataset mixture sampler. "
+                f"sample={sample_index}, missing={missing}, extra={extra}"
+            )
+
+    # Preserve the historical first-view ordering, then append role-specific
+    # optional fields in their first-seen order.
+    all_keys = list(batch[0][0].keys())
+    seen = set(all_keys)
+    for view in batch[0][1:]:
+        for key in view:
+            if key not in seen:
+                all_keys.append(key)
+                seen.add(key)
 
     batched_data = [{key: [] for key in all_keys} for _ in range(views_num)]
     for sample in batch:
