@@ -507,7 +507,11 @@ contain the Slurm job ID, so the two submissions do not overwrite each other.
 
 For `train` mode, `PI3_TRAIN_GPUS` can be `1`, `2`, `3`, or `4`. The helper
 scales the default CPU, RAM, and local tmp requests as `8 CPUs`, `100G RAM`, and
-`25G tmp` per requested A40. Override those separately if needed:
+`25G tmp` per requested A40 for the established LMGeo/560px profiles. The
+measured MegaPose-GSO 336x252 profiles instead default to 110G RAM total for a
+1-4 GPU job and 80G for their two-GPU smoke; see
+[megapose_gso_a40.md](megapose_gso_a40.md#host-ram-and-workers). Override these
+separately if needed:
 
 ```bash
 PI3_TRAIN_GPUS=2 PI3_TRAIN_MEM=240G PI3_TRAIN_TMP=80G \

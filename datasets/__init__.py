@@ -31,6 +31,7 @@ def create_dataloader(cfg, mode, *, dataset_cfg=None, dataloader_cfg=None, runti
         cfg_runtime = cfg.train if runtime_cfg is None else runtime_cfg
         batch_size = cfg_runtime.batch_size if 'batch_size' in cfg_runtime else cfg.train.batch_size
         num_workers = cfg_runtime.num_workers if 'num_workers' in cfg_runtime else cfg.train.num_workers
+        worker_defaults = cfg.train
     else:
         cfg_dataset = cfg.test_dataset if dataset_cfg is None else dataset_cfg
         cfg_dataloader = cfg.test_dataloader if dataloader_cfg is None else dataloader_cfg
@@ -41,6 +42,7 @@ def create_dataloader(cfg, mode, *, dataset_cfg=None, dataloader_cfg=None, runti
         num_workers = cfg_runtime.num_workers if 'num_workers' in cfg_runtime else (
             cfg.test.num_workers if 'num_workers' in cfg.test else cfg.train.num_workers
         )
+        worker_defaults = cfg.test
 
     if mode == 'train':
         image_num_range = cfg.train.image_num_range
@@ -188,9 +190,19 @@ def create_dataloader(cfg, mode, *, dataset_cfg=None, dataloader_cfg=None, runti
         collate_fn=unified_collate_fn,
     )
     if num_workers > 0:
+        persistent_workers = (
+            cfg_runtime.persistent_workers
+            if 'persistent_workers' in cfg_runtime
+            else worker_defaults.get('persistent_workers', True)
+        )
+        prefetch_factor = (
+            cfg_runtime.prefetch_factor
+            if 'prefetch_factor' in cfg_runtime
+            else worker_defaults.get('prefetch_factor', 2)
+        )
         loader_kwargs.update(
-            persistent_workers=True,
-            prefetch_factor=2,
+            persistent_workers=bool(persistent_workers),
+            prefetch_factor=int(prefetch_factor),
         )
 
     return data_loader(**loader_kwargs)

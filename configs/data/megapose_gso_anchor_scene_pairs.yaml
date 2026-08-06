@@ -1,15 +1,14 @@
 # @package _global_
 
-# Strict two-scene MegaPose-GSO training. Every reference comes from one
-# physical (scene_id, gt_id) track and every query comes from a second track of
-# the same GSO object in a different scene. Frames never repeat. Validation
-# deliberately retains independent-scene sampling so sparse held-out partitions
-# remain measurable while preserving the preprocessed object+scene holdout.
+# Strict two-track MegaPose-GSO production protocol. Every reference comes from
+# one physical (scene_id, gt_id) track and every query comes from a second track
+# of the same GSO object in a different scene. Frames never repeat. Validation
+# uses the same anchor-pair semantics; use megapose_gso_cross_scene explicitly
+# only for sparse/local data that cannot provide sufficiently long tracks.
 defaults:
   - megapose_gso_cross_scene
   - _self_
 
 gso:
   sampling_regime: anchor_pair
-  eval_sampling_regime: independent_scenes
-
+  eval_sampling_regime: anchor_pair

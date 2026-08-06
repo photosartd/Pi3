@@ -286,19 +286,87 @@ fi
 
 if [[ "$RUN_MODE" == "smoke" ]]; then
   if [[ "$DATA_FAMILY" == "megapose_gso" ]]; then
-    echo "Running ${SMOKE_ITERS}-step max-view 26-view MegaPose-GSO anchor-pair smoke."
+    mapfile -t GSO_SMOKE_PROFILE < <(
+      python - "$TRAIN_CONFIG" "$DATA_CONFIG" <<'PY'
+import sys
+from pathlib import Path
+
+from hydra import compose, initialize_config_dir
+
+train_config, data_config = sys.argv[1:]
+with initialize_config_dir(version_base="1.2", config_dir=str(Path("configs").resolve())):
+    cfg = compose(
+        config_name="default",
+        overrides=[f"train={train_config}", f"data={data_config}"],
+    )
+
+values = (
+    cfg.train.max_img_per_gpu,
+    cfg.train.image_num_range[0],
+    cfg.train.image_num_range[1],
+    cfg.gso_profile.num_reference_range[0],
+    cfg.gso_profile.num_reference_range[1],
+    cfg.gso_profile.num_query_range[0],
+    cfg.gso_profile.num_query_range[1],
+)
+for value in values:
+    print(int(value))
+PY
+    )
+    if [[ "${#GSO_SMOKE_PROFILE[@]}" -ne 7 ]]; then
+      echo "ERROR: failed to resolve MegaPose-GSO smoke profile from Hydra." >&2
+      exit 2
+    fi
+    GSO_TRAIN_BUDGET="${GSO_SMOKE_PROFILE[0]}"
+    GSO_MIN_VIEWS="${GSO_SMOKE_PROFILE[1]}"
+    GSO_MAX_VIEWS="${GSO_SMOKE_PROFILE[2]}"
+    GSO_MIN_REFS="${GSO_SMOKE_PROFILE[3]}"
+    GSO_MAX_REFS="${GSO_SMOKE_PROFILE[4]}"
+    GSO_MIN_QUERIES="${GSO_SMOKE_PROFILE[5]}"
+    GSO_MAX_QUERIES="${GSO_SMOKE_PROFILE[6]}"
+    if (( GSO_MIN_REFS + GSO_MIN_QUERIES != GSO_MIN_VIEWS )) || \
+       (( GSO_MAX_REFS + GSO_MAX_QUERIES != GSO_MAX_VIEWS )); then
+      echo "ERROR: GSO profile extrema do not match train.image_num_range." >&2
+      exit 2
+    fi
+
+    mapfile -t GSO_VAL_NAMES < <(
+      python - "$TRAIN_CONFIG" "$DATA_CONFIG" <<'PY'
+import sys
+from pathlib import Path
+
+from hydra import compose, initialize_config_dir
+
+train_config, data_config = sys.argv[1:]
+with initialize_config_dir(version_base="1.2", config_dir=str(Path("configs").resolve())):
+    cfg = compose(
+        config_name="default",
+        overrides=[f"train={train_config}", f"data={data_config}"],
+    )
+for name in cfg.val_datasets:
+    print(str(name))
+PY
+    )
+    GSO_VAL_SMOKE_OVERRIDES=()
+    for val_name in "${GSO_VAL_NAMES[@]}"; do
+      GSO_VAL_SMOKE_OVERRIDES+=("val_datasets.${val_name}.runtime.iters_per_test=1")
+    done
+
+    GSO_MAX_SAMPLE_BATCH=$((GSO_TRAIN_BUDGET / GSO_MAX_VIEWS))
+    (( GSO_MAX_SAMPLE_BATCH > 0 )) || GSO_MAX_SAMPLE_BATCH=1
+    GSO_MAX_IMAGES=$((GSO_MAX_SAMPLE_BATCH * GSO_MAX_VIEWS))
+    echo "Running ${SMOKE_ITERS}-step ${GSO_MAX_SAMPLE_BATCH} x ${GSO_MAX_VIEWS}-view MegaPose-GSO anchor-pair smoke (${GSO_MAX_IMAGES} images/rank, budget ${GSO_TRAIN_BUDGET})."
     accelerate launch --config_file configs/accelerate/ddp.yaml \
       --num_processes "$NUM_GPUS" --num_machines 1 \
       scripts/train_pi3.py \
       "${COMMON_OVERRIDES[@]}" \
-      'train.image_num_range=[26,26]' \
-      train.max_img_per_gpu=28 \
-      'gso_profile.num_reference_range=[16,16]' \
-      'gso_profile.num_query_range=[10,10]' \
+      "train.image_num_range=[$GSO_MAX_VIEWS,$GSO_MAX_VIEWS]" \
+      train.max_img_per_gpu="$GSO_TRAIN_BUDGET" \
+      "gso_profile.num_reference_range=[$GSO_MAX_REFS,$GSO_MAX_REFS]" \
+      "gso_profile.num_query_range=[$GSO_MAX_QUERIES,$GSO_MAX_QUERIES]" \
       train.num_epoch=1 \
       train.iters_per_epoch="$SMOKE_ITERS" \
-      val_datasets.gso_val.runtime.iters_per_test=1 \
-      val_datasets.gso_val.runtime.max_img_per_gpu=6 \
+      "${GSO_VAL_SMOKE_OVERRIDES[@]}" \
       metrics.enabled=false \
       visuals.enabled=false \
       log.use_tensorboard=false \
@@ -306,25 +374,29 @@ if [[ "$RUN_MODE" == "smoke" ]]; then
       log.save_checkpoints=false \
       extras.print_config=false
 
-    echo "Running ${SMOKE_ITERS}-step packed-min 9 x 3-view MegaPose-GSO anchor-pair smoke."
-    accelerate launch --config_file configs/accelerate/ddp.yaml \
-      --num_processes "$NUM_GPUS" --num_machines 1 \
-      scripts/train_pi3.py \
-      "${COMMON_OVERRIDES[@]}" \
-      'train.image_num_range=[3,3]' \
-      train.max_img_per_gpu=28 \
-      'gso_profile.num_reference_range=[2,2]' \
-      'gso_profile.num_query_range=[1,1]' \
-      train.num_epoch=1 \
-      train.iters_per_epoch="$SMOKE_ITERS" \
-      val_datasets.gso_val.runtime.iters_per_test=1 \
-      val_datasets.gso_val.runtime.max_img_per_gpu=6 \
-      metrics.enabled=false \
-      visuals.enabled=false \
-      log.use_tensorboard=false \
-      log.save_best=false \
-      log.save_checkpoints=false \
-      extras.print_config=false
+    if (( GSO_MIN_VIEWS != GSO_MAX_VIEWS )); then
+      GSO_MIN_SAMPLE_BATCH=$((GSO_TRAIN_BUDGET / GSO_MIN_VIEWS))
+      (( GSO_MIN_SAMPLE_BATCH > 0 )) || GSO_MIN_SAMPLE_BATCH=1
+      GSO_MIN_IMAGES=$((GSO_MIN_SAMPLE_BATCH * GSO_MIN_VIEWS))
+      echo "Running ${SMOKE_ITERS}-step packed-min ${GSO_MIN_SAMPLE_BATCH} x ${GSO_MIN_VIEWS}-view MegaPose-GSO anchor-pair smoke (${GSO_MIN_IMAGES} images/rank, budget ${GSO_TRAIN_BUDGET})."
+      accelerate launch --config_file configs/accelerate/ddp.yaml \
+        --num_processes "$NUM_GPUS" --num_machines 1 \
+        scripts/train_pi3.py \
+        "${COMMON_OVERRIDES[@]}" \
+        "train.image_num_range=[$GSO_MIN_VIEWS,$GSO_MIN_VIEWS]" \
+        train.max_img_per_gpu="$GSO_TRAIN_BUDGET" \
+        "gso_profile.num_reference_range=[$GSO_MIN_REFS,$GSO_MIN_REFS]" \
+        "gso_profile.num_query_range=[$GSO_MIN_QUERIES,$GSO_MIN_QUERIES]" \
+        train.num_epoch=1 \
+        train.iters_per_epoch="$SMOKE_ITERS" \
+        "${GSO_VAL_SMOKE_OVERRIDES[@]}" \
+        metrics.enabled=false \
+        visuals.enabled=false \
+        log.use_tensorboard=false \
+        log.save_best=false \
+        log.save_checkpoints=false \
+        extras.print_config=false
+    fi
   elif [[ "$DATA_CONFIG" == *"anchor_scene_pairs"* ]] || [[ "$TRAIN_CONFIG" == *"anchor_mask_conditioning"* ]]; then
     echo "Running ${SMOKE_ITERS}-step max-view 26-view anchor-mask-conditioning smoke."
     accelerate launch --config_file configs/accelerate/ddp.yaml \
@@ -536,7 +608,7 @@ if [[ "$RUN_MODE" == "smoke" ]]; then
       extras.print_config=false
   fi
 elif [[ "$RUN_MODE" == "train" ]]; then
-  echo "Running production fixed 560x420 training on $NUM_GPUS GPU(s)."
+  echo "Running production training with $TRAIN_CONFIG and $DATA_CONFIG on $NUM_GPUS GPU(s)."
   accelerate launch --config_file configs/accelerate/ddp.yaml \
     --num_processes "$NUM_GPUS" --num_machines 1 \
     scripts/train_pi3.py \

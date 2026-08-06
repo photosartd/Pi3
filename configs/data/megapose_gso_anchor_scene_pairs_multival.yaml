@@ -1,0 +1,88 @@
+# @package _global_
+
+# Production anchor-pair validation sweep matching the useful LMGeo context
+# ablations. All four protocols use held-out objects AND held-out scenes. Their
+# references come from one physical track and queries from a second scene track;
+# neither frames nor tracks fall back to independent-scene sampling.
+defaults:
+  - megapose_gso_anchor_scene_pairs
+  - _self_
+
+_gso_multival_eval_base: &gso_multival_eval_base
+  _target_: datasets.megapose_gso_dataset.MegaPoseGSOObjectDataset
+  data_root: ${gso.data_root}
+  index_path: ${gso.index_path}
+  split_path: ${gso.split_path}
+  object_ids: ${gso.object_ids}
+  sampling_regime: ${gso.eval_sampling_regime}
+  visibility_min: ${gso.visibility_min}
+  min_visible_pixels: ${gso.min_visible_pixels}
+  depth_corruption_policy: ${gso.depth_corruption_policy}
+  reference_selection: uniform
+  query_selection: first
+  allow_repeat: false
+  reference_rgb_masking: ${gso.reference_rgb_masking}
+  query_rgb_masking: ${gso.query_rgb_masking}
+  depth_masking: ${gso.depth_masking}
+  mask_type: ${gso.mask_type}
+  visibility_mask_conditioning: ${gso.visibility_mask_conditioning}
+  condition_reference_visibility: ${gso.condition_reference_visibility}
+  condition_query_visibility: ${gso.condition_query_visibility}
+  visibility_condition_corruption: none
+  aug_crop: false
+  aug_focal: false
+  z_far: 0
+  max_refetch: ${gso_profile.max_refetch}
+  resolution: ${train.resolution}
+  transform:
+    _partial_: true
+    _target_: datasets.base.transforms.ImgToTensor
+  shuffle: false
+  scene_split: val
+  mode: val
+
+_gso_multival_dataloader: &gso_multival_dataloader
+  drop_last: false
+  shuffle: false
+
+val_datasets:
+  # gso_val (N=5, K=1) is inherited from the single-validation production
+  # profile and remains the primary/best-checkpoint validation loader.
+  gso_val_ref16:
+    dataset:
+      <<: *gso_multival_eval_base
+      num_reference_range: [16, 16]
+      num_query_range: [1, 1]
+    dataloader: *gso_multival_dataloader
+    runtime:
+      image_num_range: [17, 17]
+      max_img_per_gpu: ${test.max_img_per_gpu_ref16}
+      iters_per_test: ${test.iters_per_test}
+      num_workers: ${test.num_workers}
+      print_freq: ${test.print_freq}
+  gso_val_k5:
+    dataset:
+      <<: *gso_multival_eval_base
+      num_reference_range: [5, 5]
+      num_query_range: [5, 5]
+      query_selection: uniform
+    dataloader: *gso_multival_dataloader
+    runtime:
+      image_num_range: [10, 10]
+      max_img_per_gpu: ${test.max_img_per_gpu_k5}
+      iters_per_test: ${test.iters_per_test}
+      num_workers: ${test.num_workers}
+      print_freq: ${test.print_freq}
+  gso_val_k10:
+    dataset:
+      <<: *gso_multival_eval_base
+      num_reference_range: [5, 5]
+      num_query_range: [10, 10]
+      query_selection: uniform
+    dataloader: *gso_multival_dataloader
+    runtime:
+      image_num_range: [15, 15]
+      max_img_per_gpu: ${test.max_img_per_gpu_k10}
+      iters_per_test: ${test.iters_per_test}
+      num_workers: ${test.num_workers}
+      print_freq: ${test.print_freq}

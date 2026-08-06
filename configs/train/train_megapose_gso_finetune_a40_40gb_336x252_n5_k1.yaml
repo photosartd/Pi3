@@ -1,0 +1,30 @@
+# @package _global_
+
+# Low-resource MegaPose-GSO diagnostic: fixed five anchor views and one query
+# view. The 72-image per-rank budget packs 12 independent N=5/K=1 samples and
+# retains margin below the measured 78-image/40-GiB workstation capacity edge.
+defaults:
+  - train_megapose_gso_finetune_a40_46gb
+  - _self_
+
+gso_profile:
+  num_reference_range: [5, 5]
+  num_query_range: [1, 1]
+  max_refetch: 50
+
+train:
+  image_num_range: [6, 6]
+  max_img_per_gpu: 72
+  resolution:
+    - [336, 252]
+  random_reslution: false
+  num_workers: 0
+
+test:
+  image_num_range: [6, 6]
+  max_img_per_gpu: 256
+  num_workers: 2
+  # There is one validation loader, but shutting workers down after validation
+  # still avoids retaining prefetched 256-image batches between epochs.
+  persistent_workers: false
+  prefetch_factor: 2

@@ -20,6 +20,7 @@ RESUME_PATH="${PI3_RESUME:-}"
 CKPT_INTERVAL="${PI3_CKPT_INTERVAL:-1}"
 MAX_CHECKPOINTS="${PI3_MAX_CHECKPOINTS:-5}"
 DATA_CONFIG_HINT="${PI3_DATA_CONFIG:-lmgeo_trainpbr45_real_and_new_val}"
+TRAIN_CONFIG_HINT="${PI3_TRAIN_CONFIG:-train_lmgeo_finetune_a40_46gb}"
 if [[ "$DATA_CONFIG_HINT" == megapose_gso_* ]]; then
   DEFAULT_JOB_PREFIX="pi3-gso-a40"
 else
@@ -137,19 +138,36 @@ case "$MODE" in
     EXPECT_GPUS=1
     ;;
   smoke)
+    if [[ "$DATA_CONFIG_HINT" == megapose_gso_* && "$TRAIN_CONFIG_HINT" == *"336x252"* ]]; then
+      DEFAULT_SMOKE_GPUS=2
+      DEFAULT_SMOKE_MEM="80G"
+    else
+      DEFAULT_SMOKE_GPUS=1
+      DEFAULT_SMOKE_MEM="160G"
+    fi
+    SMOKE_GPUS="${PI3_SMOKE_GPUS:-$DEFAULT_SMOKE_GPUS}"
+    if ! [[ "$SMOKE_GPUS" =~ ^[1-4]$ ]]; then
+      echo "ERROR: PI3_SMOKE_GPUS must be an integer from 1 to 4, got: $SMOKE_GPUS" >&2
+      exit 2
+    fi
     SBATCH_OPTS=(
       --job-name="$JOB_PREFIX-smoke"
-      --gres=gpu:a40:1
-      --cpus-per-task=8
-      --mem=160G
+      --gres=gpu:a40:"$SMOKE_GPUS"
+      --cpus-per-task="${PI3_SMOKE_CPUS:-$((SMOKE_GPUS * 8))}"
+      --mem="${PI3_SMOKE_MEM:-$DEFAULT_SMOKE_MEM}"
       --tmp=50G
       --time=02:00:00
     )
-    EXPECT_GPUS=1
+    EXPECT_GPUS="$SMOKE_GPUS"
     ;;
   train)
     TRAIN_CPUS="${PI3_TRAIN_CPUS:-$((TRAIN_GPUS * 8))}"
-    TRAIN_MEM="${PI3_TRAIN_MEM:-$((TRAIN_GPUS * 100))G}"
+    if [[ "$DATA_CONFIG_HINT" == megapose_gso_* && "$TRAIN_CONFIG_HINT" == *"336x252"* ]]; then
+      DEFAULT_TRAIN_MEM="110G"
+    else
+      DEFAULT_TRAIN_MEM="$((TRAIN_GPUS * 100))G"
+    fi
+    TRAIN_MEM="${PI3_TRAIN_MEM:-$DEFAULT_TRAIN_MEM}"
     TRAIN_TMP="${PI3_TRAIN_TMP:-$((TRAIN_GPUS * 25))G}"
     SBATCH_OPTS=(
       --job-name="$JOB_PREFIX-train"

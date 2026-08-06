@@ -1,0 +1,35 @@
+# @package _global_
+
+# Low-resolution MegaPose-GSO production sweep. It preserves the established
+# A40 logical regime (2-16 anchors, 1-10 queries, 3-26 total views) while the
+# 72-image packing budget exploits the smaller 336x252 token grid safely.
+defaults:
+  - train_megapose_gso_finetune_a40_46gb
+  - _self_
+
+gso_profile:
+  num_reference_range: [2, 16]
+  num_query_range: [1, 10]
+  max_refetch: 50
+
+train:
+  image_num_range: [3, 26]
+  max_img_per_gpu: 72
+  resolution:
+    - [336, 252]
+  random_reslution: false
+  num_workers: 0
+
+test:
+  # Each budget realizes about 250 actual images/rank: 42x6, 15x17,
+  # 25x10, and 17x15. Validation is no-grad but still requires an A40 smoke.
+  image_num_range: [6, 6]
+  max_img_per_gpu: 256
+  max_img_per_gpu_ref16: 256
+  max_img_per_gpu_k5: 256
+  max_img_per_gpu_k10: 256
+  num_workers: 2
+  # Four named validation loaders would otherwise retain 8 workers/rank and
+  # their prefetched batches simultaneously after the first validation epoch.
+  persistent_workers: false
+  prefetch_factor: 2
