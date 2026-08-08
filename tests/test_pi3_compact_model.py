@@ -1,5 +1,7 @@
 import unittest
 
+import torch
+
 from pi3.models.pi3_training import Pi3
 
 
@@ -34,6 +36,17 @@ def compact_model(**overrides):
 
 
 class Pi3CompactModelTest(unittest.TestCase):
+    def test_unknown_visibility_condition_gates_arbitrary_projection_bias(self):
+        tokens = torch.full((2, 6, 4), 3.0)
+        known = torch.stack(
+            [torch.zeros(8, 8), torch.ones(8, 8)], dim=0
+        )
+        gated, presence = Pi3._gate_visibility_mask_tokens(tokens, known)
+
+        self.assertEqual(float(gated[0].abs().sum()), 0.0)
+        torch.testing.assert_close(gated[1], tokens[1])
+        self.assertEqual(presence[:, 0, 0].tolist(), [0.0, 1.0])
+
     def test_compact_visibility_mask_model_instantiates_from_scratch(self):
         model = compact_model(use_visibility_mask_conditioning=True)
 

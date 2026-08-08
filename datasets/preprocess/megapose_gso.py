@@ -34,6 +34,13 @@ DEFAULT_VALIDATION_OBJECT_FRACTION = 0.2
 DEFAULT_VALIDATION_SCENE_FRACTION = 0.2
 EXPECTED_VIEWS_PER_SCENE = 40
 MM_TO_M = 0.001
+DEFAULT_SAMPLING_VISIBILITY_MIN = 0.1
+DEFAULT_SAMPLING_MIN_VISIBLE_PIXELS = 64
+SAMPLING_PROFILE_SPECS = (
+    ("default_clean_only", "clean_only"),
+    ("default_exclude_known_bad", "exclude_known_bad"),
+    ("default_all", "all"),
+)
 
 SHARD_RE = re.compile(r"^shard-(\d+)\.tar$")
 FRAME_RE = re.compile(r"^(\d{6})_(\d{6})$")
@@ -160,6 +167,23 @@ CREATE TABLE IF NOT EXISTS scene_tracks (
     mean_visib_fract REAL NOT NULL,
     max_visib_fract REAL NOT NULL,
     PRIMARY KEY(scene_id, gt_id)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS sampling_profiles (
+    profile_id TEXT PRIMARY KEY,
+    visibility_min REAL NOT NULL,
+    min_visible_pixels INTEGER NOT NULL,
+    depth_corruption_policy TEXT NOT NULL
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS track_sampling_profiles (
+    profile_id TEXT NOT NULL REFERENCES sampling_profiles(profile_id)
+        ON DELETE CASCADE,
+    scene_id INTEGER NOT NULL,
+    gt_id INTEGER NOT NULL,
+    object_id INTEGER NOT NULL,
+    view_count INTEGER NOT NULL,
+    PRIMARY KEY(profile_id, scene_id, gt_id)
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS scenes (
@@ -567,7 +591,6 @@ def _rebuild_summaries(connection: sqlite3.Connection) -> None:
             "A stable (scene_id, gt_id) track maps to multiple object IDs: "
             f"scene={conflict[0]}, gt_id={conflict[1]}"
         )
-
     with connection:
         connection.execute("DELETE FROM scene_tracks")
         connection.execute("DELETE FROM scenes")
@@ -618,6 +641,97 @@ def _rebuild_summaries(connection: sqlite3.Connection) -> None:
                  WHERE st.object_id = i.object_id)
             FROM instances AS i GROUP BY i.object_id
             """
+        )
+
+
+def _sampling_profiles_current(connection: sqlite3.Connection) -> bool:
+    rows = connection.execute(
+        """
+        SELECT profile_id, visibility_min, min_visible_pixels,
+               depth_corruption_policy
+        FROM sampling_profiles ORDER BY profile_id
+        """
+    ).fetchall()
+    expected = sorted(
+        (
+            profile_id,
+            DEFAULT_SAMPLING_VISIBILITY_MIN,
+            DEFAULT_SAMPLING_MIN_VISIBLE_PIXELS,
+            depth_policy,
+        )
+        for profile_id, depth_policy in SAMPLING_PROFILE_SPECS
+    )
+    if rows != expected:
+        return False
+    # Every profile must have at least one row on a non-empty index. A profile
+    # build is atomic, so this also detects an interrupted upgrade.
+    instance_count = int(
+        connection.execute("SELECT COUNT(*) FROM instances").fetchone()[0]
+    )
+    if instance_count == 0:
+        return True
+    counts = dict(
+        connection.execute(
+            """
+            SELECT profile_id, COUNT(*)
+            FROM track_sampling_profiles GROUP BY profile_id
+            """
+        )
+    )
+    return all(
+        int(counts.get(profile_id, 0)) > 0
+        for profile_id, _ in SAMPLING_PROFILE_SPECS
+    )
+
+
+def _rebuild_sampling_profiles(connection: sqlite3.Connection) -> None:
+    """Materialize the standard eligibility filter in one instance-table scan."""
+
+    visibility = DEFAULT_SAMPLING_VISIBILITY_MIN
+    pixels = DEFAULT_SAMPLING_MIN_VISIBLE_PIXELS
+    with connection:
+        connection.execute("DELETE FROM track_sampling_profiles")
+        connection.execute("DELETE FROM sampling_profiles")
+        connection.executemany(
+            "INSERT INTO sampling_profiles VALUES (?, ?, ?, ?)",
+            (
+                (profile_id, visibility, pixels, depth_policy)
+                for profile_id, depth_policy in SAMPLING_PROFILE_SPECS
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO track_sampling_profiles(
+                profile_id, scene_id, gt_id, object_id, view_count
+            )
+            WITH track_counts AS (
+                SELECT
+                    scene_id, gt_id, MIN(object_id) AS object_id,
+                    SUM(visib_fract >= :visibility AND px_count_visib >= :pixels
+                        AND depth_corrupt = 0) AS clean_count,
+                    SUM(visib_fract >= :visibility AND px_count_visib >= :pixels
+                        AND depth_corrupt IS NOT 1) AS exclude_bad_count,
+                    SUM(visib_fract >= :visibility AND px_count_visib >= :pixels)
+                        AS all_count
+                FROM instances GROUP BY scene_id, gt_id
+            ), expanded(profile_id, scene_id, gt_id, object_id, view_count) AS (
+                SELECT 'default_clean_only', scene_id, gt_id, object_id, clean_count
+                FROM track_counts WHERE clean_count > 0
+                UNION ALL
+                SELECT 'default_exclude_known_bad', scene_id, gt_id, object_id,
+                       exclude_bad_count
+                FROM track_counts WHERE exclude_bad_count > 0
+                UNION ALL
+                SELECT 'default_all', scene_id, gt_id, object_id, all_count
+                FROM track_counts WHERE all_count > 0
+            )
+            SELECT profile_id, scene_id, gt_id, object_id, view_count FROM expanded
+            """,
+            {"visibility": visibility, "pixels": pixels},
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)",
+            ("sampling_profiles_complete", "1"),
         )
 
 
@@ -878,6 +992,9 @@ def preprocess_dataset(
             "SELECT value FROM metadata WHERE key = 'index_complete'"
         ).fetchone()
         needs_finalize = bool(stale or removed or complete_row != ("1",))
+        needs_sampling_profiles = (
+            needs_finalize or not _sampling_profiles_current(connection)
+        )
 
         if needs_finalize:
             with connection:
@@ -917,12 +1034,19 @@ def preprocess_dataset(
         if needs_finalize:
             print("building aggregate scene/object/track tables and query indexes", flush=True)
             _rebuild_summaries(connection)
+            _rebuild_sampling_profiles(connection)
             _create_secondary_indexes(connection)
             with connection:
                 connection.execute(
                     "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)",
                     ("index_complete", "1"),
                 )
+        elif needs_sampling_profiles:
+            print(
+                "building materialized track sampling profiles (no shard reread)",
+                flush=True,
+            )
+            _rebuild_sampling_profiles(connection)
         else:
             print("all discovered shards and manifests are unchanged", flush=True)
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")

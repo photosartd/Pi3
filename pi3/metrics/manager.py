@@ -107,6 +107,9 @@ class MetricManager:
             if not batch_supports_capabilities(batch, required):
                 counts["skipped"] += 1
                 continue
+            if not metric.supports_batch(batch):
+                counts["skipped"] += 1
+                continue
             counts["eligible"] += 1
             start = time.perf_counter()
             metric.update(prediction, batch, loss_output, mode=mode)

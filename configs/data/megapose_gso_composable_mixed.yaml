@@ -1,0 +1,274 @@
+# @package _global_
+
+# Reusable object-centric MegaPose-GSO protocol family. Set any train mixture
+# weight to zero to disable that component without instantiating its sources.
+# Every optimizer batch remains protocol-homogeneous.
+primary_val: gso_val_render_to_scene_coverage
+
+gso:
+  data_root: ${oc.env:PI3_GSO_DATA_ROOT,/media/internal/nvme/dtrofimov/datasets/MegaPose-GSO-fixed}
+  assets_root: ${oc.env:PI3_GSO_ASSETS_ROOT,/media/internal/nvme/dtrofimov/datasets/MegaPose-GSO-assets}
+  references_root: ${oc.env:PI3_GSO_REFERENCES_ROOT,/media/internal/nvme/dtrofimov/datasets/MegaPose-GSO-assets/renders}
+  index_path: null
+  split_path: null
+  references_index_path: null
+  object_ids: all
+  visibility_min: 0.1
+  min_visible_pixels: 64
+  depth_corruption_policy: clean_only
+  mask_type: mask_visib
+  models_folder: models_eval
+
+_gso_scene_train: &gso_scene_train
+  _target_: datasets.object_sources.MegaPoseGSOSceneSource
+  data_root: ${gso.data_root}
+  index_path: ${gso.index_path}
+  split_path: ${gso.split_path}
+  source_name: scene
+  object_namespace: gso
+  object_ids: ${gso.object_ids}
+  scene_split: train
+  visibility_min: ${gso.visibility_min}
+  min_visible_pixels: ${gso.min_visible_pixels}
+  depth_corruption_policy: ${gso.depth_corruption_policy}
+  mask_type: ${gso.mask_type}
+
+_gso_scene_val: &gso_scene_val
+  <<: *gso_scene_train
+  scene_split: val
+
+_gso_render_source: &gso_render_source
+  _target_: datasets.object_sources.IndexedBOPReferenceSource
+  bank_root: ${gso.references_root}
+  index_path: ${gso.references_index_path}
+  source_name: render
+  object_namespace: gso
+  object_ids: ${gso.object_ids}
+  mask_type: ${gso.mask_type}
+
+_gso_model_catalog: &gso_model_catalog
+  _target_: datasets.object_sources.BOPObjectModelCatalog
+  data_root: ${gso.assets_root}
+  models_folder: ${gso.models_folder}
+  object_namespace: gso
+
+_full_rgb_object_depth_conditioned: &full_rgb_object_depth_conditioned
+  rgb: full
+  depth: object_only
+  mask_condition: object
+
+_full_rgb_object_depth_unconditioned: &full_rgb_object_depth_unconditioned
+  rgb: full
+  depth: object_only
+  mask_condition: none
+
+_masked_rgb_object_depth_unconditioned: &masked_rgb_object_depth_unconditioned
+  rgb: object_only
+  depth: object_only
+  mask_condition: none
+
+_composable_dataset_base: &composable_dataset_base
+  _target_: datasets.object_pose_dataset.ComposableObjectPoseDataset
+  dataset_domain: MegaPoseGSO
+  object_model_catalog: *gso_model_catalog
+  aug_crop: false
+  aug_focal: false
+  z_far: 0
+  max_refetch: ${gso_profile.max_refetch}
+  transform:
+    _partial_: true
+    _target_: datasets.base.transforms.ImgToTensor
+  shuffle: false
+
+train_dataset:
+  length: auto
+  weights:
+    GSOScenePairBothConditioned: 4
+    GSOScenePairRGBMasked: 1
+    GSORenderToScene: 4
+    GSOHybridReferences: 2
+
+  GSOScenePairBothConditioned:
+    <<: *composable_dataset_base
+    protocol_name: scene_pair_both_conditioned
+    sources:
+      scene: *gso_scene_train
+    sampling_policy:
+      _target_: datasets.object_sampling.ScenePairPolicy
+      scene_source: scene
+      require_different_scene: true
+      num_reference_range: ${gso_profile.num_reference_range}
+      num_query_range: ${gso_profile.num_query_range}
+      reference_selection: random
+      query_selection: random
+      allow_repeat: false
+    reference_treatment: *full_rgb_object_depth_conditioned
+    query_treatment: *full_rgb_object_depth_conditioned
+    mode: train
+
+  GSOScenePairRGBMasked:
+    <<: *composable_dataset_base
+    protocol_name: scene_pair_rgb_masked
+    sources:
+      scene: *gso_scene_train
+    sampling_policy:
+      _target_: datasets.object_sampling.ScenePairPolicy
+      scene_source: scene
+      require_different_scene: true
+      num_reference_range: ${gso_profile.num_reference_range}
+      num_query_range: ${gso_profile.num_query_range}
+      reference_selection: random
+      query_selection: random
+      allow_repeat: false
+    reference_treatment: *masked_rgb_object_depth_unconditioned
+    query_treatment: *masked_rgb_object_depth_unconditioned
+    mode: train
+
+  GSORenderToScene:
+    <<: *composable_dataset_base
+    protocol_name: render_to_scene_both_conditioned
+    sources:
+      render: *gso_render_source
+      scene: *gso_scene_train
+    sampling_policy:
+      _target_: datasets.object_sampling.RenderToScenePolicy
+      reference_source: render
+      query_source: scene
+      num_reference_range: ${gso_profile.num_reference_range}
+      num_query_range: ${gso_profile.num_query_range}
+      reference_selection: random
+      query_selection: random
+      allow_repeat: false
+    reference_treatment: *full_rgb_object_depth_conditioned
+    query_treatment: *full_rgb_object_depth_conditioned
+    mode: train
+
+  GSOHybridReferences:
+    <<: *composable_dataset_base
+    protocol_name: hybrid_render_scene_references
+    sources:
+      render: *gso_render_source
+      scene: *gso_scene_train
+    sampling_policy:
+      _target_: datasets.object_sampling.HybridReferencePolicy
+      render_source: render
+      scene_source: scene
+      num_render_reference_range: [1, 8]
+      num_scene_reference_range: [1, 8]
+      num_query_range: ${gso_profile.num_query_range}
+      render_selection: random
+      scene_selection: random
+      query_selection: random
+      allow_repeat: false
+      require_different_scene: true
+    reference_treatment: *full_rgb_object_depth_conditioned
+    query_treatment: *full_rgb_object_depth_conditioned
+    source_treatments:
+      render:
+        reference: *full_rgb_object_depth_unconditioned
+    mode: train
+
+train_dataloader:
+  drop_last: true
+  shuffle: true
+
+_gso_val_dataset_base: &gso_val_dataset_base
+  <<: *composable_dataset_base
+  reference_treatment: *full_rgb_object_depth_conditioned
+  query_treatment: *full_rgb_object_depth_conditioned
+  resolution: ${train.resolution}
+  mode: val
+
+_gso_val_scene_pair: &gso_val_scene_pair
+  <<: *gso_val_dataset_base
+  protocol_name: val_scene_pair
+  sources:
+    scene: *gso_scene_val
+  sampling_policy:
+    _target_: datasets.object_sampling.ScenePairPolicy
+    scene_source: scene
+    require_different_scene: true
+    num_reference_range: [5, 5]
+    num_query_range: [1, 1]
+    reference_selection: uniform
+    query_selection: first
+    allow_repeat: false
+
+_gso_val_render_coverage: &gso_val_render_coverage
+  <<: *gso_val_dataset_base
+  protocol_name: val_render_to_scene_coverage
+  sources:
+    render: *gso_render_source
+    scene: *gso_scene_val
+  sampling_policy:
+    _target_: datasets.object_sampling.RenderToScenePolicy
+    reference_source: render
+    query_source: scene
+    num_reference_range: [5, 5]
+    num_query_range: [1, 1]
+    reference_selection: coverage_uniform
+    query_selection: first
+    allow_repeat: false
+
+_gso_val_dataloader: &gso_val_dataloader
+  drop_last: false
+  shuffle: false
+
+_gso_val_runtime: &gso_val_runtime
+  image_num_range: [6, 6]
+  max_img_per_gpu: ${test.max_img_per_gpu}
+  iters_per_test: ${test.iters_per_test}
+  num_workers: ${test.num_workers}
+  print_freq: ${test.print_freq}
+
+test_dataset: *gso_val_render_coverage
+test_dataloader: *gso_val_dataloader
+
+val_datasets:
+  gso_val_render_to_scene_coverage:
+    dataset: *gso_val_render_coverage
+    dataloader: *gso_val_dataloader
+    runtime: *gso_val_runtime
+  gso_val_scene_pair:
+    dataset: *gso_val_scene_pair
+    dataloader: *gso_val_dataloader
+    runtime: *gso_val_runtime
+  gso_val_render_to_scene_contiguous:
+    dataset:
+      <<: *gso_val_render_coverage
+      protocol_name: val_render_to_scene_contiguous
+      sampling_policy:
+        _target_: datasets.object_sampling.RenderToScenePolicy
+        reference_source: render
+        query_source: scene
+        num_reference_range: [5, 5]
+        num_query_range: [1, 1]
+        reference_selection: first
+        query_selection: first
+        allow_repeat: false
+    dataloader: *gso_val_dataloader
+    runtime: *gso_val_runtime
+  gso_val_hybrid:
+    dataset:
+      <<: *gso_val_dataset_base
+      protocol_name: val_hybrid_references
+      sources:
+        render: *gso_render_source
+        scene: *gso_scene_val
+      sampling_policy:
+        _target_: datasets.object_sampling.HybridReferencePolicy
+        render_source: render
+        scene_source: scene
+        num_render_reference_range: [2, 2]
+        num_scene_reference_range: [3, 3]
+        num_query_range: [1, 1]
+        render_selection: coverage_uniform
+        scene_selection: uniform
+        query_selection: first
+        allow_repeat: false
+        require_different_scene: true
+      source_treatments:
+        render:
+          reference: *full_rgb_object_depth_unconditioned
+    dataloader: *gso_val_dataloader
+    runtime: *gso_val_runtime

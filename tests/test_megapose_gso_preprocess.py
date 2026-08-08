@@ -128,6 +128,25 @@ class MegaPoseGsoPreprocessTest(unittest.TestCase):
         self.assertEqual([(row["scene_id"], row["gt_id"]) for row in tracks], [(7, 0), (7, 1), (8, 0)])
         self.assertEqual(tracks[0]["frame_count"], 2)
         self.assertEqual(tracks[1]["clean_visible_frame_count"], 1)
+        profiles = db.execute(
+            """
+            SELECT profile_id, scene_id, gt_id, view_count
+            FROM track_sampling_profiles
+            ORDER BY profile_id, scene_id, gt_id
+            """
+        ).fetchall()
+        clean = [
+            (row["scene_id"], row["gt_id"], row["view_count"])
+            for row in profiles
+            if row["profile_id"] == "default_clean_only"
+        ]
+        all_depth = [
+            (row["scene_id"], row["gt_id"], row["view_count"])
+            for row in profiles
+            if row["profile_id"] == "default_all"
+        ]
+        self.assertEqual(clean, [(7, 0, 2), (7, 1, 1), (8, 0, 1)])
+        self.assertEqual(all_depth, [(7, 0, 2), (7, 1, 2), (8, 0, 1)])
 
         row = db.execute(
             """
@@ -146,6 +165,31 @@ class MegaPoseGsoPreprocessTest(unittest.TestCase):
             stream.seek(row["rgb_offset"])
             self.assertEqual(stream.read(row["rgb_size"]), b"jpeg-000007_000000")
         db.close()
+
+    def test_missing_sampling_profiles_upgrade_without_rereading_shards(self):
+        _write_shard(self.root, 0, [("000001_000000", [9])], {})
+        first = megapose.preprocess_dataset(self.root)
+        index_path = Path(first["index_path"])
+        with sqlite3.connect(index_path) as db:
+            db.execute("DELETE FROM track_sampling_profiles")
+            db.execute("DELETE FROM sampling_profiles")
+            db.execute(
+                "DELETE FROM metadata WHERE key='sampling_profiles_complete'"
+            )
+        upgraded = megapose.preprocess_dataset(self.root)
+        self.assertEqual(upgraded["processed_shard_numbers_this_run"], [])
+        self.assertEqual(upgraded["skipped_unchanged_shard_numbers_this_run"], [0])
+        with sqlite3.connect(index_path) as db:
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM sampling_profiles").fetchone()[0],
+                3,
+            )
+            self.assertGreater(
+                db.execute(
+                    "SELECT COUNT(*) FROM track_sampling_profiles"
+                ).fetchone()[0],
+                0,
+            )
 
     def test_resume_skips_unchanged_and_indexes_new_shards(self):
         _write_shard(self.root, 0, [("000001_000000", [9])], {})

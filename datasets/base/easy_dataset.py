@@ -26,6 +26,10 @@ class EasyDataset:
     def set_epoch(self, epoch, base_seed=None):
         pass  # nothing to do by default
 
+    @property
+    def requires_visibility_mask_conditioning(self):
+        return False
+
     def supported_frame_counts(self, image_num_range):
         """Return model-view counts accepted by this dataset.
 
@@ -62,18 +66,18 @@ class MulDataset (EasyDataset):
 
     def __getitem__(self, idx):
         if isinstance(idx, tuple):
-            if len(idx) == 2:
-                idx, other = idx
-                return self.dataset[idx // self.multiplicator, other]
-            elif len(idx) == 3:
-                idx, other1, other2 = idx
-                return self.dataset[idx // self.multiplicator, other1, other2]
+            idx, *other = idx
+            return self.dataset[(idx // self.multiplicator, *other)]
         else:
             return self.dataset[idx // self.multiplicator]
 
     @property
     def _resolutions(self):
         return self.dataset._resolutions
+
+    @property
+    def requires_visibility_mask_conditioning(self):
+        return bool(self.dataset.requires_visibility_mask_conditioning)
 
 
 class ResizedDataset (EasyDataset):
@@ -117,22 +121,23 @@ class ResizedDataset (EasyDataset):
         self._idxs_mapping = shuffled_idxs[:self.new_size]
 
         assert len(self._idxs_mapping) == self.new_size
+        self.dataset.set_epoch(epoch, base_seed)
 
     def __getitem__(self, idx):
         assert hasattr(self, '_idxs_mapping'), 'You need to call dataset.set_epoch() to use ResizedDataset.__getitem__()'
         if isinstance(idx, tuple):
-            if len(idx) == 2:
-                idx, other = idx
-                return self.dataset[self._idxs_mapping[idx], other]
-            elif len(idx) == 3:
-                idx, other1, other2 = idx
-                return self.dataset[self._idxs_mapping[idx], other1, other2]
+            idx, *other = idx
+            return self.dataset[(self._idxs_mapping[idx], *other)]
         else:
             return self.dataset[self._idxs_mapping[idx]]
 
     @property
     def _resolutions(self):
         return self.dataset._resolutions
+
+    @property
+    def requires_visibility_mask_conditioning(self):
+        return bool(self.dataset.requires_visibility_mask_conditioning)
 
 
 class CatDataset (EasyDataset):
@@ -159,12 +164,7 @@ class CatDataset (EasyDataset):
     def __getitem__(self, idx):
         other = None
         if isinstance(idx, tuple):
-            if len(idx) == 2:
-                idx, other = idx
-                other = [other]
-            elif len(idx) == 3:
-                idx, other1, other2 = idx
-                other = [other1, other2]
+            idx, *other = idx
 
         if not (0 <= idx < len(self)):
             raise IndexError()
@@ -184,3 +184,10 @@ class CatDataset (EasyDataset):
             # assert tuple(dataset._resolutions) == tuple(resolutions)
             assert (dataset._resolutions == resolutions).all()            # adapte to numpy list
         return resolutions
+
+    @property
+    def requires_visibility_mask_conditioning(self):
+        return any(
+            dataset.requires_visibility_mask_conditioning
+            for dataset in self.datasets
+        )

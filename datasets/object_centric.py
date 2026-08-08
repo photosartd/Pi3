@@ -31,12 +31,46 @@ class RawObjectView:
 
 
 @dataclass(frozen=True)
+class ViewTreatment:
+    """Orthogonal model-input and geometry treatment for one physical view.
+
+    The object mask remains available as supervision metadata in every mode.
+    These switches only control whether it is also used to alter RGB, restrict
+    depth/point supervision, or become a known model-side condition.
+    """
+
+    rgb: str = "full"
+    depth: str = "object_only"
+    mask_condition: str = "none"
+
+    def __post_init__(self):
+        if self.rgb not in {"full", "object_only"}:
+            raise ValueError("ViewTreatment.rgb must be 'full' or 'object_only'")
+        if self.depth not in {"full", "object_only"}:
+            raise ValueError(
+                "ViewTreatment.depth must be 'full' or 'object_only'"
+            )
+        if self.mask_condition not in {"none", "object", "object_if_repeated"}:
+            raise ValueError(
+                "ViewTreatment.mask_condition must be 'none', 'object', or "
+                "'object_if_repeated'"
+            )
+
+    @classmethod
+    def from_config(cls, value: "ViewTreatment | Mapping[str, Any] | None"):
+        if value is None or isinstance(value, cls):
+            return value
+        return cls(**dict(value))
+
+
+@dataclass(frozen=True)
 class PlannedObjectView:
     """One physical view requested by a key/query sampling policy."""
 
     record: Mapping[str, Any]
     view_role: str
-    rgb_masking: bool
+    rgb_masking: bool = False
+    treatment: ViewTreatment | None = None
     reference_source: str | None = None
     query_pair_index: int = -1
     model_view_cost: int = 1
@@ -52,6 +86,12 @@ class PlannedObjectView:
             raise ValueError("model_view_cost must be positive")
         if self.view_role == "reference" and int(self.model_view_cost) != 1:
             raise ValueError("A physical reference must cost exactly one model view")
+        if self.treatment is not None and not isinstance(
+            self.treatment, ViewTreatment
+        ):
+            object.__setattr__(
+                self, "treatment", ViewTreatment.from_config(self.treatment)
+            )
 
 
 @dataclass(frozen=True)
@@ -86,7 +126,9 @@ class SamplePlan:
 class KeyQuerySamplingPolicy:
     """Reusable record selection, count splitting, and plan construction."""
 
-    _STRATEGIES = frozenset({"first", "uniform", "random"})
+    _STRATEGIES = frozenset(
+        {"first", "uniform", "random", "contiguous", "coverage_uniform"}
+    )
 
     @classmethod
     def select_records(
@@ -121,8 +163,19 @@ class KeyQuerySamplingPolicy:
             repeats = int(np.ceil(count / len(records)))
             return (list(records) * repeats)[:count]
 
+        if strategy == "coverage_uniform":
+            if not all("coverage_view_id" in record for record in records):
+                raise ValueError(
+                    "coverage_uniform requires coverage_view_id on every record"
+                )
+            records = sorted(records, key=lambda record: int(record["coverage_view_id"]))
+            indices = np.linspace(0, len(records) - 1, count).astype(int)
+            return [records[int(index)] for index in indices]
         if strategy == "first":
             return list(records[:count])
+        if strategy == "contiguous":
+            start = int(rng.integers(0, len(records) - count + 1))
+            return list(records[start : start + count])
         if strategy == "random":
             indices = rng.choice(len(records), size=count, replace=False)
             return [records[int(index)] for index in np.sort(indices)]
@@ -178,16 +231,32 @@ class KeyQuerySamplingPolicy:
         metadata: Mapping[str, Any] | None = None,
         reference_updates: Sequence[Mapping[str, Any]] | None = None,
         query_updates: Sequence[Mapping[str, Any]] | None = None,
+        reference_treatments: Sequence[ViewTreatment | Mapping[str, Any] | None]
+        | None = None,
+        query_treatments: Sequence[ViewTreatment | Mapping[str, Any] | None]
+        | None = None,
     ) -> SamplePlan:
         reference_updates = reference_updates or [{} for _ in reference_records]
         query_updates = query_updates or [{} for _ in query_records]
+        reference_treatments = reference_treatments or [
+            None for _ in reference_records
+        ]
+        query_treatments = query_treatments or [None for _ in query_records]
         if len(reference_updates) != len(reference_records):
             raise ValueError("reference_updates must match reference_records")
         if len(query_updates) != len(query_records):
             raise ValueError("query_updates must match query_records")
+        if len(reference_treatments) != len(reference_records):
+            raise ValueError(
+                "reference_treatments must match reference_records"
+            )
+        if len(query_treatments) != len(query_records):
+            raise ValueError("query_treatments must match query_records")
 
         views = []
-        for record, updates in zip(reference_records, reference_updates):
+        for record, updates, treatment in zip(
+            reference_records, reference_updates, reference_treatments
+        ):
             views.append(
                 PlannedObjectView(
                     record=record,
@@ -195,10 +264,11 @@ class KeyQuerySamplingPolicy:
                     rgb_masking=bool(reference_rgb_masking),
                     reference_source=str(record.get("reference_source", "render")),
                     view_updates=updates,
+                    treatment=ViewTreatment.from_config(treatment),
                 )
             )
-        for query_index, (record, updates) in enumerate(
-            zip(query_records, query_updates)
+        for query_index, (record, updates, treatment) in enumerate(
+            zip(query_records, query_updates, query_treatments)
         ):
             views.append(
                 PlannedObjectView(
@@ -208,6 +278,7 @@ class KeyQuerySamplingPolicy:
                     query_pair_index=int(query_index),
                     model_view_cost=int(query_view_cost),
                     view_updates=updates,
+                    treatment=ViewTreatment.from_config(treatment),
                 )
             )
         return SamplePlan(tuple(views), dict(metadata or {}))
@@ -240,17 +311,25 @@ class ObjectMaskTransform(ObjectViewTransform):
     def apply(self, state, *, adapter, request, rng):
         mask = state["object_mask"]
         source = state["reference_source"]
-        force_rgb = adapter._force_rgb_object_masking(
-            view_role=request.view_role,
-            reference_source=source,
-        )
-        if adapter._should_depth_mask_view(
-            view_role=request.view_role,
-            reference_source=source,
-        ):
+        treatment = request.treatment
+        if treatment is None:
+            rgb_object_only = bool(request.rgb_masking) or bool(
+                adapter._force_rgb_object_masking(
+                    view_role=request.view_role,
+                    reference_source=source,
+                )
+            )
+            depth_object_only = adapter._should_depth_mask_view(
+                view_role=request.view_role,
+                reference_source=source,
+            )
+        else:
+            rgb_object_only = treatment.rgb == "object_only"
+            depth_object_only = treatment.depth == "object_only"
+        if depth_object_only:
             state["depthmap"] = state["depthmap"].copy()
             state["depthmap"][~mask] = 0.0
-        if request.rgb_masking or force_rgb:
+        if rgb_object_only:
             state["rgb"] = state["rgb"].copy()
             state["rgb"][~mask] = 0
 
@@ -324,9 +403,19 @@ class VisibilityConditionTransform(ObjectViewTransform):
 
     def apply(self, state, *, adapter, request, rng):
         object_mask = state["object_mask"]
-        known = adapter._should_condition_visibility_view(
-            view_role=request.view_role
-        )
+        if request.treatment is not None:
+            condition_mode = request.treatment.mask_condition
+            multiplicity = max(
+                int(state["record"].get("same_object_scene_track_count", 1)),
+                int(state["record"].get("same_object_frame_instance_count", 1)),
+            )
+            known = condition_mode == "object" or (
+                condition_mode == "object_if_repeated" and multiplicity > 1
+            )
+        else:
+            known = adapter._should_condition_visibility_view(
+                view_role=request.view_role
+            )
         condition = (
             object_mask.copy()
             if known
@@ -344,6 +433,7 @@ class VisibilityConditionTransform(ObjectViewTransform):
         state["visibility_mask_known"] = np.full_like(
             object_mask, 1.0 if known else 0.0, dtype=np.float32
         )
+        state["visibility_mask_condition_applied"] = bool(known)
 
 
 class ObjectViewProcessor:
@@ -515,6 +605,9 @@ class ObjectDatasetAdapter(BaseDataset, ABC):
             ),
             "visibility_mask_known": np.asarray(
                 state["visibility_mask_known"], dtype=np.float32
+            ),
+            "visibility_mask_condition_applied": bool(
+                state.get("visibility_mask_condition_applied", False)
             ),
             "dataset": str(getattr(self, "dataset_label", type(self).__name__)),
             "label": label,

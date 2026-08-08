@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from .base import BaseMetric
+from datasets.base.observation import batch_matches_metadata
 from .failure_modes import aggregate_failure_modes, append_prediction_rows
 from .utils import (
     BopModelCache,
@@ -45,6 +46,10 @@ class ObjectPoseMetric(BaseMetric):
         self,
         data_root: str,
         *,
+        metric_name: str | None = None,
+        object_model_namespaces: list[str] | tuple[str, ...] | None = None,
+        report_per_object: bool = True,
+        compute_adds_for_all: bool = True,
         models_folder: str = "models_eval",
         unit_scale: float = 0.001,
         symmetric_ids: list[int] | tuple[int, ...] = (10, 11),
@@ -63,6 +68,14 @@ class ObjectPoseMetric(BaseMetric):
         coarse_analysis: bool = False,
         hard_object_ids: list[int] | tuple[int, ...] | None = None,
     ):
+        self.name = str(metric_name or type(self).name)
+        self.object_model_namespaces = (
+            None
+            if object_model_namespaces is None
+            else tuple(str(value) for value in object_model_namespaces)
+        )
+        self.report_per_object = bool(report_per_object)
+        self.compute_adds_for_all = bool(compute_adds_for_all)
         self.model_cache = BopModelCache(
             data_root,
             models_folder=models_folder,
@@ -85,6 +98,13 @@ class ObjectPoseMetric(BaseMetric):
         self.hard_object_ids = [int(obj_id) for obj_id in (hard_object_ids or [])]
         self.context: dict[str, Any] = {}
         self.reset()
+
+    def supports_batch(self, batch: list[dict[str, Any]]) -> bool:
+        return batch_matches_metadata(
+            batch,
+            "object_model_namespace",
+            self.object_model_namespaces,
+        )
 
     def reset(self) -> None:
         self.add_d: list[float] = []
@@ -211,21 +231,29 @@ class ObjectPoseMetric(BaseMetric):
 
             for view_idx, T_pred, T_gt in zip(query_indices, pred_T_C_O_query, gt_T_C_O_query):
                 add = add_error(T_pred, T_gt, points)
-                adds = adds_error(
-                    T_pred,
-                    T_gt,
-                    points,
-                    device=self.device,
-                    chunk_size=self.nn_chunk_size,
-                )
-                used = adds if int(obj_id) in self.symmetric_ids else add
+                is_symmetric = int(obj_id) in self.symmetric_ids
+                if is_symmetric or self.compute_adds_for_all:
+                    adds = adds_error(
+                        T_pred,
+                        T_gt,
+                        points,
+                        device=self.device,
+                        chunk_size=self.nn_chunk_size,
+                    )
+                else:
+                    adds = float("nan")
+                used = adds if is_symmetric else add
                 self.add_d.append(finite_float(add / diameter))
-                self.adds_d.append(finite_float(adds / diameter))
+                if np.isfinite(adds):
+                    self.adds_d.append(finite_float(adds / diameter))
                 self.used_d.append(finite_float(used / diameter))
                 self.rot_deg.append(float(rotation_error_deg(T_pred[:3, :3], T_gt[:3, :3])))
                 self.trans_m.append(float(np.linalg.norm(T_pred[:3, 3] - T_gt[:3, 3])))
                 self.add_d_by_obj[int(obj_id)].append(self.add_d[-1])
-                self.adds_d_by_obj[int(obj_id)].append(self.adds_d[-1])
+                if np.isfinite(adds):
+                    self.adds_d_by_obj[int(obj_id)].append(
+                        finite_float(adds / diameter)
+                    )
                 self.used_d_by_obj[int(obj_id)].append(self.used_d[-1])
                 self.rot_deg_by_obj[int(obj_id)].append(self.rot_deg[-1])
                 self.trans_m_by_obj[int(obj_id)].append(self.trans_m[-1])
@@ -250,7 +278,6 @@ class ObjectPoseMetric(BaseMetric):
         output = {
             "query_count": float(self.num_predictions),
             "query_add_0_1d": recall_below(self.add_d, 0.1),
-            "query_adds_0_1d": recall_below(self.adds_d, 0.1),
             "query_add_s_0_1d": recall_below(self.used_d, 0.1),
             "query_used_0_5d": recall_below(self.used_d, 0.5),
             "query_used_1d": recall_below(self.used_d, 1.0),
@@ -266,13 +293,16 @@ class ObjectPoseMetric(BaseMetric):
             "alignment_scale_median": safe_median(self.scales),
             "alignment_underconstrained": float(self.num_underconstrained),
         }
+        if self.adds_d:
+            output["query_adds_0_1d"] = recall_below(self.adds_d, 0.1)
         if self.used_d_by_obj:
             output["query_add_0_1d_macro_obj"] = safe_mean(
                 [recall_below(values, 0.1) for values in self.add_d_by_obj.values()]
             )
-            output["query_adds_0_1d_macro_obj"] = safe_mean(
-                [recall_below(values, 0.1) for values in self.adds_d_by_obj.values()]
-            )
+            if self.adds_d_by_obj:
+                output["query_adds_0_1d_macro_obj"] = safe_mean(
+                    [recall_below(values, 0.1) for values in self.adds_d_by_obj.values()]
+                )
             output["query_add_s_0_1d_macro_obj"] = safe_mean(
                 [recall_below(values, 0.1) for values in self.used_d_by_obj.values()]
             )
@@ -285,15 +315,17 @@ class ObjectPoseMetric(BaseMetric):
             output["query_trans_median_m_macro_obj"] = safe_mean(
                 [safe_median(values) for values in self.trans_m_by_obj.values()]
             )
-            for obj_id in sorted(self.used_d_by_obj):
-                prefix = f"obj_{obj_id:06d}"
-                output[f"{prefix}_query_count"] = float(len(self.used_d_by_obj[obj_id]))
-                output[f"{prefix}_query_add_0_1d"] = recall_below(self.add_d_by_obj[obj_id], 0.1)
-                output[f"{prefix}_query_adds_0_1d"] = recall_below(self.adds_d_by_obj[obj_id], 0.1)
-                output[f"{prefix}_query_add_s_0_1d"] = recall_below(self.used_d_by_obj[obj_id], 0.1)
-                output[f"{prefix}_query_used_median_d"] = safe_median(self.used_d_by_obj[obj_id])
-                output[f"{prefix}_query_rot_median_deg"] = safe_median(self.rot_deg_by_obj[obj_id])
-                output[f"{prefix}_query_trans_median_m"] = safe_median(self.trans_m_by_obj[obj_id])
+            if getattr(self, "report_per_object", True):
+                for obj_id in sorted(self.used_d_by_obj):
+                    prefix = f"obj_{obj_id:06d}"
+                    output[f"{prefix}_query_count"] = float(len(self.used_d_by_obj[obj_id]))
+                    output[f"{prefix}_query_add_0_1d"] = recall_below(self.add_d_by_obj[obj_id], 0.1)
+                    if obj_id in self.adds_d_by_obj:
+                        output[f"{prefix}_query_adds_0_1d"] = recall_below(self.adds_d_by_obj[obj_id], 0.1)
+                    output[f"{prefix}_query_add_s_0_1d"] = recall_below(self.used_d_by_obj[obj_id], 0.1)
+                    output[f"{prefix}_query_used_median_d"] = safe_median(self.used_d_by_obj[obj_id])
+                    output[f"{prefix}_query_rot_median_deg"] = safe_median(self.rot_deg_by_obj[obj_id])
+                    output[f"{prefix}_query_trans_median_m"] = safe_median(self.trans_m_by_obj[obj_id])
         return output
 
     def flush_artifacts(self, accelerator: Any | None = None) -> dict[str, float]:

@@ -70,7 +70,22 @@ def create_dataloader(cfg, mode, *, dataset_cfg=None, dataloader_cfg=None, runti
     if isinstance(cfg_dataset, str):
         dataset = eval(cfg_dataset) 
     elif 'weights' in cfg_dataset:
-        weights = cfg_dataset.weights
+        raw_weights = {
+            str(name): float(weight)
+            for name, weight in cfg_dataset.weights.items()
+        }
+        invalid = {
+            name: weight for name, weight in raw_weights.items() if weight < 0
+        }
+        if invalid:
+            raise ValueError(f'Dataset mixture weights must be non-negative: {invalid}')
+        # Zero is an explicit, composable off switch. This lets one data profile
+        # describe a family of protocols without instantiating disabled sources.
+        weights = {
+            name: weight for name, weight in raw_weights.items() if weight > 0
+        }
+        if not weights:
+            raise ValueError('Dataset mixture must enable at least one component')
         datasets_all = []
 
         if mode == 'train' and 'random_reslution' in cfg.train and cfg.train.random_reslution:
@@ -117,10 +132,38 @@ def create_dataloader(cfg, mode, *, dataset_cfg=None, dataloader_cfg=None, runti
                 )
             else:
                 dataset_length = int(dataset_length_cfg)
-            weight_sum = sum([v for k, v in weights.items()])
-            new_weights = {}
-            for dataset_name, weight in weights.items():
-                new_weights[dataset_name] = max(int(weight / weight_sum * dataset_length), 1)
+            if dataset_length < len(weights):
+                raise ValueError(
+                    f'Dataset mixture length {dataset_length} cannot give at least '
+                    f'one sample to each of {len(weights)} enabled components'
+                )
+            # Reserve one sample per enabled component, then apportion the
+            # remainder with the largest-remainder method. Independent integer
+            # floors can otherwise silently lose samples (for example, a 50/50
+            # split of 26,001 became 26,000) and violate the sampler-length
+            # safety assertion below.
+            weight_sum = sum(weights.values())
+            remaining = dataset_length - len(weights)
+            exact_extras = {
+                name: remaining * weight / weight_sum
+                for name, weight in weights.items()
+            }
+            new_weights = {
+                name: 1 + int(exact_extras[name]) for name in weights
+            }
+            undistributed = dataset_length - sum(new_weights.values())
+            remainder_order = sorted(
+                weights,
+                key=lambda name: (
+                    exact_extras[name] - int(exact_extras[name]),
+                    weights[name],
+                    name,
+                ),
+                reverse=True,
+            )
+            for name in remainder_order[:undistributed]:
+                new_weights[name] += 1
+            assert sum(new_weights.values()) == dataset_length
             weights = new_weights
             print(f'New weights for dataset (adjusting to dataset length {dataset_length}): {new_weights}')
 
@@ -139,6 +182,18 @@ def create_dataloader(cfg, mode, *, dataset_cfg=None, dataloader_cfg=None, runti
         dataset = hydra.utils.instantiate(cfg_dataset)
         dataset.convert_attributes()
         dataset_frame_counts = dataset.supported_frame_counts(image_num_range)
+
+    model_cfg = cfg.get('model', {})
+    if (
+        bool(getattr(dataset, 'requires_visibility_mask_conditioning', False))
+        and not bool(model_cfg.get('use_visibility_mask_conditioning', False))
+    ):
+        raise ValueError(
+            'The selected dataset supplies required visibility-mask conditions, '
+            'but model.use_visibility_mask_conditioning=false. Enable the model '
+            'branch or choose an object-only/unconditioned treatment that safely '
+            'identifies every supervised instance.'
+        )
 
     if mode == 'train' and cfg.train.iters_per_epoch > 0:
         print('Needed batch number per epoch (per rank):', _needed_train_indices_per_rank())

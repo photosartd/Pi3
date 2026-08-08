@@ -164,6 +164,43 @@ def batch_supports_capabilities(
     return all(batch_supports_capability(batch, item) for item in capabilities)
 
 
+def _metadata_scalars(value: Any) -> list[Any]:
+    """Flatten a collated metadata value without interpreting tensor fields."""
+
+    if torch.is_tensor(value):
+        return value.detach().cpu().reshape(-1).tolist()
+    if isinstance(value, np.ndarray):
+        return value.reshape(-1).tolist()
+    if isinstance(value, (list, tuple)):
+        return [item for nested in value for item in _metadata_scalars(nested)]
+    return [value]
+
+
+def batch_matches_metadata(
+    batch: Sequence[Mapping[str, Any]],
+    key: str,
+    accepted_values: Iterable[Any] | None,
+) -> bool:
+    """Return whether every view/sample carries one of the accepted values.
+
+    ``None`` deliberately means no routing constraint. This keeps existing
+    metrics and visualizers applicable to every capable dataset while allowing
+    CAD-backed plugins to opt into an explicit object-model namespace.
+    """
+
+    if accepted_values is None:
+        return True
+    accepted = frozenset(accepted_values)
+    if not accepted or not batch or not all(key in view for view in batch):
+        return False
+    values = [
+        value
+        for view in batch
+        for value in _metadata_scalars(view[key])
+    ]
+    return bool(values) and all(value in accepted for value in values)
+
+
 def infer_batch_capabilities(
     batch: Sequence[Mapping[str, Any]],
 ) -> frozenset[ObservationCapability]:

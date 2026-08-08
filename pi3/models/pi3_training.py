@@ -281,11 +281,10 @@ class Pi3(nn.Module):
         self.visibility_mask_conditioning_alpha = float(visibility_mask_conditioning_alpha)
         if self.use_visibility_mask_conditioning:
             # Two channels mirror sparse-depth conditioning conventions:
-            # channel 0 stores the anchor-object visibility mask, channel 1
-            # says whether that mask is intentionally supplied.  For the main
-            # no-leak experiment, references are [mask, 1] and queries are
-            # [0, 0].  The zero init preserves exact Pi3 checkpoint behavior at
-            # step 0 while gradients still flow into this branch immediately.
+            # channel 0 stores the target-object visibility mask, channel 1
+            # says whether that mask is intentionally supplied. Unknown views
+            # are [0, 0]. The zero init preserves exact Pi3 checkpoint behavior
+            # at step 0 while gradients flow from known conditions immediately.
             self.visibility_mask_embed = PatchEmbed(
                 img_size=224,
                 patch_size=self.patch_size,
@@ -533,6 +532,11 @@ class Pi3(nn.Module):
                     "Visibility mask/image token shape mismatch: "
                     f"{tuple(mask_tokens.shape)} vs {tuple(hidden.shape)}"
                 )
+            # A condition with known=0 is absent, not a learned modality token.
+            # Gating also suppresses the projection bias after it has trained.
+            mask_tokens, known_view = self._gate_visibility_mask_tokens(
+                mask_tokens, visibility_mask_known
+            )
             alpha = torch.as_tensor(
                 self.visibility_mask_conditioning_alpha,
                 device=hidden.device,
@@ -544,6 +548,7 @@ class Pi3(nn.Module):
                 "visibility_mask_token_abs_mean": mask_tokens.detach().float().abs().mean(),
                 "visibility_mask_token_norm": mask_tokens.detach().float().norm(),
                 "visibility_mask_embed_weight_norm": self.visibility_mask_embed.proj.weight.detach().float().norm(),
+                "visibility_mask_conditioned_view_fraction": known_view.detach().float().mean(),
             }
 
         hidden, pos = self.decode(hidden, N, H, W)
@@ -600,3 +605,12 @@ class Pi3(nn.Module):
         if visibility_mask_stats:
             output["visibility_mask_conditioning_stats"] = visibility_mask_stats
         return output
+
+    @staticmethod
+    def _gate_visibility_mask_tokens(mask_tokens, visibility_mask_known):
+        """Make an unknown ``[mask=0, known=0]`` condition an exact no-op."""
+
+        known_view = visibility_mask_known.to(
+            device=mask_tokens.device, dtype=mask_tokens.dtype
+        ).amax(dim=(-2, -1)).reshape(mask_tokens.shape[0], 1, 1)
+        return mask_tokens * known_view, known_view

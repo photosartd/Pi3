@@ -1,0 +1,59 @@
+{
+  "source_report": "/media/internal/nvme/dtrofimov/datasets/MegaPose-GSO-assets/render_validation/gt_pose_panda3d/report.json",
+  "samples": [
+    {
+      "folder": "train_fraction_fun",
+      "source_sample": "00_train_obj0231_scene022512_view000020_gt07",
+      "split": "train",
+      "object_id": 231,
+      "gso_id": "FRACTION_FUN_n4h4qte23QR",
+      "full_mask_iou": 0.9982098286483505,
+      "depth_abs_median_m": 0.00012260675430297852
+    },
+    {
+      "folder": "train_rocksmith_cable",
+      "source_sample": "01_train_obj0562_scene003180_view000034_gt16",
+      "split": "train",
+      "object_id": 562,
+      "gso_id": "Ubisoft_RockSmith_Real_Tone_Cable_Xbox_360",
+      "full_mask_iou": 0.9901221080422883,
+      "depth_abs_median_m": 8.0108642578125e-05
+    },
+    {
+      "folder": "train_fire_engine",
+      "source_sample": "02_train_obj0029_scene022154_view000026_gt10",
+      "split": "train",
+      "object_id": 29,
+      "gso_id": "MINI_FIRE_ENGINE",
+      "full_mask_iou": 0.9950191230098728,
+      "depth_abs_median_m": 0.0001347064971923828
+    },
+    {
+      "folder": "val_lion",
+      "source_sample": "05_val_obj0583_scene009583_view000032_gt07",
+      "split": "val",
+      "object_id": 583,
+      "gso_id": "Schleich_Lion_Action_Figure",
+      "full_mask_iou": 0.9929107461401242,
+      "depth_abs_median_m": 0.00010630488395690918
+    },
+    {
+      "folder": "val_barnyard_puzzle",
+      "source_sample": "07_val_obj0573_scene014273_view000007_gt03",
+      "split": "val",
+      "object_id": 573,
+      "gso_id": "Melissa_Doug_Jumbo_Knob_Puzzles_Barnyard_Animals",
+      "full_mask_iou": 0.9973045317559852,
+      "depth_abs_median_m": 3.9458274841308594e-05
+    },
+    {
+      "folder": "val_boat_shoe",
+      "source_sample": "08_val_obj0287_scene000616_view000013_gt01",
+      "split": "val",
+      "object_id": 287,
+      "gso_id": "Womens_Angelfish_Boat_Shoe_in_Linen_Oat",
+      "full_mask_iou": 0.9971062422488631,
+      "depth_abs_median_m": 4.553794860839844e-05
+    }
+  ]
+}

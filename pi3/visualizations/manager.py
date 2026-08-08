@@ -110,6 +110,8 @@ class VisualManager:
                 visualizer, "required_capabilities", frozenset()
             )
             eligible = batch_supports_capabilities(batch, required)
+            if eligible:
+                eligible = visualizer.supports_batch(batch)
             self.routing_counts[visualizer.name] = {
                 "eligible": int(eligible),
                 "skipped": int(not eligible),

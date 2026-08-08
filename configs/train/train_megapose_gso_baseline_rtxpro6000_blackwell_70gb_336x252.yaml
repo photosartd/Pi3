@@ -1,0 +1,90 @@
+# @package _global_
+
+# Baseline derived from the completed local 30-epoch 336x252 GSO run. The
+# measured 70 GiB budgets remain 156 train images and 768 validation images per
+# rank. Repeated-instance queries use the established small mask-conditioning
+# branch; all other views feed its exact no-op [mask=0, known=0] representation.
+defaults:
+  - train_megapose_gso_composable_rtxpro6000_blackwell_70gb_336x252_dynamic
+  - _self_
+
+model:
+  use_visibility_mask_conditioning: true
+  visibility_mask_conditioning_alpha: 1.0
+
+train:
+  num_workers: 2
+  persistent_workers: false
+  prefetch_factor: 2
+  optimizer:
+    # The main decoder/heads retain lr=5e-6 from the inherited fine-tune
+    # profile; only the zero-initialized ~402k-parameter mask projection uses
+    # the established ten-times-larger modality LR.
+    visibility_mask_lr: 5e-5
+
+metrics:
+  items:
+    object_pose: null
+    gso_object_pose:
+      _target_: pi3.metrics.object_pose.ObjectPoseMetric
+      metric_name: gso_object_pose
+      object_model_namespaces: [gso]
+      report_per_object: false
+      compute_adds_for_all: false
+      data_root: ${gso.assets_root}
+      models_folder: ${gso.models_folder}
+      symmetric_ids: []
+      solve_scale: true
+      max_model_points: 20000
+      nn_chunk_size: 2048
+      device: cuda
+    lmo_object_pose:
+      _target_: pi3.metrics.object_pose.ObjectPoseMetric
+      metric_name: lmo_object_pose
+      object_model_namespaces: [lmo]
+      report_per_object: false
+      compute_adds_for_all: false
+      data_root: ${lmo.data_root}
+      models_folder: ${lmo.models_folder}
+      symmetric_ids: ${lmo.symmetric_ids}
+      solve_scale: true
+      max_model_points: 20000
+      nn_chunk_size: 2048
+      device: cuda
+    camera:
+      _target_: pi3.metrics.camera.CameraAlignmentMetric
+      solve_scale: true
+    correspondence: null
+    chamfer: null
+
+visuals:
+  enabled: true
+  train_enabled: false
+  val_enabled: true
+  val_every_n_epochs: 5
+  items:
+    query_pose_overlay: null
+    visibility_condition:
+      _target_: pi3.visualizations.visibility_condition.VisibilityConditionVisualizer
+      max_reference_views: 5
+      max_query_views: 3
+      thumbnail_size: 112
+    reference_reconstruction: null
+    gso_query_pose_overlay:
+      _target_: pi3.visualizations.pose_overlay.QueryPoseOverlayVisualizer
+      visualizer_name: gso_query_pose_overlay
+      object_model_namespaces: [gso]
+      data_root: ${gso.assets_root}
+      models_folder: ${gso.models_folder}
+      solve_scale: true
+      max_model_points: 20000
+      max_query_views: 3
+    lmo_query_pose_overlay:
+      _target_: pi3.visualizations.pose_overlay.QueryPoseOverlayVisualizer
+      visualizer_name: lmo_query_pose_overlay
+      object_model_namespaces: [lmo]
+      data_root: ${lmo.data_root}
+      models_folder: ${lmo.models_folder}
+      solve_scale: true
+      max_model_points: 20000
+      max_query_views: 3

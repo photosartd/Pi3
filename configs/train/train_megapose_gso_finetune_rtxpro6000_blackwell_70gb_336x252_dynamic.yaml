@@ -1,0 +1,30 @@
+# @package _global_
+
+# Local RTX PRO 6000 Blackwell profile intended to be run with
+# PI3_CUDA_MEMORY_LIMIT_GIB=70. It keeps strict MegaPose-GSO anchor-pair
+# sampling at 336x252 and the full dynamic 2-16-reference / 1-10-query range.
+# Real full-index probes selected:
+# - train budget 156: 52x3 and 6x26 both peaked near 66.6 GiB allocated /
+#   67.0 GiB reserved after optimizer-state initialization;
+# - validation budget 768: 760-768 images across the four protocols peaked at
+#   21.3 GiB allocated / 26.3 GiB reserved and 46.6 GiB total host cgroup RAM.
+defaults:
+  - train_megapose_gso_finetune_a40_40gb_336x252_dynamic
+  - _self_
+
+train:
+  max_img_per_gpu: 156
+
+test:
+  max_img_per_gpu: 768
+  max_img_per_gpu_ref16: 768
+  max_img_per_gpu_k5: 768
+  max_img_per_gpu_k10: 768
+  num_workers: 2
+  persistent_workers: false
+  prefetch_factor: 2
+
+visuals:
+  # Metrics still run every validation epoch. Large context-batch visualizers
+  # are substantially slower, so retain them as periodic diagnostics.
+  val_every_n_epochs: 5

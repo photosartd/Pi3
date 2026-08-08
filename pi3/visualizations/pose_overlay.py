@@ -20,6 +20,7 @@ from .utils import (
     tensor_image_to_uint8,
 )
 from pi3.metrics.utils import BopModelCache
+from datasets.base.observation import batch_matches_metadata
 
 
 class QueryPoseOverlayVisualizer(BaseVisualizer):
@@ -34,11 +35,19 @@ class QueryPoseOverlayVisualizer(BaseVisualizer):
         self,
         data_root: str,
         *,
+        visualizer_name: str | None = None,
+        object_model_namespaces: list[str] | tuple[str, ...] | None = None,
         models_folder: str = "models_eval",
         solve_scale: bool = True,
         max_model_points: int = 20000,
         max_query_views: int = 3,
     ):
+        self.name = str(visualizer_name or type(self).name)
+        self.object_model_namespaces = (
+            None
+            if object_model_namespaces is None
+            else tuple(str(value) for value in object_model_namespaces)
+        )
         self.model_cache = BopModelCache(
             data_root,
             models_folder=models_folder,
@@ -46,6 +55,13 @@ class QueryPoseOverlayVisualizer(BaseVisualizer):
         )
         self.solve_scale = bool(solve_scale)
         self.max_query_views = max(1, int(max_query_views))
+
+    def supports_batch(self, batch: list[dict[str, Any]]) -> bool:
+        return batch_matches_metadata(
+            batch,
+            "object_model_namespace",
+            self.object_model_namespaces,
+        )
 
     def render(
         self,

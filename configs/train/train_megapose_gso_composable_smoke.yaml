@@ -1,0 +1,79 @@
+# @package _global_
+
+# End-to-end functional smoke for composable object-pose sources/policies. It
+# intentionally uses a compact DINOv2-S Pi3 at 56x42. Fourteen optimizer steps
+# cover every weighted training protocol with base_seed=666, followed by one
+# batch from every named validation protocol. It is not a research run.
+defaults:
+  - train_megapose_gso_finetune_a40_46gb
+  - _self_
+
+gso_profile:
+  num_reference_range: [5, 5]
+  num_query_range: [1, 1]
+  max_refetch: 10
+
+model:
+  encoder_size: small
+  encoder_pretrained: false
+  encoder_ckpt: ${oc.env:PI3_DINO_SMALL_CKPT,/home/dtrofimov/.cache/torch/hub/checkpoints/dinov2_vits14_reg4_pretrain.pth}
+  decoder_size: small
+  head_dim: 384
+  point_decoder_dim: 384
+  point_decoder_heads: 6
+  point_decoder_depth: 2
+  camera_decoder_dim: 384
+  camera_decoder_heads: 6
+  camera_decoder_depth: 2
+  camera_head_dim: 256
+  global_point_decoder_dim: 384
+  global_point_decoder_heads: 6
+  global_point_decoder_depth: 2
+  load_vggt: false
+  freeze_encoder: true
+  train_conf: false
+  num_dec_blk_not_to_checkpoint: 2
+  ckpt: null
+  use_visibility_mask_conditioning: true
+  visibility_mask_conditioning_alpha: 1.0
+
+train:
+  image_num_range: [6, 6]
+  max_img_per_gpu: 6
+  resolution:
+    - [56, 42]
+  random_reslution: false
+  num_workers: 0
+  num_epoch: 1
+  iters_per_epoch: 14
+  val_every_n_epochs: 1
+  print_freq: 1
+  optimizer:
+    lr: 5e-5
+    encoder_lr: 0.0
+    visibility_mask_lr: 5e-4
+
+test:
+  image_num_range: [6, 6]
+  max_img_per_gpu: 6
+  num_workers: 0
+  persistent_workers: false
+  iters_per_test: 1
+  print_freq: 1
+
+visuals:
+  enabled: false
+  train_enabled: false
+  val_enabled: false
+
+metrics:
+  items:
+    object_pose:
+      _target_: pi3.metrics.object_pose.ObjectPoseMetric
+      data_root: ${gso.assets_root}
+      models_folder: ${gso.models_folder}
+      symmetric_ids: []
+      solve_scale: true
+      max_model_points: 1024
+      nn_chunk_size: 512
+      device: cuda

@@ -17,6 +17,11 @@ class BaseVisualizer(ABC):
     name: str = "visual"
     required_capabilities: frozenset[str] = frozenset()
 
+    def supports_batch(self, batch: list[dict[str, Any]]) -> bool:
+        """Apply optional dataset/metadata routing after capability checks."""
+
+        return True
+
     @abstractmethod
     def render(
         self,

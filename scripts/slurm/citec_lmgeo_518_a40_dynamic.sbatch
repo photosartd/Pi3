@@ -44,6 +44,8 @@ case "$DATA_FAMILY" in
     ;;
 esac
 DATA_ROOT="${PI3_DATA_ROOT:-$DEFAULT_DATA_ROOT}"
+GSO_ASSETS_ROOT="${PI3_GSO_ASSETS_ROOT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/MegaPose-GSO-assets}"
+GSO_REFERENCES_ROOT="${PI3_GSO_REFERENCES_ROOT:-$GSO_ASSETS_ROOT/renders}"
 SMOKE_ITERS="${PI3_SMOKE_ITERS:-5}"
 CONTEXT_REFERENCE_FRACTION="${PI3_CONTEXT_REFERENCE_FRACTION:-}"
 CONTINUE_MODE="${PI3_CONTINUE:-}"
@@ -100,6 +102,18 @@ if [[ "$DATA_FAMILY" == "megapose_gso" ]]; then
     echo "ERROR: MegaPose-GSO split manifest is missing: $DATA_ROOT/pi3_index/megapose_gso.splits.json" >&2
     echo "Rerun datasets/preprocess/megapose_gso.py before submitting training." >&2
     exit 2
+  fi
+  if [[ "$DATA_CONFIG" == megapose_gso_composable_* ]]; then
+    if [[ ! -f "$GSO_ASSETS_ROOT/models_eval/models_info.json" ]]; then
+      echo "ERROR: validated GSO model catalogue is missing: $GSO_ASSETS_ROOT/models_eval/models_info.json" >&2
+      echo "Set PI3_GSO_ASSETS_ROOT to the prepared shared asset directory." >&2
+      exit 2
+    fi
+    if [[ ! -f "$GSO_REFERENCES_ROOT/pi3_index/references.sqlite" ]]; then
+      echo "ERROR: GSO reference index is missing: $GSO_REFERENCES_ROOT/pi3_index/references.sqlite" >&2
+      echo "Set PI3_GSO_REFERENCES_ROOT or build the reference index before submission." >&2
+      exit 2
+    fi
   fi
 fi
 
@@ -228,6 +242,12 @@ if [[ "$DATA_FAMILY" == "lmgeo" ]]; then
   )
 else
   COMMON_OVERRIDES+=("gso.data_root=$DATA_ROOT")
+  if [[ "$DATA_CONFIG" == megapose_gso_composable_* ]]; then
+    COMMON_OVERRIDES+=(
+      "gso.assets_root=$GSO_ASSETS_ROOT"
+      "gso.references_root=$GSO_REFERENCES_ROOT"
+    )
+  fi
 fi
 if [[ -n "$CONTEXT_REFERENCE_FRACTION" && "$DATA_FAMILY" != "lmgeo" ]]; then
   echo "ERROR: PI3_CONTEXT_REFERENCE_FRACTION is LMGeo-only." >&2

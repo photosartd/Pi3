@@ -185,6 +185,12 @@ Heterogeneous samples inside one batch are intentionally not implemented. That
 future extension will require a union-schema collator and per-sample capability
 masks; the current explicit rejection prevents accidental partial collation.
 
+For multiple protocols over the same object dataset, use
+`ComposableObjectPoseDataset` instances in this same mixture mechanism. Storage,
+sample topology, and RGB/depth/condition treatment are independent components;
+see `docs/object_pose_composition.md`. A zero mixture weight disables a protocol
+before source construction.
+
 ## Model and consumer routing
 
 `Pi3BatchAdapter` always stacks the core image/intrinsics input. When visibility

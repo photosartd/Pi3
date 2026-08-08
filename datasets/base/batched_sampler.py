@@ -11,6 +11,13 @@ import torch
 from typing import Any, Callable, Generic, Iterable, List, Optional, TypeVar, Union
 from torch.utils.data import DataLoader, Dataset, DistributedSampler, IterableDataset, Sampler
 
+
+def _stateless_sample_seed(*values: int) -> int:
+    """Derive a stable worker-independent NumPy seed from sampler coordinates."""
+
+    sequence = np.random.SeedSequence([int(value) for value in values])
+    return int(sequence.generate_state(1, dtype=np.uint64)[0])
+
 class BatchedRandomSampler:
     """ Random sampling under a constraint: each sample in the batch has the same feature, 
     which is chosen randomly from a known pool of 'features' for each batch.
@@ -41,7 +48,7 @@ class BatchedRandomSampler:
 
     def set_epoch(self, epoch, base_seed=777):
         self.epoch = epoch
-        self.base_seed = base_seed
+        self.base_seed = int(base_seed)
 
     def __iter__(self):
         # prepare RNG
@@ -156,6 +163,7 @@ class DynamicBatchSampler(Sampler):
             epoch: The epoch number.
         """
         self.epoch = epoch
+        self.base_seed = int(base_seed)
         if hasattr(self.sampler, "set_epoch"):
             self.sampler.set_epoch(epoch)
         self.rng_rank = np.random.default_rng(epoch * 100 + base_seed + self.rank)
@@ -170,6 +178,7 @@ class DynamicBatchSampler(Sampler):
         """
         sampler_iterator = iter(self.sampler)
 
+        batch_index = 0
         while True:
             try:
                 # Sample random image number and aspect ratio
@@ -189,10 +198,18 @@ class DynamicBatchSampler(Sampler):
 
                 # Collect samples for the current batch
                 current_batch = []
-                for _ in range(batch_size):
+                for slot in range(batch_size):
                     try:
                         item = next(sampler_iterator)  # item is (idx, aspect_ratio, image_num)
-                        current_batch.append(item)
+                        sample_seed = _stateless_sample_seed(
+                            self.base_seed,
+                            self.epoch,
+                            self.rank,
+                            batch_index,
+                            slot,
+                            int(item[0]),
+                        )
+                        current_batch.append((*item, sample_seed))
                     except StopIteration:
                         break  # No more samples
 
@@ -200,6 +217,7 @@ class DynamicBatchSampler(Sampler):
                     break  # No more data to yield
 
                 yield current_batch
+                batch_index += 1
 
             except StopIteration:
                 break  # End of sampler's iterator
@@ -350,8 +368,21 @@ class HomogeneousDynamicBatchSampler(Sampler):
             dataset_start = int(self.component_starts[component])
             self.component_batch_counts[component] += 1
             yield [
-                (dataset_start + int(offset), resolution_idx, image_num)
-                for offset in local_offsets
+                (
+                    dataset_start + int(offset),
+                    resolution_idx,
+                    image_num,
+                    _stateless_sample_seed(
+                        self.base_seed,
+                        self.epoch,
+                        self.rank,
+                        batch_index,
+                        slot,
+                        component,
+                        int(offset),
+                    ),
+                )
+                for slot, offset in enumerate(local_offsets)
             ]
 
     def __len__(self):

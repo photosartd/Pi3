@@ -1,0 +1,23 @@
+# @package _global_
+
+# Production A40 budget plus mesh-backed GSO query-pose evaluation for the
+# composable source/policy data profile. The legacy mesh-free profile remains
+# unchanged for reproducibility.
+defaults:
+  - train_megapose_gso_finetune_a40_40gb_336x252_dynamic
+  - _self_
+
+metrics:
+  items:
+    object_pose:
+      _target_: pi3.metrics.object_pose.ObjectPoseMetric
+      data_root: ${gso.assets_root}
+      models_folder: ${gso.models_folder}
+      # The prepared GSO catalogue records symmetry as unknown. Report ADD and
+      # ADD-S, but do not silently label any object symmetric for the used score.
+      symmetric_ids: []
+      solve_scale: true
+      max_model_points: 20000
+      nn_chunk_size: 2048
+      device: cuda
+

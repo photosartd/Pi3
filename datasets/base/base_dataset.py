@@ -185,9 +185,14 @@ class BaseDataset(EasyDataset):
         return image, depthmap, intrinsics2, *other
     
     def __getitem__(self, idx):
+        sample_rng = self._rng
         if isinstance(idx, tuple):
             # the idx is specifying the aspect-ratio
-            if len(idx) == 3:
+            if len(idx) == 4:
+                idx, ar_idx, frame_num, sample_seed = idx
+                self.frame_num = frame_num
+                sample_rng = np.random.default_rng(int(sample_seed))
+            elif len(idx) == 3:
                 idx, ar_idx, frame_num = idx
                 self.frame_num = frame_num
             else:
@@ -202,11 +207,11 @@ class BaseDataset(EasyDataset):
         error = None
         for _ in range(10):              # default: 3
             try:
-                views = self._get_views(idx, resolution, self._rng)
+                views = self._get_views(idx, resolution, sample_rng)
 
                 # assert len(views) == self.frame_num
                 if self.shuffle:
-                    self._rng.shuffle(views)
+                    sample_rng.shuffle(views)
 
                 # check data-types
                 for v, view in enumerate(views):

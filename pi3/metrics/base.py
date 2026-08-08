@@ -19,6 +19,11 @@ class BaseMetric(ABC):
     def reset(self) -> None:
         """Clear accumulated metric state."""
 
+    def supports_batch(self, batch: list[dict[str, Any]]) -> bool:
+        """Apply optional dataset/metadata routing after capability checks."""
+
+        return True
+
     @abstractmethod
     def update(
         self,

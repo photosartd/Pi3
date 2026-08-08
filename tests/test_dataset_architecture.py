@@ -14,6 +14,7 @@ from datasets.base.batched_sampler import (
 )
 from datasets.base.observation import (
     ObservationCapability,
+    batch_matches_metadata,
     batch_supports_capability,
     infer_batch_capabilities,
 )
@@ -147,6 +148,12 @@ class _MinimalObjectAdapter(ObjectDatasetAdapter):
         )
 
 
+class _ConditionRequiredAdapter(_MinimalObjectAdapter):
+    @property
+    def requires_visibility_mask_conditioning(self):
+        return True
+
+
 class _MinimalSceneDataset(BaseDataset):
     def __init__(self, resolution=None, **kwargs):
         super().__init__(
@@ -252,6 +259,21 @@ class ObservationContractTest(unittest.TestCase):
         sample_b = [{"value": torch.tensor(2), "object_id": torch.tensor(1)}]
         with self.assertRaisesRegex(ValueError, "homogeneous batches"):
             unified_collate_fn([sample_a, sample_b])
+
+    def test_collated_metadata_namespace_routes_cad_consumers(self):
+        batch = [
+            {"object_model_namespace": ["gso", "gso"]},
+            {"object_model_namespace": ["gso", "gso"]},
+        ]
+        self.assertTrue(
+            batch_matches_metadata(batch, "object_model_namespace", ["gso"])
+        )
+        self.assertFalse(
+            batch_matches_metadata(batch, "object_model_namespace", ["lmo"])
+        )
+        self.assertTrue(
+            batch_matches_metadata(batch, "object_model_namespace", None)
+        )
 
 
 class ObjectPolicyAndPluginTest(unittest.TestCase):
@@ -556,6 +578,96 @@ class HomogeneousMixtureSamplerTest(unittest.TestCase):
             if batch_index >= 9:
                 break
         self.assertEqual(seen, {"MinimalObject", "MinimalScene"})
+
+    def test_auto_mixture_length_preserves_odd_required_total(self):
+        cfg = OmegaConf.create(
+            {
+                "train": {
+                    "batch_size": 1,
+                    "num_workers": 0,
+                    "image_num_range": [2, 2],
+                    "max_img_per_gpu": 4,
+                    "iters_per_epoch": 4,
+                    "base_seed": 23,
+                    "resolution": [[28, 28]],
+                },
+                "train_dataset": {
+                    "length": "auto",
+                    "weights": {"Object": 1, "Scene": 1},
+                    "Object": {
+                        "_target_": "tests.test_dataset_architecture._MinimalObjectAdapter"
+                    },
+                    "Scene": {
+                        "_target_": "tests.test_dataset_architecture._MinimalSceneDataset"
+                    },
+                },
+                "train_dataloader": {"shuffle": True, "drop_last": True},
+            }
+        )
+        loader = create_dataloader(cfg, "train")
+
+        self.assertEqual(len(loader.dataset), 9)
+        self.assertEqual(
+            sorted(loader.batch_sampler.component_sizes.tolist()), [4, 5]
+        )
+
+    def test_zero_weight_disables_component_before_instantiation(self):
+        cfg = OmegaConf.create(
+            {
+                "train": {
+                    "batch_size": 1,
+                    "num_workers": 0,
+                    "image_num_range": [2, 2],
+                    "max_img_per_gpu": 2,
+                    "iters_per_epoch": 1,
+                    "base_seed": 23,
+                    "resolution": [[28, 28]],
+                },
+                "train_dataset": {
+                    "length": 4,
+                    "weights": {"Object": 1, "Disabled": 0},
+                    "Object": {
+                        "_target_": "tests.test_dataset_architecture._MinimalObjectAdapter"
+                    },
+                    # This target intentionally does not exist. A disabled
+                    # protocol must not initialize storage or import code.
+                    "Disabled": {"_target_": "missing.module.Dataset"},
+                },
+                "train_dataloader": {"shuffle": True, "drop_last": True},
+            }
+        )
+        loader = create_dataloader(cfg, "train")
+        loader.dataset.set_epoch(0, base_seed=23)
+        loader.batch_sampler.set_epoch(0, base_seed=23)
+        batch = next(iter(loader))
+        self.assertEqual(set(batch[0]["dataset"]), {"MinimalObject"})
+
+    def test_create_dataloader_rejects_required_condition_with_disabled_model(self):
+        cfg = OmegaConf.create(
+            {
+                "model": {"use_visibility_mask_conditioning": False},
+                "train": {
+                    "batch_size": 1,
+                    "num_workers": 0,
+                    "image_num_range": [2, 2],
+                    "max_img_per_gpu": 2,
+                    "iters_per_epoch": 0,
+                    "base_seed": 23,
+                    "resolution": [[28, 28]],
+                },
+                "train_dataset": {
+                    "_target_": (
+                        "tests.test_dataset_architecture."
+                        "_ConditionRequiredAdapter"
+                    )
+                },
+                "train_dataloader": {"shuffle": True, "drop_last": True},
+            }
+        )
+        with self.assertRaisesRegex(
+            ValueError, "model.use_visibility_mask_conditioning=false"
+        ):
+            create_dataloader(cfg, "train")
 
 
 if __name__ == "__main__":

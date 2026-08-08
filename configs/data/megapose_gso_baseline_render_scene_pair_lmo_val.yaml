@@ -1,0 +1,255 @@
+# @package _global_
+
+# Baseline object-pose mixture:
+#   50% clean GSO renders -> full-RGB GSO scene queries
+#   50% masked GSO scene references -> full-RGB different-scene queries
+# Validation uses strict held-out GSO objects AND held-out scenes, plus the
+# complete official LM-O BOP19 target list. Only a query whose scene contains
+# repeated tracks of its target object receives an instance mask condition.
+primary_val: gso_heldout_render_n5_k1
+
+gso:
+  data_root: ${oc.env:PI3_GSO_DATA_ROOT,/media/internal/nvme/dtrofimov/datasets/MegaPose-GSO-fixed}
+  assets_root: ${oc.env:PI3_GSO_ASSETS_ROOT,/media/internal/nvme/dtrofimov/datasets/MegaPose-GSO-assets}
+  references_root: ${oc.env:PI3_GSO_REFERENCES_ROOT,${gso.assets_root}/renders}
+  index_path: null
+  split_path: null
+  references_index_path: null
+  object_ids: all
+  visibility_min: 0.1
+  min_visible_pixels: 64
+  depth_corruption_policy: clean_only
+  mask_type: mask_visib
+  models_folder: models_eval
+
+lmo:
+  data_root: ${oc.env:PI3_LMO_DATA_ROOT,/vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/lm-o}
+  models_folder: models_eval
+  reference_split: train
+  query_split: test
+  target_file: lmo/test_targets_bop19.json
+  symmetric_ids: [10, 11]
+
+_gso_scene_train: &gso_scene_train
+  _target_: datasets.object_sources.MegaPoseGSOSceneSource
+  data_root: ${gso.data_root}
+  index_path: ${gso.index_path}
+  split_path: ${gso.split_path}
+  source_name: scene
+  object_namespace: gso
+  object_ids: ${gso.object_ids}
+  scene_split: train
+  visibility_min: ${gso.visibility_min}
+  min_visible_pixels: ${gso.min_visible_pixels}
+  depth_corruption_policy: ${gso.depth_corruption_policy}
+  mask_type: ${gso.mask_type}
+
+_gso_scene_val: &gso_scene_val
+  <<: *gso_scene_train
+  scene_split: val
+
+_gso_render_source: &gso_render_source
+  _target_: datasets.object_sources.IndexedBOPReferenceSource
+  bank_root: ${gso.references_root}
+  index_path: ${gso.references_index_path}
+  source_name: render
+  object_namespace: gso
+  object_ids: ${gso.object_ids}
+  mask_type: ${gso.mask_type}
+
+_gso_model_catalog: &gso_model_catalog
+  _target_: datasets.object_sources.BOPObjectModelCatalog
+  data_root: ${gso.assets_root}
+  models_folder: ${gso.models_folder}
+  object_namespace: gso
+
+_full_rgb_object_depth_unconditioned: &full_rgb_object_depth_unconditioned
+  rgb: full
+  depth: object_only
+  mask_condition: none
+
+_full_rgb_object_depth_query_disambiguated: &full_rgb_object_depth_query_disambiguated
+  rgb: full
+  depth: object_only
+  mask_condition: object_if_repeated
+
+_masked_rgb_object_depth: &masked_rgb_object_depth
+  rgb: object_only
+  depth: object_only
+  mask_condition: none
+
+_gso_dataset_base: &gso_dataset_base
+  _target_: datasets.object_pose_dataset.ComposableObjectPoseDataset
+  dataset_domain: MegaPoseGSO
+  object_model_catalog: *gso_model_catalog
+  aug_crop: false
+  aug_focal: false
+  z_far: 0
+  max_refetch: ${gso_profile.max_refetch}
+  transform:
+    _partial_: true
+    _target_: datasets.base.transforms.ImgToTensor
+  shuffle: false
+
+train_dataset:
+  length: auto
+  weights:
+    GSORenderToScene: 1
+    GSOScenePairMaskedReferences: 1
+
+  GSORenderToScene:
+    <<: *gso_dataset_base
+    protocol_name: render_to_scene
+    sources:
+      render: *gso_render_source
+      scene: *gso_scene_train
+    sampling_policy:
+      _target_: datasets.object_sampling.RenderToScenePolicy
+      reference_source: render
+      query_source: scene
+      num_reference_range: ${gso_profile.num_reference_range}
+      num_query_range: ${gso_profile.num_query_range}
+      reference_selection: random
+      query_selection: random
+      allow_repeat: false
+    reference_treatment: *full_rgb_object_depth_unconditioned
+    query_treatment: *full_rgb_object_depth_query_disambiguated
+    mode: train
+
+  GSOScenePairMaskedReferences:
+    <<: *gso_dataset_base
+    protocol_name: scene_pair_masked_references
+    sources:
+      scene: *gso_scene_train
+    sampling_policy:
+      _target_: datasets.object_sampling.ScenePairPolicy
+      scene_source: scene
+      require_different_scene: true
+      num_reference_range: ${gso_profile.num_reference_range}
+      num_query_range: ${gso_profile.num_query_range}
+      reference_selection: random
+      query_selection: random
+      allow_repeat: false
+    reference_treatment: *masked_rgb_object_depth
+    query_treatment: *full_rgb_object_depth_query_disambiguated
+    mode: train
+
+train_dataloader:
+  drop_last: true
+  shuffle: true
+
+_gso_val_dataset_base: &gso_val_dataset_base
+  <<: *gso_dataset_base
+  sources:
+    render: *gso_render_source
+    scene: *gso_scene_val
+  reference_treatment: *full_rgb_object_depth_unconditioned
+  query_treatment: *full_rgb_object_depth_query_disambiguated
+  resolution: ${train.resolution}
+  mode: val
+
+_gso_val_n5_k1: &gso_val_n5_k1
+  <<: *gso_val_dataset_base
+  protocol_name: heldout_render_n5_k1
+  sampling_policy:
+    _target_: datasets.object_sampling.RenderToScenePolicy
+    reference_source: render
+    query_source: scene
+    num_reference_range: [5, 5]
+    num_query_range: [1, 1]
+    # Uniform sphere coverage from the precomputed render coverage IDs.
+    reference_selection: coverage_uniform
+    query_selection: first
+    allow_repeat: false
+    enumerate_query_groups: true
+
+_gso_val_n16_k1: &gso_val_n16_k1
+  <<: *gso_val_dataset_base
+  protocol_name: heldout_render_n16_k1
+  sampling_policy:
+    _target_: datasets.object_sampling.RenderToScenePolicy
+    reference_source: render
+    query_source: scene
+    num_reference_range: [16, 16]
+    num_query_range: [1, 1]
+    reference_selection: coverage_uniform
+    query_selection: first
+    allow_repeat: false
+    enumerate_query_groups: true
+
+_val_dataloader: &val_dataloader
+  drop_last: false
+  shuffle: false
+
+_gso_val_n5_runtime: &gso_val_n5_runtime
+  image_num_range: [6, 6]
+  max_img_per_gpu: ${test.max_img_per_gpu}
+  iters_per_test: ${test.iters_per_test}
+  num_workers: ${test.num_workers}
+  print_freq: ${test.print_freq}
+
+_gso_val_n16_runtime: &gso_val_n16_runtime
+  image_num_range: [17, 17]
+  max_img_per_gpu: ${test.max_img_per_gpu_ref16}
+  iters_per_test: ${test.iters_per_test}
+  num_workers: ${test.num_workers}
+  print_freq: ${test.print_freq}
+
+_lmo_val_dataset: &lmo_val_dataset
+  _target_: datasets.lmgeo_dataset.LMGeoSequenceDataset
+  data_root: ${lmo.data_root}
+  object_ids: all
+  reference_split: ${lmo.reference_split}
+  query_split: ${lmo.query_split}
+  query_target_file: ${lmo.target_file}
+  query_window_size: 25
+  query_source: bop_targets
+  num_reference_range: [5, 5]
+  num_query_range: [1, 1]
+  reference_rgb_masking: true
+  query_rgb_masking: false
+  depth_masking: true
+  mask_type: mask_visib
+  visibility_min: 0.0
+  reference_selection: uniform
+  query_selection: first
+  depth_unit_scale: 0.001
+  filter_center_crop_visibility: true
+  min_center_crop_bbox_area: 1.0
+  filter_preprocessed_query_depth: false
+  filter_target_center_crop_visibility: true
+  filter_target_preprocessed_depth: true
+  min_preprocessed_query_depth_pixels: 1
+  allow_repeat: false
+  visibility_mask_conditioning: false
+  aug_crop: false
+  aug_focal: false
+  z_far: 0
+  resolution: ${train.resolution}
+  transform:
+    _partial_: true
+    _target_: datasets.base.transforms.ImgToTensor
+  shuffle: false
+  mode: val
+
+test_dataset: *gso_val_n5_k1
+test_dataloader: *val_dataloader
+
+val_datasets:
+  gso_heldout_render_n5_k1:
+    dataset: *gso_val_n5_k1
+    dataloader: *val_dataloader
+    runtime: *gso_val_n5_runtime
+  gso_heldout_render_n16_k1:
+    dataset: *gso_val_n16_k1
+    dataloader: *val_dataloader
+    runtime: *gso_val_n16_runtime
+  lmo_bop19_render_n5_k1:
+    dataset: *lmo_val_dataset
+    dataloader: *val_dataloader
+    runtime:
+      image_num_range: [6, 6]
+      max_img_per_gpu: ${test.max_img_per_gpu}
+      iters_per_test: ${test.iters_per_test}
+      num_workers: ${test.num_workers}
+      print_freq: ${test.print_freq}

@@ -636,6 +636,7 @@ class LMGeoDataset(ObjectDatasetAdapter):
             "camera_intrinsics": intrinsics.astype(np.float32),
             "dataset": self.dataset_label,
             "object_id": np.int64(object_id),
+            "object_model_namespace": "lmo",
             "object_model_available": True,
             "view_role": str(view_role),
             "is_reference": bool(view_role == "reference"),
@@ -1181,6 +1182,11 @@ class LMGeoSequenceDataset(LMGeoDataset):
         dropped_center_crop = 0
         dropped_preprocessed_depth = 0
         object_filter = set(self.object_ids)
+        # BOP targets revisit the same test scenes many times. Resolve JSON,
+        # image dimensions, and the RGB extension once per scene instead of
+        # reopening one RGB image for every object target (particularly costly
+        # when LM-O resides on network storage).
+        scene_cache = {}
 
         for target_index, target in enumerate(targets):
             object_id = int(target["obj_id"])
@@ -1191,10 +1197,22 @@ class LMGeoSequenceDataset(LMGeoDataset):
             im_id = int(target["im_id"])
             instance_count = int(target.get("inst_count", 1))
             scene_dir = self.data_root / self.query_split / f"{scene_id:06d}"
-
-            scene_gt = self._load_json(scene_dir / "scene_gt.json")
-            scene_gt_info = self._load_json(scene_dir / "scene_gt_info.json")
-            scene_camera = self._load_json(scene_dir / "scene_camera.json")
+            cached_scene = scene_cache.get(scene_id)
+            if cached_scene is None:
+                scene_gt = self._load_json(scene_dir / "scene_gt.json")
+                scene_gt_info = self._load_json(scene_dir / "scene_gt_info.json")
+                scene_camera = self._load_json(scene_dir / "scene_camera.json")
+                image_size = self._first_scene_image_size(scene_dir, scene_gt)
+                rgb_ext = self._scene_rgb_ext(scene_dir)
+                cached_scene = (
+                    scene_gt,
+                    scene_gt_info,
+                    scene_camera,
+                    image_size,
+                    rgb_ext,
+                )
+                scene_cache[scene_id] = cached_scene
+            scene_gt, scene_gt_info, scene_camera, image_size, rgb_ext = cached_scene
             key = str(im_id)
             if key not in scene_gt:
                 dropped_missing += 1
@@ -1221,6 +1239,9 @@ class LMGeoSequenceDataset(LMGeoDataset):
                     scene_camera[key],
                     self.query_split,
                     object_id=object_id,
+                    image_size=image_size,
+                    rgb_ext=rgb_ext,
+                    trust_paths=True,
                 )
                 record["query_scene_id"] = scene_id
                 record["query_subscene_id"] = -1

@@ -692,8 +692,20 @@ class BaseTrainer:
                             "width": int(img.shape[-1]),
                         }
                 batch_dataset_name = None
-                if batch and "dataset" in batch[0]:
-                    dataset_value = batch[0]["dataset"]
+                batch_dataset_field = next(
+                    (
+                        field
+                        for field in (
+                            "mixture_component",
+                            "protocol_name",
+                            "dataset",
+                        )
+                        if batch and field in batch[0]
+                    ),
+                    None,
+                )
+                if batch_dataset_field is not None:
+                    dataset_value = batch[0][batch_dataset_field]
                     if isinstance(dataset_value, (list, tuple)) and dataset_value:
                         batch_dataset_name = str(dataset_value[0])
                     else:

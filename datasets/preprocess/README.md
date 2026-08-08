@@ -1,5 +1,37 @@
 # MegaPose-GSO one-time preprocessing
 
+Optional GSO mesh acquisition is documented separately in
+[`download/README.md`](download/README.md). Mesh download and scene indexing
+are independent: download only the assets required by mesh-based rendering or
+metrics.
+
+After downloading the normalized, BOP-scaled, and point-cloud representations,
+build the portable model catalogue and BOP-compatible metric view with:
+
+```bash
+python datasets/preprocess/megapose_gso_models.py \
+  --assets-root /path/to/MegaPose-GSO-assets \
+  --index-path /path/to/MegaPose-GSO-fixed/pi3_index/megapose_gso.sqlite
+```
+
+This writes `pi3_gso_models.json`, exact BOP `models_info.json` dimensions and
+diameters, and relative `models_eval/obj_*.ply` symlinks. It does not alter the
+downloaded models or scene shards. Symmetry stays explicitly unknown.
+
+Before generating clean CAD references, validate renderer conventions against
+released GT masks/depth using the isolated-environment protocol in
+[`render/README.md`](render/README.md).
+
+After that validation passes, the same renderer documentation gives the
+split-neutral `megapose_gso_references.py` command. It writes BOP-compatible
+clean object folders under a caller-selected `reference_renders` root; it does
+not assign objects to train or validation splits.
+
+Once rendering completes, the same renderer documentation gives the atomic
+`object_reference_index.py` command. The composable training architecture and
+extension guide are in
+[`docs/object_pose_composition.md`](../../docs/object_pose_composition.md).
+
 `megapose_gso.py` builds the lightweight random-access metadata and prepared
 train/validation entity split used by
 `MegaPoseGSOObjectDataset`. It does **not** extract or rewrite images,
@@ -28,6 +60,13 @@ No shard-count argument is needed. The command discovers every
 dataset. Copy the script (or pull this repository) on the training node and run
 the same command after all desired shards are present. Adding shards later and
 rerunning incrementally extends the index.
+
+The same rerun also performs backward-compatible index upgrades. In
+particular, it materializes the standard 0.1 visibility / 64-visible-pixel
+track counts for `clean_only`, `exclude_known_bad`, and `all` depth policies.
+This scans existing SQLite metadata once but does not reread tar shards, and
+avoids repeating a 20-million-instance eligibility scan in every training
+process.
 
 By default the generated files are:
 
@@ -112,15 +151,19 @@ The normalized tables are:
   `T_C_O`, visibility statistics/bboxes, and depth-corruption state;
 - `scene_tracks`: stable physical instances identified by
   `(scene_id, gt_id)`, with available/visible/clean view counts;
+- `sampling_profiles` and `track_sampling_profiles`: materialized eligible
+  view counts for the standard training thresholds and depth policies;
 - `scenes`: available scene views and whether all 40 are indexed;
 - `objects`: observation, scene, and track counts for every object ID;
 - `metadata`: schema, unit, and pose-convention declarations.
 
 `gt_id` is essential: the same object ID can occur more than once in a scene.
 Therefore `(scene_id, object_id)` does not uniquely identify a physical object,
-whereas `(scene_id, gt_id)` does. The aggregate tables deliberately do not bake
-in a visibility threshold; a training config can use, for example, 0.1 or 0.2
-without reprocessing.
+whereas `(scene_id, gt_id)` does. The general instance and scene-track tables do
+not bake in a visibility threshold; a training config can still use, for
+example, 0.2 without reprocessing. Only the common default profiles are
+materialized as a startup optimization, and loaders fall back to the general
+query for any other threshold.
 
 All pose blobs are little-endian float32 matrices in row-major order. In a
 loader:
@@ -254,11 +297,12 @@ python scripts/train_pi3.py --cfg job \
   train.image_num_range='[2,2]' test.image_num_range='[2,2]'
 ```
 
-The image corpus has no local GSO meshes, diameters, or symmetry declarations.
-The dataset exposes object poses but marks the object-model capability
-unavailable. Camera alignment, reference reconstruction, and correspondence
-remain valid; ADD/ADD-S, diameter-normalized Chamfer, and CAD pose overlays are
-routed away from these batches.
+The released image corpus itself has no bundled meshes or symmetry
+declarations. The legacy scene-only adapter therefore keeps object-model
+capability unavailable. When the separately downloaded/prepared
+`models_eval` catalogue is supplied to `ComposableObjectPoseDataset`, its GSO
+batches expose model availability explicitly. Symmetry remains unknown unless
+an authoritative catalogue is added.
 
 For strict two-scene anchor-pair training on CITEc A40 nodes, use the dedicated
 profile, dataset config, environment block, smoke, and production commands in
