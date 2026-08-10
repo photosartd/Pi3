@@ -21,6 +21,12 @@ SHARED_CKPT="${PI3_SHARED_CKPT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/check
 FILTER_PREPROCESSED_QUERY_DEPTH="${PI3_FILTER_PREPROCESSED_QUERY_DEPTH:-false}"
 TRAIN_CONFIG="${PI3_TRAIN_CONFIG:-train_lmgeo_finetune_a40_46gb}"
 DATA_CONFIG="${PI3_DATA_CONFIG:-lmgeo_trainpbr45_real_and_new_val}"
+GSO_OBJECT_ASSET_DATA=false
+case "$DATA_CONFIG" in
+  megapose_gso_composable_*|megapose_gso_baseline_*|megapose_gso_transfer_*)
+    GSO_OBJECT_ASSET_DATA=true
+    ;;
+esac
 DATA_FAMILY="${PI3_DATA_FAMILY:-}"
 if [[ -z "$DATA_FAMILY" ]]; then
   if [[ "$DATA_CONFIG" == megapose_gso_* ]]; then
@@ -103,7 +109,7 @@ if [[ "$DATA_FAMILY" == "megapose_gso" ]]; then
     echo "Rerun datasets/preprocess/megapose_gso.py before submitting training." >&2
     exit 2
   fi
-  if [[ "$DATA_CONFIG" == megapose_gso_composable_* ]]; then
+  if [[ "$GSO_OBJECT_ASSET_DATA" == true ]]; then
     if [[ ! -f "$GSO_ASSETS_ROOT/models_eval/models_info.json" ]]; then
       echo "ERROR: validated GSO model catalogue is missing: $GSO_ASSETS_ROOT/models_eval/models_info.json" >&2
       echo "Set PI3_GSO_ASSETS_ROOT to the prepared shared asset directory." >&2
@@ -242,7 +248,7 @@ if [[ "$DATA_FAMILY" == "lmgeo" ]]; then
   )
 else
   COMMON_OVERRIDES+=("gso.data_root=$DATA_ROOT")
-  if [[ "$DATA_CONFIG" == megapose_gso_composable_* ]]; then
+  if [[ "$GSO_OBJECT_ASSET_DATA" == true ]]; then
     COMMON_OVERRIDES+=(
       "gso.assets_root=$GSO_ASSETS_ROOT"
       "gso.references_root=$GSO_REFERENCES_ROOT"

@@ -1,0 +1,22 @@
+# @package _global_
+
+# Isolated transfer ablation: retain object-only depth supervision for every
+# reference/keyframe, but supervise the complete available depth map for each
+# full-RGB GSO scene query. All stochastic mask-conditioning, photometric, and
+# validation settings are inherited unchanged. Validation intentionally stays
+# object-only so its loss and pose metrics remain comparable with the baseline.
+defaults:
+  - megapose_gso_transfer_diagnostics
+  - _self_
+
+train_dataset:
+  GSORenderToScene:
+    reference_treatment:
+      depth: object_only
+    query_treatment:
+      depth: full
+  GSOScenePairMaskedReferences:
+    reference_treatment:
+      depth: object_only
+    query_treatment:
+      depth: full

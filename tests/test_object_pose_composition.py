@@ -200,6 +200,34 @@ class ObjectPoseCompositionTest(unittest.TestCase):
         self.assertEqual(query["source_name"], "scene")
         np.testing.assert_allclose(query["camera_pose"], np.linalg.inv(query["T_C_O"]))
 
+    def test_full_depth_can_be_supervised_only_on_queries(self):
+        dataset = _dataset(
+            RenderToScenePolicy(
+                num_reference_range=(5, 5),
+                num_query_range=(1, 1),
+                reference_selection="uniform",
+                query_selection="first",
+            ),
+            sources={"render": _render_source(), "scene": _scene_source()},
+            reference=ViewTreatment(
+                rgb="full", depth="object_only", mask_condition="none"
+            ),
+            query=ViewTreatment(
+                rgb="full", depth="full", mask_condition="object"
+            ),
+        )
+        views = dataset[(0, 0, 6, 743)]
+        for reference in views[:5]:
+            mask = reference["object_visibility_mask"] > 0.5
+            self.assertTrue(np.all(reference["depthmap"][~mask] == 0.0))
+            self.assertFalse(np.any(reference["valid_mask"][~mask]))
+
+        query = views[-1]
+        mask = query["object_visibility_mask"] > 0.5
+        self.assertTrue(np.all(query["depthmap"][~mask] == 1.0))
+        self.assertTrue(np.all(query["valid_mask"][~mask]))
+        self.assertEqual(query["depth_treatment"], "full")
+
     def test_render_to_scene_can_enumerate_every_query_track_once(self):
         policy = RenderToScenePolicy(
             num_reference_range=(5, 5),

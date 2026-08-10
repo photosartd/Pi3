@@ -25,6 +25,7 @@ Use one of these complete train/data pairs:
 | --- | --- | --- |
 | Cheapest generalization diagnostic | `train_megapose_gso_finetune_a40_40gb_336x252_n5_k1` | `megapose_gso_anchor_scene_pairs` |
 | Dynamic production/context sweep | `train_megapose_gso_finetune_a40_40gb_336x252_dynamic` | `megapose_gso_anchor_scene_pairs_multival` |
+| Query full-depth transfer ablation | `train_megapose_gso_transfer_a40_40gb_336x252` | `megapose_gso_transfer_diagnostics_query_full_depth` |
 
 The fixed profile always trains on five anchor views and one query. It has one
 matching validation loader, `gso_val`, also with N=5/K=1.
@@ -166,6 +167,60 @@ scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh smoke --fresh
 export PI3_RUN_NAME=megapose_gso_336_dynamic_$(date +%Y%m%d_%H%M%S)
 scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train --fresh
 ```
+
+### Query full-depth transfer ablation
+
+This isolated profile inherits the repeated-safe 50% query-mask policy,
+train-only role-consistent photometric augmentation, eight transfer diagnostic
+loaders, 80 epochs, 1,500-step warm-up, and validation every three epochs. Its
+only data-target change is:
+
+- all references/keyframes retain `depth: object_only`;
+- GSO training queries use `depth: full`;
+- validation retains object-only depth for direct comparison with the baseline.
+
+Because the current point loss averages all valid pixels, this is deliberately
+a strong ablation rather than a low-weight context auxiliary. In real samples,
+full query depth covered nearly the complete 336x252 image and therefore
+outnumbered target-object reference pixels substantially.
+
+Local full-model checks under a 40 GiB allocator cap completed four backward
+steps at both sampler extremes. The N=16/K=10 edge (`2 x 26 = 52` images) used
+28,428 MiB peak reserved; the packed N=2/K=1 edge (`24 x 3 = 72` images) used
+35,816 MiB, leaving about 4.2 GiB allocator headroom. These Blackwell checks do
+not replace the required A40 cluster smoke.
+
+From the repository on CITEc, submit the two-GPU smoke first:
+
+```bash
+PI3_CUDA_MEMORY_LIMIT_GIB=40 \
+PI3_SMOKE_GPUS=2 \
+PI3_TRAIN_CONFIG=train_megapose_gso_transfer_a40_40gb_336x252 \
+PI3_DATA_CONFIG=megapose_gso_transfer_diagnostics_query_full_depth \
+PI3_RUN_NAME=megapose_gso_query_full_depth_a40_smoke_$(date +%Y%m%d_%H%M%S) \
+PI3_CKPT=/vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/model.safetensors \
+scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh smoke --fresh
+```
+
+After that succeeds, submit production on four A40s:
+
+```bash
+PI3_CUDA_MEMORY_LIMIT_GIB=40 \
+PI3_TRAIN_GPUS=4 \
+PI3_TRAIN_CONFIG=train_megapose_gso_transfer_a40_40gb_336x252 \
+PI3_DATA_CONFIG=megapose_gso_transfer_diagnostics_query_full_depth \
+PI3_RUN_NAME=megapose_gso_query_full_depth_a40_$(date +%Y%m%d_%H%M%S) \
+PI3_CKPT=/vol/coro/dtrofimov/data/projects/gfm-6dof/checkpoints/pi3/base/model.safetensors \
+PI3_WALLTIME=4-00:00:00 \
+PI3_CKPT_INTERVAL=5 \
+PI3_MAX_CHECKPOINTS=5 \
+scripts/slurm/submit_citec_lmgeo_518_a40_dynamic.sh train --fresh
+```
+
+The launcher now recognizes `megapose_gso_transfer_*` data profiles as
+mesh/render-backed GSO data and validates/routes the shared assets before the
+job starts. Override `PI3_GSO_ASSETS_ROOT` and `PI3_GSO_REFERENCES_ROOT` only if
+their cluster locations differ from the documented `/vol/coro/...` defaults.
 
 The smoke launcher reads the selected Hydra profile rather than hard-coding the
 old 560x420/28-image shape. The fixed profile exercises its `12 x 6` edge. The

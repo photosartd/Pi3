@@ -181,7 +181,7 @@ _lmo_new_val: &lmo_new_val
   # BaseDataset still rejects/refetches any rare empty processed observation.
   filter_preprocessed_query_depth: false
   filter_target_center_crop_visibility: true
-  filter_target_preprocessed_depth: true
+  filter_target_preprocessed_depth: false
   min_preprocessed_query_depth_pixels: 1
   allow_repeat: false
   visibility_mask_conditioning: false
@@ -226,7 +226,7 @@ _lmo_real_conditioned: &lmo_real_conditioned
   min_center_crop_bbox_area: 1.0
   filter_preprocessed_query_depth: false
   filter_target_center_crop_visibility: true
-  filter_target_preprocessed_depth: true
+  filter_target_preprocessed_depth: false
   min_preprocessed_query_depth_pixels: 1
   allow_repeat: false
   visibility_mask_conditioning: true
@@ -250,6 +250,11 @@ _n5_k1_runtime: &n5_k1_runtime
   print_freq: ${test.print_freq}
 
 val_datasets:
+  lmo_bop19_render_n5_k1:
+    dataset:
+      # Avoid an eager network-volume scan; BaseDataset still rejects an
+      # actually loaded observation if its processed depth is empty.
+      filter_target_preprocessed_depth: false
   gso_heldout_render_n5_k1_all_query_conditioned:
     dataset: *gso_all_query_conditioned
     dataloader:

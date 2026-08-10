@@ -435,15 +435,73 @@ class MegaPoseGSOConfigTest(unittest.TestCase):
         self.assertEqual(pbr.query_split, "new_val")
         self.assertEqual(pbr.query_source, "windows")
         self.assertFalse(pbr.filter_preprocessed_query_depth)
+        self.assertFalse(pbr.filter_target_preprocessed_depth)
         self.assertFalse(
             pbr_conditioned.filter_preprocessed_query_depth
         )
+        self.assertFalse(pbr_conditioned.filter_target_preprocessed_depth)
+        self.assertFalse(
+            cfg.val_datasets.lmo_bop19_render_n5_k1.dataset
+            .filter_target_preprocessed_depth
+        )
+        self.assertFalse(real_conditioned.filter_target_preprocessed_depth)
         self.assertFalse(pbr.visibility_mask_conditioning)
         for dataset in (pbr_conditioned, real_conditioned):
             self.assertTrue(dataset.visibility_mask_conditioning)
             self.assertFalse(dataset.condition_reference_visibility)
             self.assertTrue(dataset.condition_query_visibility)
             self.assertEqual(dataset.mode, "val")
+
+    def test_query_full_depth_transfer_profile_is_an_a40_isolated_ablation(self):
+        with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
+            cfg = compose(
+                config_name="default",
+                overrides=[
+                    "train=train_megapose_gso_transfer_a40_40gb_336x252",
+                    "data=megapose_gso_transfer_diagnostics_query_full_depth",
+                ],
+            )
+
+        self.assertEqual(cfg.train.max_img_per_gpu, 72)
+        self.assertEqual(cfg.test.max_img_per_gpu, 256)
+        self.assertEqual(cfg.test.max_img_per_gpu_ref16, 256)
+        self.assertEqual(cfg.train.num_epoch, 80)
+        self.assertEqual(cfg.train.val_every_n_epochs, 3)
+        self.assertEqual(cfg.train.optimizer.lr, 1e-5)
+        self.assertEqual(cfg.train.optimizer.visibility_mask_lr, 5e-5)
+        self.assertTrue(cfg.model.use_visibility_mask_conditioning)
+
+        for name in ("GSORenderToScene", "GSOScenePairMaskedReferences"):
+            dataset = cfg.train_dataset[name]
+            self.assertEqual(dataset.reference_treatment.depth, "object_only")
+            self.assertEqual(dataset.query_treatment.depth, "full")
+            self.assertEqual(
+                dataset.query_treatment.mask_condition,
+                "object_if_repeated_else_probability",
+            )
+            self.assertEqual(
+                dataset.query_treatment.mask_condition_probability, 0.5
+            )
+            self.assertTrue(dataset.photometric_augmentation)
+
+        # Training depth is the only experimental variable. Held-out losses
+        # and pose metrics retain the object-only baseline target.
+        for name in (
+            "gso_heldout_render_n5_k1",
+            "gso_heldout_render_n16_k1",
+            "gso_heldout_render_n5_k1_all_query_conditioned",
+            "gso_heldout_render_n5_k1_visibility_gt_0_5",
+        ):
+            dataset = cfg.val_datasets[name].dataset
+            self.assertEqual(dataset.reference_treatment.depth, "object_only")
+            self.assertEqual(dataset.query_treatment.depth, "object_only")
+        for name in (
+            "lmo_pbr_new_val_render_n5_k1",
+            "lmo_pbr_new_val_render_n5_k1_all_query_conditioned",
+            "lmo_bop19_render_n5_k1",
+            "lmo_bop19_render_n5_k1_all_query_conditioned",
+        ):
+            self.assertTrue(cfg.val_datasets[name].dataset.depth_masking)
 
 
 if __name__ == "__main__":

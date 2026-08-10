@@ -205,11 +205,11 @@ only in training.
 | `lmo_bop19_render_n5_k1_all_query_conditioned` | LM-O real oracle mask | 1,444 |
 
 The paired loaders use the same deterministic references and query records.
-LM-O `new_val` deliberately has eager preprocessed-depth filtering disabled:
-the native and target aspect ratios are both 4:3, center-crop visibility is
-still checked, and `BaseDataset` rejects/refetches a sample if its processed
-depth becomes empty. This reduces complete loader startup from many minutes to
-about 20 seconds locally for both PBR variants plus one real variant.
+All LM-O diagnostic loaders deliberately have eager preprocessed-depth
+filtering disabled: the native and target aspect ratios are both 4:3,
+center-crop visibility is still checked, and `BaseDataset` rejects/refetches a
+sample if its processed depth becomes empty. This avoids a long network-volume
+scan during every job startup.
 
 The full-model smoke on 2026-08-10 completed four bf16 optimizer steps and one
 batch from all eight validation loaders with two workers. It exercised both
