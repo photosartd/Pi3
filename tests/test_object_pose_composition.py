@@ -80,7 +80,12 @@ class _MemoryObjectSource(ObjectViewSource):
         if (
             self._repeated
             and treatment.rgb == "full"
-            and treatment.mask_condition not in {"object", "object_if_repeated"}
+            and treatment.mask_condition
+            not in {
+                "object",
+                "object_if_repeated",
+                "object_if_repeated_else_probability",
+            }
         ):
             raise ValueError("ambiguous target")
 
@@ -117,7 +122,15 @@ def _scene_source(*, repeated=False):
     )
 
 
-def _dataset(policy, *, sources, reference=None, query=None, source_treatments=None):
+def _dataset(
+    policy,
+    *,
+    sources,
+    reference=None,
+    query=None,
+    source_treatments=None,
+    **dataset_kwargs,
+):
     return ComposableObjectPoseDataset(
         sources=sources,
         sampling_policy=policy,
@@ -131,6 +144,7 @@ def _dataset(policy, *, sources, reference=None, query=None, source_treatments=N
         resolution=[[28, 28]],
         frame_num=6,
         shuffle=False,
+        **dataset_kwargs,
     )
 
 
@@ -320,6 +334,105 @@ class ObjectPoseCompositionTest(unittest.TestCase):
         for view in unique[(0, 0, 6)]:
             self.assertFalse(view["visibility_mask_condition_applied"])
             self.assertEqual(float(view["visibility_mask_known"].sum()), 0.0)
+
+    def test_stochastic_query_condition_is_repeated_safe_and_reproducible(self):
+        stochastic = ViewTreatment(
+            rgb="full",
+            depth="object_only",
+            mask_condition="object_if_repeated_else_probability",
+            mask_condition_probability=0.5,
+        )
+        unique = _dataset(
+            ScenePairPolicy(
+                num_reference_range=(3, 3), num_query_range=(3, 3)
+            ),
+            sources={"scene": _scene_source(repeated=False)},
+            reference=ViewTreatment(rgb="object_only"),
+            query=stochastic,
+        )
+        self.assertTrue(unique.requires_visibility_mask_conditioning)
+        first = unique[(0, 0, 6, 9182)]
+        replay = unique[(0, 0, 6, 9182)]
+        self.assertEqual(
+            [view["visibility_mask_condition_applied"] for view in first],
+            [view["visibility_mask_condition_applied"] for view in replay],
+        )
+        known_queries = [
+            view["visibility_mask_condition_applied"] for view in first[3:]
+        ]
+        self.assertTrue(any(known_queries))
+        self.assertTrue(any(not value for value in known_queries))
+        self.assertFalse(
+            any(view["visibility_mask_condition_applied"] for view in first[:3])
+        )
+
+        repeated = _dataset(
+            ScenePairPolicy(
+                num_reference_range=(3, 3), num_query_range=(3, 3)
+            ),
+            sources={"scene": _scene_source(repeated=True)},
+            reference=ViewTreatment(rgb="object_only"),
+            query=ViewTreatment(
+                mask_condition="object_if_repeated_else_probability",
+                mask_condition_probability=0.0,
+            ),
+        )
+        self.assertTrue(
+            all(
+                view["visibility_mask_condition_applied"]
+                for view in repeated[(0, 0, 6, 101)][3:]
+            )
+        )
+
+    def test_generic_role_photometric_is_train_only_and_role_consistent(self):
+        photo_kwargs = {
+            "photometric_augmentation": True,
+            "photometric_jpeg_prob": 1.0,
+            "photometric_blur_prob": 1.0,
+        }
+        train = _dataset(
+            ScenePairPolicy(
+                num_reference_range=(3, 3), num_query_range=(3, 3),
+                reference_selection="first", query_selection="first",
+            ),
+            sources={"scene": _scene_source()},
+            query=ViewTreatment(mask_condition="object"),
+            mode="train",
+            **photo_kwargs,
+        )
+        train_views = train[(0, 0, 6, 44)]
+        self.assertTrue(train.photometric_augmentation)
+        self.assertNotEqual(
+            train._photometric_role_specs["reference"],
+            train._photometric_role_specs["query"],
+        )
+        for role_views in (train_views[:3], train_views[3:]):
+            for view in role_views[1:]:
+                np.testing.assert_array_equal(view["img"], role_views[0]["img"])
+
+        validation = _dataset(
+            ScenePairPolicy(
+                num_reference_range=(3, 3), num_query_range=(3, 3),
+                reference_selection="first", query_selection="first",
+            ),
+            sources={"scene": _scene_source()},
+            query=ViewTreatment(mask_condition="object"),
+            mode="val",
+            **photo_kwargs,
+        )
+        validation[(0, 0, 6, 44)]
+        self.assertTrue(validation.photometric_augmentation_requested)
+        self.assertFalse(validation.photometric_augmentation)
+        self.assertEqual(validation._photometric_role_specs, {})
+
+    def test_stochastic_condition_probability_is_validated(self):
+        with self.assertRaisesRegex(ValueError, "must be in"):
+            ViewTreatment(
+                mask_condition="object_if_repeated_else_probability",
+                mask_condition_probability=1.1,
+            )
+        with self.assertRaisesRegex(ValueError, "only valid"):
+            ViewTreatment(mask_condition="object", mask_condition_probability=0.5)
 
 
 if __name__ == "__main__":

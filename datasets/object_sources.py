@@ -92,14 +92,20 @@ class ObjectViewSource(ABC):
         if (
             self.contains_repeated_object_instances
             and treatment.rgb == "full"
-            and treatment.mask_condition not in {"object", "object_if_repeated"}
+            and treatment.mask_condition
+            not in {
+                "object",
+                "object_if_repeated",
+                "object_if_repeated_else_probability",
+            }
         ):
             raise ValueError(
                 f"Source {self.source_name!r} contains "
                 f"{self.repeated_object_scene_count} eligible same-object repeated "
                 f"scenes, but {view_role} treatment uses full RGB without target "
                 "disambiguation. Use rgb='object_only', mask_condition='object', "
-                "mask_condition='object_if_repeated', or explicitly filter repeated "
+                "mask_condition='object_if_repeated', stochastic repeated-safe "
+                "conditioning, or explicitly filter repeated "
                 "scenes."
             )
 
@@ -364,6 +370,7 @@ class MegaPoseGSOSceneSource(ObjectViewSource):
         scene_split="all",
         scene_ids=None,
         visibility_min=0.1,
+        visibility_min_inclusive=True,
         min_visible_pixels=64,
         depth_corruption_policy="clean_only",
         mask_type="mask_visib",
@@ -386,6 +393,7 @@ class MegaPoseGSOSceneSource(ObjectViewSource):
         self.object_namespace = str(object_namespace)
         self.scene_split = str(scene_split)
         self.visibility_min = float(visibility_min)
+        self.visibility_min_inclusive = bool(visibility_min_inclusive)
         self.min_visible_pixels = int(min_visible_pixels)
         self.depth_corruption_policy = str(depth_corruption_policy)
         self.mask_type = str(mask_type)
@@ -404,6 +412,7 @@ class MegaPoseGSOSceneSource(ObjectViewSource):
             self._requested_object_ids,
             self._requested_scene_ids,
             self.visibility_min,
+            self.visibility_min_inclusive,
             self.min_visible_pixels,
             self.depth_corruption_policy,
         )
@@ -480,7 +489,8 @@ class MegaPoseGSOSceneSource(ObjectViewSource):
             ).fetchone()
             profile = None
             if (
-                profile_table is not None
+                self.visibility_min_inclusive
+                and profile_table is not None
                 and metadata.get("sampling_profiles_complete") == "1"
             ):
                 profile = connection.execute(
@@ -567,6 +577,10 @@ class MegaPoseGSOSceneSource(ObjectViewSource):
             return "i.depth_corrupt IS NOT 1"
         return "1 = 1"
 
+    def _visibility_predicate(self):
+        operator = ">=" if self.visibility_min_inclusive else ">"
+        return f"i.visib_fract {operator} ?"
+
     def _selected(self, object_id, scene_id):
         if self._requested_object_ids is not None and int(object_id) not in self._requested_object_ids:
             return False
@@ -597,7 +611,8 @@ class MegaPoseGSOSceneSource(ObjectViewSource):
                     SELECT i.object_id, i.scene_id, i.gt_id, COUNT(*) AS view_count
                     FROM instances AS i
                     WHERE {self._depth_predicate()}
-                      AND i.visib_fract >= ? AND i.px_count_visib >= ?
+                      AND {self._visibility_predicate()}
+                      AND i.px_count_visib >= ?
                     GROUP BY i.object_id, i.scene_id, i.gt_id
                     ORDER BY i.object_id, i.scene_id, i.gt_id
                     """,
@@ -700,7 +715,8 @@ class MegaPoseGSOSceneSource(ObjectViewSource):
             JOIN shards AS s ON s.id=f.shard_id
             WHERE i.object_id=? AND i.scene_id=? AND i.gt_id=?
               AND {self._depth_predicate()}
-              AND i.visib_fract >= ? AND i.px_count_visib >= ?
+              AND {self._visibility_predicate()}
+              AND i.px_count_visib >= ?
             ORDER BY i.view_id
             """,
             (
@@ -810,7 +826,12 @@ class MegaPoseGSOSceneSource(ObjectViewSource):
         if (
             multiplicity > 1
             and treatment.rgb == "full"
-            and treatment.mask_condition not in {"object", "object_if_repeated"}
+            and treatment.mask_condition
+            not in {
+                "object",
+                "object_if_repeated",
+                "object_if_repeated_else_probability",
+            }
         ):
             raise ValueError(
                 f"Ambiguous {view_role} {record.get('frame_key')}: scene contains "

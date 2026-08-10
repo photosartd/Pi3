@@ -13,60 +13,6 @@ from datasets.object_centric import (
 )
 
 
-PHOTOMETRIC_INTERPOLATIONS = (lanczos, bicubic, bilinear)
-
-
-def _adjust_hue(image, hue_delta):
-    hsv = np.asarray(image.convert("HSV"), dtype=np.uint8).copy()
-    hue_shift = int(round(float(hue_delta) * 255.0))
-    hsv[..., 0] = ((hsv[..., 0].astype(np.int16) + hue_shift) % 256).astype(np.uint8)
-    return Image.fromarray(hsv, mode="HSV").convert("RGB")
-
-
-def _adjust_gamma(image, gamma):
-    array = np.asarray(image, dtype=np.float32) / 255.0
-    array = np.clip(array ** float(gamma), 0.0, 1.0)
-    return Image.fromarray((array * 255.0 + 0.5).astype(np.uint8), mode="RGB")
-
-
-def _apply_role_photometric_spec(image, spec):
-    """Apply the existing Pi3 photometric recipe with pre-sampled parameters."""
-
-    if not isinstance(image, Image.Image):
-        image = Image.fromarray(np.asarray(image))
-    image = image.convert("RGB")
-
-    image = TF.adjust_brightness(image, spec["brightness"])
-    image = TF.adjust_contrast(image, spec["contrast"])
-    image = TF.adjust_saturation(image, spec["saturation"])
-    image = _adjust_hue(image, spec["hue"])
-    image = _adjust_gamma(image, spec["gamma"])
-
-    if spec["jpeg_enabled"]:
-        image_cv = np.asarray(image)[:, :, ::-1]
-        _, encoded = cv2.imencode(
-            ".jpg",
-            image_cv,
-            [cv2.IMWRITE_JPEG_QUALITY, int(spec["jpeg_quality"])],
-        )
-        image_cv = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
-        image = Image.fromarray(image_cv[:, :, ::-1])
-
-    if spec["blur_enabled"]:
-        width, height = image.size
-        ratio = float(spec["blur_resize_ratio"])
-        resized_small = image.resize(
-            (max(1, int(width * ratio)), max(1, int(height * ratio))),
-            resample=lanczos,
-        )
-        image = resized_small.resize(
-            (width, height),
-            resample=PHOTOMETRIC_INTERPOLATIONS[int(spec["blur_interpolation_index"])],
-        )
-
-    return image
-
-
 class LMGeoDataset(ObjectDatasetAdapter):
     """LM-O object-centric overfit dataset for Pi3 training.
 
@@ -165,7 +111,18 @@ class LMGeoDataset(ObjectDatasetAdapter):
         self.condition_query_visibility = bool(condition_query_visibility)
         self.visibility_condition_corruption = str(visibility_condition_corruption)
         self.visibility_condition_shift_fraction = float(visibility_condition_shift_fraction)
-        self._photometric_role_specs = {}
+        self._configure_role_photometric_augmentation(
+            enabled=photometric_augmentation,
+            brightness=photometric_brightness,
+            contrast=photometric_contrast,
+            saturation=photometric_saturation,
+            hue=photometric_hue,
+            gamma=photometric_gamma,
+            jpeg_prob=photometric_jpeg_prob,
+            jpeg_quality=photometric_jpeg_quality,
+            blur_prob=photometric_blur_prob,
+            blur_resize_ratio=photometric_blur_resize_ratio,
+        )
 
         if self.mask_type not in {"mask", "mask_visib"}:
             raise ValueError("mask_type must be 'mask' or 'mask_visib'")
@@ -453,45 +410,6 @@ class LMGeoDataset(ObjectDatasetAdapter):
             raise FileNotFoundError(f"Cannot read depth: {path}")
         return depth.astype(np.float32) * float(depth_scale) * self.depth_unit_scale
 
-    def _sample_photometric_spec(self, rng):
-        jpeg_enabled = bool(rng.random() < self.photometric_jpeg_prob)
-        blur_enabled = bool(rng.random() < self.photometric_blur_prob)
-        return {
-            "brightness": float(rng.uniform(*self.photometric_brightness)),
-            "contrast": float(rng.uniform(*self.photometric_contrast)),
-            "saturation": float(rng.uniform(*self.photometric_saturation)),
-            "hue": float(rng.uniform(*self.photometric_hue)),
-            "gamma": float(rng.uniform(*self.photometric_gamma)),
-            "jpeg_enabled": jpeg_enabled,
-            "jpeg_quality": int(rng.integers(*self.photometric_jpeg_quality)) if jpeg_enabled else 100,
-            "blur_enabled": blur_enabled,
-            "blur_resize_ratio": (
-                float(rng.uniform(*self.photometric_blur_resize_ratio))
-                if blur_enabled
-                else 1.0
-            ),
-            "blur_interpolation_index": (
-                int(rng.integers(0, len(PHOTOMETRIC_INTERPOLATIONS)))
-                if blur_enabled
-                else 0
-            ),
-        }
-
-    def _prepare_sample_photometric_augmentation(self, rng):
-        if not self.photometric_augmentation:
-            self._photometric_role_specs = {}
-            return
-        self._photometric_role_specs = {
-            "reference": self._sample_photometric_spec(rng),
-            "query": self._sample_photometric_spec(rng),
-        }
-
-    def _apply_sample_photometric_augmentation(self, image, view_role):
-        spec = getattr(self, "_photometric_role_specs", {}).get(str(view_role))
-        if spec is None:
-            return image
-        return _apply_role_photometric_spec(image, spec)
-
     def _maybe_transform_raw_view(
         self,
         *,
@@ -631,6 +549,9 @@ class LMGeoDataset(ObjectDatasetAdapter):
             "object_visibility_mask": object_mask.astype(np.float32),
             "visibility_mask_condition": visibility_condition.astype(np.float32),
             "visibility_mask_known": visibility_known_map.astype(np.float32),
+            "visibility_mask_condition_applied": bool(
+                state.get("visibility_mask_condition_applied", False)
+            ),
             "camera_pose": camera_pose.astype(np.float32),
             "T_C_O": T_C_O.astype(np.float32),
             "camera_intrinsics": intrinsics.astype(np.float32),
@@ -828,7 +749,18 @@ class LMGeoSequenceDataset(LMGeoDataset):
         self.condition_query_visibility = bool(condition_query_visibility)
         self.visibility_condition_corruption = str(visibility_condition_corruption)
         self.visibility_condition_shift_fraction = float(visibility_condition_shift_fraction)
-        self._photometric_role_specs = {}
+        self._configure_role_photometric_augmentation(
+            enabled=photometric_augmentation,
+            brightness=photometric_brightness,
+            contrast=photometric_contrast,
+            saturation=photometric_saturation,
+            hue=photometric_hue,
+            gamma=photometric_gamma,
+            jpeg_prob=photometric_jpeg_prob,
+            jpeg_quality=photometric_jpeg_quality,
+            blur_prob=photometric_blur_prob,
+            blur_resize_ratio=photometric_blur_resize_ratio,
+        )
         default_min_query_records = self.num_query_range[0] if self.allow_repeat else self.num_query_range[1]
         self.min_query_records = int(min_query_records) if min_query_records is not None else default_min_query_records
         self.max_query_subsequences = None if max_query_subsequences is None else int(max_query_subsequences)

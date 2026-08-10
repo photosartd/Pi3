@@ -372,6 +372,79 @@ class MegaPoseGSOConfigTest(unittest.TestCase):
         self.assertFalse(cfg.metrics["items"].gso_object_pose.report_per_object)
         self.assertFalse(cfg.metrics["items"].lmo_object_pose.report_per_object)
 
+    def test_transfer_profile_composes_all_diagnostics_and_train_treatments(self):
+        with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
+            cfg = compose(
+                config_name="default",
+                overrides=[
+                    "train=train_megapose_gso_transfer_rtxpro6000_blackwell_70gb_336x252",
+                    "data=megapose_gso_transfer_diagnostics",
+                ],
+            )
+        self.assertEqual(cfg.train.num_epoch, 80)
+        self.assertEqual(cfg.train.val_every_n_epochs, 3)
+        self.assertEqual(cfg.train.optimizer.lr, 1e-5)
+        self.assertEqual(cfg.train.optimizer.encoder_lr, 0.0)
+        self.assertEqual(cfg.train.optimizer.visibility_mask_lr, 5e-5)
+        self.assertEqual(cfg.train.lr_scheduler.pct_start, 0.0375)
+        self.assertTrue(cfg.model.freeze_encoder)
+        for name in ("GSORenderToScene", "GSOScenePairMaskedReferences"):
+            dataset = cfg.train_dataset[name]
+            self.assertEqual(
+                dataset.query_treatment.mask_condition,
+                "object_if_repeated_else_probability",
+            )
+            self.assertEqual(
+                dataset.query_treatment.mask_condition_probability, 0.5
+            )
+            self.assertTrue(dataset.photometric_augmentation)
+            self.assertEqual(list(dataset.photometric_brightness), [0.7, 1.3])
+
+        self.assertEqual(
+            list(cfg.val_datasets),
+            [
+                "gso_heldout_render_n5_k1",
+                "gso_heldout_render_n16_k1",
+                "lmo_bop19_render_n5_k1",
+                "gso_heldout_render_n5_k1_all_query_conditioned",
+                "gso_heldout_render_n5_k1_visibility_gt_0_5",
+                "lmo_pbr_new_val_render_n5_k1",
+                "lmo_pbr_new_val_render_n5_k1_all_query_conditioned",
+                "lmo_bop19_render_n5_k1_all_query_conditioned",
+            ],
+        )
+        conditioned_gso = cfg.val_datasets[
+            "gso_heldout_render_n5_k1_all_query_conditioned"
+        ].dataset
+        self.assertEqual(conditioned_gso.query_treatment.mask_condition, "object")
+        strict = cfg.val_datasets[
+            "gso_heldout_render_n5_k1_visibility_gt_0_5"
+        ].dataset
+        self.assertEqual(strict.sources.scene.visibility_min, 0.5)
+        self.assertFalse(strict.sources.scene.visibility_min_inclusive)
+        self.assertEqual(
+            strict.query_treatment.mask_condition, "object_if_repeated"
+        )
+        pbr = cfg.val_datasets.lmo_pbr_new_val_render_n5_k1.dataset
+        pbr_conditioned = cfg.val_datasets[
+            "lmo_pbr_new_val_render_n5_k1_all_query_conditioned"
+        ].dataset
+        real_conditioned = cfg.val_datasets[
+            "lmo_bop19_render_n5_k1_all_query_conditioned"
+        ].dataset
+        self.assertEqual(pbr.query_split, "new_val")
+        self.assertEqual(pbr.query_source, "windows")
+        self.assertFalse(pbr.filter_preprocessed_query_depth)
+        self.assertFalse(
+            pbr_conditioned.filter_preprocessed_query_depth
+        )
+        self.assertFalse(pbr.visibility_mask_conditioning)
+        for dataset in (pbr_conditioned, real_conditioned):
+            self.assertTrue(dataset.visibility_mask_conditioning)
+            self.assertFalse(dataset.condition_reference_visibility)
+            self.assertTrue(dataset.condition_query_visibility)
+            self.assertEqual(dataset.mode, "val")
+
 
 if __name__ == "__main__":
     unittest.main()

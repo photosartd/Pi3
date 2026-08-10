@@ -105,8 +105,16 @@ class ComposableObjectPoseDataset(ObjectDatasetAdapter):
                     view_role=view_role, treatment=treatment
                 )
                 if treatment.mask_condition == "object" or (
-                    treatment.mask_condition == "object_if_repeated"
+                    treatment.mask_condition
+                    in {
+                        "object_if_repeated",
+                        "object_if_repeated_else_probability",
+                    }
                     and source.contains_repeated_object_instances
+                ) or (
+                    treatment.mask_condition
+                    == "object_if_repeated_else_probability"
+                    and treatment.mask_condition_probability > 0.0
                 ):
                     self._requires_visibility_mask_conditioning = True
         self.object_ids = self.sampling_policy.eligible_object_ids(self.sources)
@@ -256,6 +264,7 @@ class ComposableObjectPoseDataset(ObjectDatasetAdapter):
 
     def _get_views(self, index, resolution, rng):
         self._current_resolution = resolution
+        self._prepare_sample_photometric_augmentation(rng)
         plan = self.build_sample_plan(int(index), resolution, rng)
         return self._materialize_sample_plan(plan, rng=rng)
 

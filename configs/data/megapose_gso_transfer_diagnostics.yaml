@@ -1,0 +1,282 @@
+# @package _global_
+
+# Transfer-diagnostic extension of the reproducible GSO baseline.
+#
+# Training keeps repeated-instance query masks mandatory and supplies the same
+# conditioning cue to 50% of otherwise unambiguous query views. RGB is never
+# object-masked by this policy. Role-consistent photometric augmentation is
+# enabled only on the two training mixture components.
+#
+# Validation isolates three effects without random decisions:
+# - repeated-only versus every-query GSO mask conditioning;
+# - all eligible GSO tracks versus strictly visib_fract > 0.5;
+# - LM-O synthetic new_val versus real BOP19, with and without oracle query
+#   mask conditioning.
+defaults:
+  - megapose_gso_baseline_render_scene_pair_lmo_val
+  - _self_
+
+primary_val: gso_heldout_render_n5_k1
+
+gso:
+  train_unique_query_mask_probability: 0.5
+  photometric_brightness: [0.7, 1.3]
+  photometric_contrast: [0.7, 1.3]
+  photometric_saturation: [0.7, 1.3]
+  photometric_hue: [-0.1, 0.1]
+  photometric_gamma: [0.7, 1.3]
+  photometric_jpeg_prob: 0.5
+  photometric_jpeg_quality: [20, 100]
+  photometric_blur_prob: 0.5
+  photometric_blur_resize_ratio: [0.25, 1.0]
+
+lmo:
+  new_val_query_split: new_val
+
+train_dataset:
+  GSORenderToScene:
+    query_treatment:
+      mask_condition: object_if_repeated_else_probability
+      mask_condition_probability: ${gso.train_unique_query_mask_probability}
+    photometric_augmentation: true
+    photometric_brightness: ${gso.photometric_brightness}
+    photometric_contrast: ${gso.photometric_contrast}
+    photometric_saturation: ${gso.photometric_saturation}
+    photometric_hue: ${gso.photometric_hue}
+    photometric_gamma: ${gso.photometric_gamma}
+    photometric_jpeg_prob: ${gso.photometric_jpeg_prob}
+    photometric_jpeg_quality: ${gso.photometric_jpeg_quality}
+    photometric_blur_prob: ${gso.photometric_blur_prob}
+    photometric_blur_resize_ratio: ${gso.photometric_blur_resize_ratio}
+  GSOScenePairMaskedReferences:
+    query_treatment:
+      mask_condition: object_if_repeated_else_probability
+      mask_condition_probability: ${gso.train_unique_query_mask_probability}
+    photometric_augmentation: true
+    photometric_brightness: ${gso.photometric_brightness}
+    photometric_contrast: ${gso.photometric_contrast}
+    photometric_saturation: ${gso.photometric_saturation}
+    photometric_hue: ${gso.photometric_hue}
+    photometric_gamma: ${gso.photometric_gamma}
+    photometric_jpeg_prob: ${gso.photometric_jpeg_prob}
+    photometric_jpeg_quality: ${gso.photometric_jpeg_quality}
+    photometric_blur_prob: ${gso.photometric_blur_prob}
+    photometric_blur_resize_ratio: ${gso.photometric_blur_resize_ratio}
+
+_gso_all_query_conditioned: &gso_all_query_conditioned
+  _target_: datasets.object_pose_dataset.ComposableObjectPoseDataset
+  dataset_domain: MegaPoseGSO
+  protocol_name: heldout_render_n5_k1_all_query_conditioned
+  sources:
+    render:
+      _target_: datasets.object_sources.IndexedBOPReferenceSource
+      bank_root: ${gso.references_root}
+      index_path: ${gso.references_index_path}
+      source_name: render
+      object_namespace: gso
+      object_ids: ${gso.object_ids}
+      mask_type: ${gso.mask_type}
+    scene:
+      _target_: datasets.object_sources.MegaPoseGSOSceneSource
+      data_root: ${gso.data_root}
+      index_path: ${gso.index_path}
+      split_path: ${gso.split_path}
+      source_name: scene
+      object_namespace: gso
+      object_ids: ${gso.object_ids}
+      scene_split: val
+      visibility_min: ${gso.visibility_min}
+      min_visible_pixels: ${gso.min_visible_pixels}
+      depth_corruption_policy: ${gso.depth_corruption_policy}
+      mask_type: ${gso.mask_type}
+  sampling_policy:
+    _target_: datasets.object_sampling.RenderToScenePolicy
+    reference_source: render
+    query_source: scene
+    num_reference_range: [5, 5]
+    num_query_range: [1, 1]
+    reference_selection: coverage_uniform
+    query_selection: first
+    allow_repeat: false
+    enumerate_query_groups: true
+  object_model_catalog:
+    _target_: datasets.object_sources.BOPObjectModelCatalog
+    data_root: ${gso.assets_root}
+    models_folder: ${gso.models_folder}
+    object_namespace: gso
+  reference_treatment:
+    rgb: full
+    depth: object_only
+    mask_condition: none
+  query_treatment:
+    rgb: full
+    depth: object_only
+    mask_condition: object
+  aug_crop: false
+  aug_focal: false
+  z_far: 0
+  max_refetch: ${gso_profile.max_refetch}
+  resolution: ${train.resolution}
+  transform:
+    _partial_: true
+    _target_: datasets.base.transforms.ImgToTensor
+  shuffle: false
+  mode: val
+
+_gso_visible_gt_half: &gso_visible_gt_half
+  <<: *gso_all_query_conditioned
+  protocol_name: heldout_render_n5_k1_visibility_gt_0_5
+  sources:
+    render:
+      _target_: datasets.object_sources.IndexedBOPReferenceSource
+      bank_root: ${gso.references_root}
+      index_path: ${gso.references_index_path}
+      source_name: render
+      object_namespace: gso
+      object_ids: ${gso.object_ids}
+      mask_type: ${gso.mask_type}
+    scene:
+      _target_: datasets.object_sources.MegaPoseGSOSceneSource
+      data_root: ${gso.data_root}
+      index_path: ${gso.index_path}
+      split_path: ${gso.split_path}
+      source_name: scene
+      object_namespace: gso
+      object_ids: ${gso.object_ids}
+      scene_split: val
+      visibility_min: 0.5
+      visibility_min_inclusive: false
+      min_visible_pixels: ${gso.min_visible_pixels}
+      depth_corruption_policy: ${gso.depth_corruption_policy}
+      mask_type: ${gso.mask_type}
+  query_treatment:
+    rgb: full
+    depth: object_only
+    mask_condition: object_if_repeated
+
+_lmo_new_val: &lmo_new_val
+  _target_: datasets.lmgeo_dataset.LMGeoSequenceDataset
+  data_root: ${lmo.data_root}
+  object_ids: all
+  reference_split: ${lmo.reference_split}
+  query_split: ${lmo.new_val_query_split}
+  query_scene_ids: all
+  query_subscene_ids: all
+  query_window_size: 25
+  query_source: windows
+  num_reference_range: [5, 5]
+  num_query_range: [1, 1]
+  reference_rgb_masking: true
+  query_rgb_masking: false
+  depth_masking: true
+  mask_type: mask_visib
+  visibility_min: 0.1
+  reference_selection: uniform
+  query_selection: first
+  depth_unit_scale: 0.001
+  filter_center_crop_visibility: true
+  min_center_crop_bbox_area: 1.0
+  # The source and target are both 4:3 and center-crop visibility is checked.
+  # Avoid eagerly decoding/resizing every depth map at loader construction;
+  # BaseDataset still rejects/refetches any rare empty processed observation.
+  filter_preprocessed_query_depth: false
+  filter_target_center_crop_visibility: true
+  filter_target_preprocessed_depth: true
+  min_preprocessed_query_depth_pixels: 1
+  allow_repeat: false
+  visibility_mask_conditioning: false
+  condition_reference_visibility: false
+  condition_query_visibility: false
+  aug_crop: false
+  aug_focal: false
+  z_far: 0
+  resolution: ${train.resolution}
+  transform:
+    _partial_: true
+    _target_: datasets.base.transforms.ImgToTensor
+  shuffle: false
+  mode: val
+
+_lmo_new_val_conditioned: &lmo_new_val_conditioned
+  <<: *lmo_new_val
+  visibility_mask_conditioning: true
+  condition_reference_visibility: false
+  condition_query_visibility: true
+
+_lmo_real_conditioned: &lmo_real_conditioned
+  _target_: datasets.lmgeo_dataset.LMGeoSequenceDataset
+  data_root: ${lmo.data_root}
+  object_ids: all
+  reference_split: ${lmo.reference_split}
+  query_split: ${lmo.query_split}
+  query_target_file: ${lmo.target_file}
+  query_window_size: 25
+  query_source: bop_targets
+  num_reference_range: [5, 5]
+  num_query_range: [1, 1]
+  reference_rgb_masking: true
+  query_rgb_masking: false
+  depth_masking: true
+  mask_type: mask_visib
+  visibility_min: 0.0
+  reference_selection: uniform
+  query_selection: first
+  depth_unit_scale: 0.001
+  filter_center_crop_visibility: true
+  min_center_crop_bbox_area: 1.0
+  filter_preprocessed_query_depth: false
+  filter_target_center_crop_visibility: true
+  filter_target_preprocessed_depth: true
+  min_preprocessed_query_depth_pixels: 1
+  allow_repeat: false
+  visibility_mask_conditioning: true
+  condition_reference_visibility: false
+  condition_query_visibility: true
+  aug_crop: false
+  aug_focal: false
+  z_far: 0
+  resolution: ${train.resolution}
+  transform:
+    _partial_: true
+    _target_: datasets.base.transforms.ImgToTensor
+  shuffle: false
+  mode: val
+
+_n5_k1_runtime: &n5_k1_runtime
+  image_num_range: [6, 6]
+  max_img_per_gpu: ${test.max_img_per_gpu}
+  iters_per_test: ${test.iters_per_test}
+  num_workers: ${test.num_workers}
+  print_freq: ${test.print_freq}
+
+val_datasets:
+  gso_heldout_render_n5_k1_all_query_conditioned:
+    dataset: *gso_all_query_conditioned
+    dataloader:
+      drop_last: false
+      shuffle: false
+    runtime: *n5_k1_runtime
+  gso_heldout_render_n5_k1_visibility_gt_0_5:
+    dataset: *gso_visible_gt_half
+    dataloader:
+      drop_last: false
+      shuffle: false
+    runtime: *n5_k1_runtime
+  lmo_pbr_new_val_render_n5_k1:
+    dataset: *lmo_new_val
+    dataloader:
+      drop_last: false
+      shuffle: false
+    runtime: *n5_k1_runtime
+  lmo_pbr_new_val_render_n5_k1_all_query_conditioned:
+    dataset: *lmo_new_val_conditioned
+    dataloader:
+      drop_last: false
+      shuffle: false
+    runtime: *n5_k1_runtime
+  lmo_bop19_render_n5_k1_all_query_conditioned:
+    dataset: *lmo_real_conditioned
+    dataloader:
+      drop_last: false
+      shuffle: false
+    runtime: *n5_k1_runtime

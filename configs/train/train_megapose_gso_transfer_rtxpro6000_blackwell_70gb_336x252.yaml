@@ -1,0 +1,20 @@
+# @package _global_
+
+# 80-epoch transfer-diagnostic run derived from the measured 70 GiB baseline.
+# The frozen DINOv2 encoder remains untouched. The recommended 1e-5 main LR
+# applies to Pi3's trainable decoder/heads; the small mask projection retains
+# its separate 5e-5 LR now that it receives much denser supervision.
+defaults:
+  - train_megapose_gso_baseline_rtxpro6000_blackwell_70gb_336x252
+  - _self_
+
+train:
+  num_epoch: 80
+  val_every_n_epochs: 3
+  optimizer:
+    lr: 1e-5
+    encoder_lr: 0.0
+    visibility_mask_lr: 5e-5
+  lr_scheduler:
+    # 0.0375 * (80 * 500) = 1,500 warm-up steps, matching the stable run.
+    pct_start: 0.0375

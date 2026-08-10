@@ -104,7 +104,8 @@ fail-fast behavior.
 ```yaml
 rgb: full                 # full | object_only
 depth: object_only        # full | object_only
-mask_condition: object_if_repeated  # none | object | object_if_repeated
+mask_condition: object_if_repeated_else_probability
+mask_condition_probability: 0.5
 ```
 
 - `rgb=object_only` zeros pixels outside the object before conversion to model
@@ -116,6 +117,10 @@ mask_condition: object_if_repeated  # none | object | object_if_repeated
 - `mask_condition=object_if_repeated` supplies that condition only when the
   record reports more than one same-object track/instance; otherwise it
   supplies `[0, known=0]`.
+- `mask_condition=object_if_repeated_else_probability` always conditions a
+  repeated-instance record and samples the configured probability for every
+  otherwise unambiguous view. The decision uses the sample RNG, so explicit
+  sampler seeds replay exactly across workers and epochs.
 - `mask_condition=none` supplies `[0, known=0]`.
 - The GT `object_visibility_mask` is retained in every mode.
 
@@ -137,6 +142,20 @@ model that would silently ignore the masks is an initialization error.
 For the current fine-tuning baseline, the main decoder and heads use `5e-6`,
 while the zero-initialized mask projection uses `5e-5`; its additive alpha is
 fixed at `1.0`. This is the previously tested LMGeo mask-conditioning setup.
+
+## Role-consistent photometric augmentation
+
+`ObjectDatasetAdapter` owns the shared photometric implementation used by
+LMGeo, MegaPose-GSO, and future composable object datasets. When enabled for a
+training dataset, it samples one brightness/contrast/saturation/hue/gamma/JPEG/
+blur recipe for every reference in a sample and an independent recipe for
+every query. Sharing parameters within a role avoids artificial temporal
+flicker while still creating a reference/query appearance gap.
+
+The augmentation changes RGB only. Depth, masks, intrinsics, poses, and source
+metadata bypass it. It is also hard-disabled whenever `mode != train`, even if
+a shared config accidentally requests it, so validation images remain exact
+and deterministic.
 
 ## Sampling policies
 

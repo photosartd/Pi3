@@ -15,6 +15,7 @@ import numpy as np
 
 from datasets.base.base_dataset import BaseDataset
 from datasets.base.observation import ObservationCapability
+from datasets.role_photometric import RoleConsistentPhotometricAugmentation
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class ViewTreatment:
     rgb: str = "full"
     depth: str = "object_only"
     mask_condition: str = "none"
+    mask_condition_probability: float = 0.0
 
     def __post_init__(self):
         if self.rgb not in {"full", "object_only"}:
@@ -50,10 +52,27 @@ class ViewTreatment:
             raise ValueError(
                 "ViewTreatment.depth must be 'full' or 'object_only'"
             )
-        if self.mask_condition not in {"none", "object", "object_if_repeated"}:
+        allowed_conditions = {
+            "none",
+            "object",
+            "object_if_repeated",
+            "object_if_repeated_else_probability",
+        }
+        if self.mask_condition not in allowed_conditions:
             raise ValueError(
-                "ViewTreatment.mask_condition must be 'none', 'object', or "
-                "'object_if_repeated'"
+                "ViewTreatment.mask_condition must be one of "
+                f"{sorted(allowed_conditions)}"
+            )
+        probability = float(self.mask_condition_probability)
+        if not 0.0 <= probability <= 1.0:
+            raise ValueError("mask_condition_probability must be in [0, 1]")
+        if (
+            self.mask_condition != "object_if_repeated_else_probability"
+            and probability != 0.0
+        ):
+            raise ValueError(
+                "mask_condition_probability is only valid with "
+                "mask_condition='object_if_repeated_else_probability'"
             )
 
     @classmethod
@@ -412,6 +431,10 @@ class VisibilityConditionTransform(ObjectViewTransform):
             known = condition_mode == "object" or (
                 condition_mode == "object_if_repeated" and multiplicity > 1
             )
+            if condition_mode == "object_if_repeated_else_probability":
+                known = multiplicity > 1 or bool(
+                    rng.random() < request.treatment.mask_condition_probability
+                )
         else:
             known = adapter._should_condition_visibility_view(
                 view_role=request.view_role
@@ -562,11 +585,38 @@ class ObjectDatasetAdapter(BaseDataset, ABC):
     key_query_sampling_policy = KeyQuerySamplingPolicy()
     object_view_processor = ObjectViewProcessor()
 
-    def __init__(self, *args, object_view_transforms=None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        object_view_transforms=None,
+        photometric_augmentation=False,
+        photometric_brightness=(0.7, 1.3),
+        photometric_contrast=(0.7, 1.3),
+        photometric_saturation=(0.7, 1.3),
+        photometric_hue=(-0.1, 0.1),
+        photometric_gamma=(0.7, 1.3),
+        photometric_jpeg_prob=0.5,
+        photometric_jpeg_quality=(20, 100),
+        photometric_blur_prob=0.5,
+        photometric_blur_resize_ratio=(0.25, 1.0),
+        **kwargs,
+    ):
         kwargs.setdefault("shuffle", False)
         super().__init__(*args, **kwargs)
         self.key_query_sampling_policy = KeyQuerySamplingPolicy()
         self.object_view_processor = ObjectViewProcessor(object_view_transforms)
+        self._configure_role_photometric_augmentation(
+            enabled=photometric_augmentation,
+            brightness=photometric_brightness,
+            contrast=photometric_contrast,
+            saturation=photometric_saturation,
+            hue=photometric_hue,
+            gamma=photometric_gamma,
+            jpeg_prob=photometric_jpeg_prob,
+            jpeg_quality=photometric_jpeg_quality,
+            blur_prob=photometric_blur_prob,
+            blur_resize_ratio=photometric_blur_resize_ratio,
+        )
 
     @abstractmethod
     def load_raw_object_view(
@@ -642,6 +692,7 @@ class ObjectDatasetAdapter(BaseDataset, ABC):
 
     def _get_views(self, index, resolution, rng):
         self._current_resolution = resolution
+        self._prepare_sample_photometric_augmentation(rng)
         return self._materialize_sample_plan(
             self.build_sample_plan(int(index), resolution, rng),
             rng=rng,
@@ -671,8 +722,61 @@ class ObjectDatasetAdapter(BaseDataset, ABC):
     ):
         return rgb, depthmap, mask, intrinsics, T_C_O, camera_pose, {}
 
+    def _configure_role_photometric_augmentation(self, *, enabled, **kwargs):
+        self._role_photometric = RoleConsistentPhotometricAugmentation(
+            enabled=enabled,
+            mode=getattr(self, "mode", "train"),
+            **kwargs,
+        )
+        self.photometric_augmentation_requested = bool(enabled)
+        self.photometric_augmentation = bool(self._role_photometric.enabled)
+
+    def _ensure_role_photometric_augmentation(self):
+        """Support lightweight legacy/test adapters made without ``__init__``."""
+
+        if hasattr(self, "_role_photometric"):
+            return
+        self._configure_role_photometric_augmentation(
+            enabled=bool(getattr(self, "photometric_augmentation", False)),
+            brightness=getattr(self, "photometric_brightness", (0.7, 1.3)),
+            contrast=getattr(self, "photometric_contrast", (0.7, 1.3)),
+            saturation=getattr(self, "photometric_saturation", (0.7, 1.3)),
+            hue=getattr(self, "photometric_hue", (-0.1, 0.1)),
+            gamma=getattr(self, "photometric_gamma", (0.7, 1.3)),
+            jpeg_prob=getattr(self, "photometric_jpeg_prob", 0.5),
+            jpeg_quality=getattr(
+                self, "photometric_jpeg_quality", (20, 100)
+            ),
+            blur_prob=getattr(self, "photometric_blur_prob", 0.5),
+            blur_resize_ratio=getattr(
+                self, "photometric_blur_resize_ratio", (0.25, 1.0)
+            ),
+        )
+        legacy_specs = self.__dict__.pop(
+            "_legacy_photometric_role_specs", None
+        )
+        if legacy_specs is not None:
+            self._role_photometric.role_specs = legacy_specs
+
+    @property
+    def _photometric_role_specs(self):
+        self._ensure_role_photometric_augmentation()
+        return self._role_photometric.role_specs
+
+    @_photometric_role_specs.setter
+    def _photometric_role_specs(self, value):
+        if hasattr(self, "_role_photometric"):
+            self._role_photometric.role_specs = dict(value)
+        else:
+            self.__dict__["_legacy_photometric_role_specs"] = dict(value)
+
+    def _prepare_sample_photometric_augmentation(self, rng):
+        self._ensure_role_photometric_augmentation()
+        self._role_photometric.begin_sample(rng)
+
     def _apply_sample_photometric_augmentation(self, image, view_role):
-        return image
+        self._ensure_role_photometric_augmentation()
+        return self._role_photometric.apply(image, view_role)
 
     def _should_condition_visibility_view(self, *, view_role: str) -> bool:
         return False

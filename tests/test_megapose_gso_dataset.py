@@ -2,6 +2,7 @@ import io
 import json
 import pickle
 from pathlib import Path
+import sqlite3
 import tarfile
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ from datasets.base.observation import (
 )
 from datasets.base.transforms import ImgToTensor
 from datasets.megapose_gso_dataset import MegaPoseGSOObjectDataset
+from datasets.object_sources import MegaPoseGSOSceneSource
 from datasets.preprocess.megapose_gso import MANIFEST_TEMPLATE, preprocess_dataset
 
 
@@ -329,6 +331,54 @@ class MegaPoseGSOObjectDatasetTest(unittest.TestCase):
         self.assertTrue(restored._shard_fds)
         dataset.close()
         restored.close()
+
+    def test_scene_source_can_filter_strictly_above_visibility_threshold(self):
+        index_path = self.root / "pi3_index" / "megapose_gso.sqlite"
+        with sqlite3.connect(index_path) as connection:
+            connection.execute(
+                "UPDATE instances SET visib_fract=0.5 "
+                "WHERE scene_id=1 AND view_id=0"
+            )
+            connection.execute(
+                "UPDATE instances SET visib_fract=0.75 "
+                "WHERE scene_id=1 AND view_id=1"
+            )
+            connection.commit()
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+        common = dict(
+            data_root=self.root,
+            scene_split="all",
+            visibility_min=0.5,
+            min_visible_pixels=1,
+            depth_corruption_policy="clean_only",
+        )
+        inclusive = MegaPoseGSOSceneSource(
+            visibility_min_inclusive=True, **common
+        )
+        strict = MegaPoseGSOSceneSource(
+            visibility_min_inclusive=False, **common
+        )
+        inclusive_group = next(
+            group
+            for group in inclusive.groups_for_object(5)
+            if group.scene_id == 1
+        )
+        strict_group = next(
+            group
+            for group in strict.groups_for_object(5)
+            if group.scene_id == 1
+        )
+        self.assertEqual(inclusive_group.view_count, 2)
+        self.assertEqual(strict_group.view_count, 1)
+        self.assertTrue(
+            all(
+                float(record["visib_fract"]) > 0.5
+                for record in strict.records_for_group(strict_group)
+            )
+        )
+        inclusive.close()
+        strict.close()
 
     def test_repeated_object_id_scene_requires_query_disambiguation(self):
         with tempfile.TemporaryDirectory() as temporary:

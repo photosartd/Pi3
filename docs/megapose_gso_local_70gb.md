@@ -109,13 +109,13 @@ The named validations are:
 
 | Loader | Data | Protocol | Samples | Views/sample |
 | --- | --- | --- | ---: | ---: |
-| `gso_heldout_render_n5_k1` | strict held-out GSO objects and scenes | render-to-scene, uniform sphere coverage | 19,093 tracks | 5+1 |
-| `gso_heldout_render_n16_k1` | strict held-out GSO objects and scenes | render-to-scene, uniform sphere coverage | 19,093 tracks | 16+1 |
+| `gso_heldout_render_n5_k1` | strict held-out GSO objects and scenes | render-to-scene, uniform sphere coverage | 19,460 tracks | 5+1 |
+| `gso_heldout_render_n16_k1` | strict held-out GSO objects and scenes | render-to-scene, uniform sphere coverage | 19,460 tracks | 16+1 |
 | `lmo_bop19_render_n5_k1` | complete official LM-O BOP19 targets | render-to-scene | 1,444 target instances | 5+1 |
 
 The GSO lengths enumerate every eligible object/scene track once, rather than
 one random track per object. Consequently, full validation is intentionally
-substantial: at the 768-image budget it has 150, 425, and 12 batches. Set each
+substantial: at the 768-image budget it has 153, 433, and 12 batches. Set each
 `val_datasets.<name>.runtime.iters_per_test=1` only for a smoke; production
 leaves all three at zero, meaning no iteration cap.
 
@@ -144,7 +144,8 @@ it was intentionally stopped when redundant full validation began. The active
 catalogues contain 3,149 repeated object-scene pairs in train and 186 in the
 strict held-out validation split.
 
-Launch 30 epochs locally from the repository root:
+Launch the historical baseline locally from the repository root (the override
+extends its inherited 30 epochs to 80):
 
 ```bash
 RUN=megapose_gso_baseline_336_$(date +%Y%m%d_%H%M%S)
@@ -174,3 +175,80 @@ nohup /home/dtrofimov/miniconda3/envs/pi3-lmgeo/bin/python -u scripts/train_pi3.
   log.max_checkpoints=3 \
   > logs/"$RUN".log 2>&1 &
 ```
+
+## Transfer-diagnostic training profile
+
+The follow-up profile keeps the same measured 70 GiB image budgets and frozen
+DINOv2 encoder, but changes the trainable Pi3 decoder/head LR from `5e-6` to
+`1e-5`. The 402,432-parameter mask projection remains a separate optimizer
+group at `5e-5`. Its 80 epochs, 500 steps/epoch, 1,500-step warm-up, and
+validation every three epochs are part of the train config rather than launch
+overrides.
+
+Training queries use full RGB. Repeated-instance scenes always receive the
+target-instance conditioning mask; every other query view receives it with
+probability `0.5`. One photometric recipe is shared by all references in a
+sample and an independent recipe by all queries. This augmentation is active
+only in training.
+
+`data=megapose_gso_transfer_diagnostics` exposes eight deterministic loaders:
+
+| Loader | Purpose | Samples |
+| --- | --- | ---: |
+| `gso_heldout_render_n5_k1` | GSO repeated-only query conditioning | 19,460 |
+| `gso_heldout_render_n16_k1` | same GSO cohort with 16 references | 19,460 |
+| `gso_heldout_render_n5_k1_all_query_conditioned` | oracle mask on every GSO query | 19,460 |
+| `gso_heldout_render_n5_k1_visibility_gt_0_5` | GSO `visib_fract > 0.5` exactly | 17,922 |
+| `lmo_pbr_new_val_render_n5_k1` | LM-O synthetic transfer, no query condition | 1,600 |
+| `lmo_pbr_new_val_render_n5_k1_all_query_conditioned` | LM-O synthetic oracle mask | 1,600 |
+| `lmo_bop19_render_n5_k1` | LM-O real BOP19 transfer, no query condition | 1,444 |
+| `lmo_bop19_render_n5_k1_all_query_conditioned` | LM-O real oracle mask | 1,444 |
+
+The paired loaders use the same deterministic references and query records.
+LM-O `new_val` deliberately has eager preprocessed-depth filtering disabled:
+the native and target aspect ratios are both 4:3, center-crop visibility is
+still checked, and `BaseDataset` rejects/refetches a sample if its processed
+depth becomes empty. This reduces complete loader startup from many minutes to
+about 20 seconds locally for both PBR variants plus one real variant.
+
+The full-model smoke on 2026-08-10 completed four bf16 optimizer steps and one
+batch from all eight validation loaders with two workers. It exercised both
+GSO and LM-O CAD metrics, made the initially zero mask projection nonzero, and
+peaked at 12.7 GiB for the intentionally small six-image smoke batch. The
+production 156-image budget itself was already measured by the baseline smoke
+at about 66.3 GiB reserved; RGB photometric augmentation does not add model
+activations.
+
+Launch the production run from the repository root:
+
+```bash
+RUN=megapose_gso_transfer_diag_336_$(date +%Y%m%d_%H%M%S)
+mkdir -p logs
+
+CUDA_VISIBLE_DEVICES=0 \
+PI3_CUDA_MEMORY_LIMIT_GIB=70 \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+PYTHONUNBUFFERED=1 \
+HYDRA_FULL_ERROR=1 \
+nohup /home/dtrofimov/miniconda3/envs/pi3-lmgeo/bin/python -u scripts/train_pi3.py \
+  train=train_megapose_gso_transfer_rtxpro6000_blackwell_70gb_336x252 \
+  data=megapose_gso_transfer_diagnostics \
+  name="$RUN" \
+  gso.data_root=/media/internal/nvme/dtrofimov/datasets/MegaPose-GSO-fixed \
+  gso.assets_root=/media/internal/nvme/dtrofimov/datasets/MegaPose-GSO-assets \
+  gso.references_root=/media/internal/nvme/dtrofimov/datasets/MegaPose-GSO-assets/renders \
+  lmo.data_root=/vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/lm-o \
+  model.ckpt=/home/dtrofimov/repositories/Pi3/ckpts/Pi3/model.safetensors \
+  log.output_dir=/media/internal/nvme/dtrofimov/spott3r/outputs/"$RUN" \
+  log.tensorboard_dir=/media/internal/nvme/dtrofimov/spott3r/outputs/"$RUN"/tensorboard \
+  log.ckpt_dir=/media/internal/nvme/dtrofimov/spott3r/outputs/"$RUN"/ckpts \
+  hydra.run.dir=/media/internal/nvme/dtrofimov/spott3r/outputs/"$RUN" \
+  log.use_tensorboard=true \
+  log.ckpt_interval=5 \
+  log.max_checkpoints=3 \
+  > logs/"$RUN".log 2>&1 &
+```
+
+Validation is intentionally substantial and runs every three epochs. For a
+one-batch preflight, append `test.iters_per_test=1`; do not use that override
+for production metrics.
