@@ -2,20 +2,28 @@
 
 # Same recipe as train_megapose_gso_geometry_pi3_finetune_ray_rtxpro6000_70gb_336x252
 # at close to MegaPose-GSO's native rendered/scene resolution (720x540) and an
-# A40 40 GiB budget. 728x546 is the nearest 4:3, patch_size=14-aligned
-# resolution to 720x540 (52x39=2028 patch tokens/view, 4.69x the 432
-# tokens/view at 336x252); 720x540 itself is not divisible by 14.
+# A40 budget. 728x546 is the nearest 4:3, patch_size=14-aligned resolution to
+# 720x540 (52x39=2028 patch tokens/view, 4.69x the 432 tokens/view at
+# 336x252); 720x540 itself is not divisible by 14.
 #
 # max_img_per_gpu/test.max_img_per_gpu were determined empirically on
-# 2026-08-20 the same way as the 560x420 sibling config: PI3_CUDA_MEMORY_LIMIT_GIB=40
-# on a larger local GPU, sweeping images until OOM. Measured train ceiling:
-# 18 images/GPU (3 six-view samples) at ~40.1 GiB reserved -- already at the
-# cap. 12 images (2 samples) is used here for real margin on an actual A40.
+# 2026-08-20 on a larger local GPU with PI3_CUDA_MEMORY_LIMIT_GIB (a genuine
+# allocator cap, not a guess). The initial sweep used a hard 40 GiB cap and
+# found 18 images/GPU (3 six-view samples) as the train-only ceiling, right
+# at that cap, so it originally shipped as the more conservative 12
+# images/GPU (2 samples). Re-measured against a real end-to-end train step
+# followed by validation (so the training optimizer state is actually
+# resident in memory during validation, unlike an isolated eval-only check)
+# under a 46 GiB cap -- this repo's own established "realistic usable A40
+# memory" figure elsewhere (see the train_*_a40_46gb configs) rather than a
+# hard 40 GiB emulation -- 18 images train + 132 images validation together
+# peaked at ~34.2 GiB, comfortable margin. Production does not hard-enforce
+# any GPU memory cap; PI3_CUDA_MEMORY_LIMIT_GIB is a smoke-testing tool only.
 #
-# At only 2 samples/GPU, this needs many GPUs (or gradient accumulation) to
-# reach an effective batch anywhere near the 26-sample/GPU 336x252 run this
-# recipe was tuned on; see the smoke-test writeup before choosing this over
-# the 560x420 sibling config.
+# At 2-3 samples/GPU, this still needs many GPUs (or gradient accumulation)
+# to reach an effective batch anywhere near the 26-sample/GPU 336x252 run
+# this recipe was tuned on; see the smoke-test writeup before choosing this
+# over the 560x420 sibling config.
 defaults:
   - train_megapose_gso_geometry_pi3_finetune_ray_rtxpro6000_70gb_336x252
   - _self_
@@ -23,9 +31,7 @@ defaults:
 train:
   resolution:
     - [728, 546]
-  max_img_per_gpu: 12
+  max_img_per_gpu: 18
 
 test:
-  # Forward-only (no grad/optimizer state); 78 images/GPU measured
-  # comfortable at ~14.1 GiB reserved under the same 40 GiB cap.
-  max_img_per_gpu: 78
+  max_img_per_gpu: 132

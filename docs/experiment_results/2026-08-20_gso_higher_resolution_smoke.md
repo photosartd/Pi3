@@ -73,11 +73,22 @@ before re-measuring the actual training ceiling.
 
 ## Results
 
-| Resolution | Train max (OOM boundary) | Train max, GiB reserved | Production `train.max_img_per_gpu` (safety margin) | Validation budget used |
+| Resolution | Train max (OOM boundary) | Train max, GiB reserved | Production `train.max_img_per_gpu` | Validation budget used |
 | --- | --- | ---: | --- | ---: |
 | 336x252 | 84 images (14 samples) | 40.2 | 78 (13 samples) -- established, unchanged | 768 (established) |
 | 560x420 | 30 images (5 samples) | 39.7 | **24 (4 samples)** | 132 |
-| 728x546 | 18 images (3 samples) | 40.1 | **12 (2 samples)** | 78 |
+| 728x546 | 18 images (3 samples) | 40.1 (hard 40 GiB cap) | **18 (3 samples)** | 132 |
+
+728x546 was revised on 2026-08-20 after the initial pass: the first sizing
+used a hard 40 GiB cap and shipped the extra-conservative 12 images (2
+samples). Re-measured with a real train step followed by validation (so the
+training optimizer state is genuinely resident during validation, unlike an
+isolated eval-only check) against a 46 GiB cap -- this repo's own established
+"realistic usable A40 memory" figure elsewhere (`train_*_a40_46gb` configs),
+not a hard 40 GiB emulation -- 18 images train + 132 images validation
+together peaked at **34.2 GiB**, comfortable margin. Production does not
+hard-enforce any GPU memory cap; `PI3_CUDA_MEMORY_LIMIT_GIB` is a
+smoke-testing tool only, never set in the actual Slurm launch command.
 
 GPU-only compute time per image (wall time minus dataloader wait, from the
 sweep's `[1/2]` step log lines) roughly tracks the token-count ratio, i.e.
@@ -98,14 +109,14 @@ a real corroboration, not a coincidence.
 **Practical reading**: 560x420 is the recommended ceiling for this A40
 budget. It roughly triples compute per training sample (2.75-2.78x) for a
 resolution increase that keeps a workable per-GPU sample count (4) and a
-comfortable margin under the cap. 728x546 (near-native) works, but only at 2
-samples/GPU with essentially no memory margin (40.1 GiB measured against a
-40 GiB cap at the raw ceiling) and roughly 4.7-4.9x compute per sample --
-across the 4-GPU cap this Slurm setup allows, that is 8 samples/step total,
-well below the 26 samples/step the original 336x252 recipe's peak LR was
-tuned against. 560x420 across 4 GPUs gives 16 samples/step -- still below 26,
-but a smaller gap; matching or exceeding it would need gradient accumulation
-or more GPUs than this cluster's per-job A40 cap.
+comfortable margin under the cap. 728x546 (near-native) works at 3
+samples/GPU with real margin (34.2 GiB against a realistic ~46 GiB budget)
+and roughly 4.7-4.9x compute per sample -- across the 4-GPU cap this Slurm
+setup allows, that is 12 samples/step total, still below the 26 samples/step
+the original 336x252 recipe's peak LR was tuned against. 560x420 across 4
+GPUs gives 16 samples/step -- a smaller gap than 728x546's 12; matching or
+exceeding 26 at either resolution would need gradient accumulation or more
+GPUs than this cluster's per-job A40 cap.
 
 ## Configs produced
 
