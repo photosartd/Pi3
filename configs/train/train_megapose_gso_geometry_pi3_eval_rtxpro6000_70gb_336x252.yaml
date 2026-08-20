@@ -1,0 +1,77 @@
+# @package _global_
+
+# Eval-only restoration of the completed full-Pi3 + ray GSO checkpoint on its
+# own held-out MegaPose-GSO geometry validation split (scene and render
+# regimes), with the same enriched ObjectPoseMetric diagnostics
+# (reference-depth scale, reference/query decomposition, query-occupancy
+# analysis) used for the matched LM-O transfer evaluation.
+defaults:
+  - train_megapose_gso_geometry_pi3_finetune_ray_rtxpro6000_70gb_336x252
+  - _self_
+
+train:
+  eval_only: true
+  auto_resume: false
+  resume: ${oc.env:PI3_EVAL_CHECKPOINT,/media/internal/nvme/dtrofimov/spott3r/outputs/megapose_gso_geometry_pi3_finetune_ray_n5k1_336_warmup1000_photoaug_20260817_102019/ckpts/checkpoint_29}
+  image_num_range: [6, 6]
+  resolution:
+    - [336, 252]
+  random_reslution: false
+  num_epoch: 1
+  iters_per_epoch: 1
+  num_workers: 0
+
+test:
+  image_num_range: [6, 6]
+  max_img_per_gpu: 768
+  num_workers: 4
+  persistent_workers: false
+  prefetch_factor: 2
+  iters_per_test: 0
+  print_freq: 1
+
+metrics:
+  enabled: true
+  train_enabled: false
+  val_enabled: true
+  items:
+    object_pose:
+      _target_: pi3.metrics.object_pose.ObjectPoseMetric
+      metric_name: gso_object_pose
+      report_per_object: false
+      compute_adds_for_all: true
+      data_root: ${gso.assets_root}
+      models_folder: ${gso.models_folder}
+      symmetric_ids: []
+      solve_scale: true
+      # Match the matched-LM-O evaluation: fix only the global scale from
+      # metric reference depth. Rotation/translation stay fitted from
+      # reference camera poses.
+      scale_estimation: reference_depth
+      max_model_points: 20000
+      nn_chunk_size: 2048
+      device: cuda
+      # Exact post-crop visible query occupancy, same bins as the LM-O run.
+      query_occupancy_analysis: true
+      query_occupancy_bin_edges: [0.0, 0.005, 0.01, 0.02, 0.04, 0.08, 1.000001]
+      query_occupancy_artifact_dir: ${log.output_dir}/query_occupancy
+    camera:
+      _target_: pi3.metrics.camera.CameraAlignmentMetric
+      solve_scale: true
+      scale_estimation: reference_depth
+    correspondence: null
+    chamfer: null
+    ray_geometry:
+      _target_: pi3.metrics.ray_geometry.RayGeometryMetric
+      max_points_per_view: 4096
+      min_fit_points: 64
+      min_ray_variance: 1e-8
+
+visuals:
+  enabled: false
+  train_enabled: false
+  val_enabled: false
+
+# Checkpoint-writing overrides live in
+# `general=megapose_gso_geometry_eval`, which Hydra composes after this train
+# group.

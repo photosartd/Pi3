@@ -9,6 +9,228 @@ CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
 
 
 class MegaPoseGSOConfigTest(unittest.TestCase):
+    def test_geometry_max_batch_overfit_profile_packs_24_fixed_samples(self):
+        with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
+            cfg = compose(
+                config_name="default",
+                overrides=[
+                    "train=train_megapose_gso_geometry_small_scratch_ray_336x252_overfit_max_batch",
+                    "data=megapose_gso_geometry_n5_k1_masked_overfit_max_batch",
+                ],
+            )
+        self.assertEqual(len(cfg.gso.object_ids), 24)
+        self.assertEqual(len(set(cfg.gso.object_ids)), 24)
+        self.assertEqual(cfg.train_dataset.length, 25)
+        self.assertEqual(cfg.train.image_num_range, [6, 6])
+        self.assertEqual(cfg.train.max_img_per_gpu, 144)
+        self.assertEqual(cfg.test.max_img_per_gpu, 144)
+        self.assertEqual(cfg.train.iters_per_epoch, 1)
+        self.assertEqual(cfg.train.num_epoch, 600)
+        self.assertEqual(cfg.train.val_every_n_epochs, 10)
+        self.assertEqual(cfg.train.optimizer.lr, 1e-4)
+        self.assertEqual(cfg.train.optimizer.ray_lr, 1e-3)
+        self.assertEqual(
+            cfg.train_dataset.GSOSceneGeometryN5K1.protocol_name,
+            "geometry_scene_n5_k1_masked_overfit_max_batch_24",
+        )
+        self.assertFalse(
+            cfg.train_dataset.GSOSceneGeometryN5K1.photometric_augmentation
+        )
+        self.assertEqual(
+            cfg.val_datasets.gso_geometry_overfit_train_batch.dataset.protocol_name,
+            "geometry_scene_n5_k1_masked_overfit_max_batch_24",
+        )
+        self.assertEqual(
+            cfg.val_datasets.gso_geometry_overfit_train_batch.runtime.max_img_per_gpu,
+            144,
+        )
+
+    def test_geometry_one_batch_overfit_profile_is_exact_and_isolated(self):
+        with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
+            cfg = compose(
+                config_name="default",
+                overrides=[
+                    "train=train_megapose_gso_geometry_small_scratch_ray_336x252_overfit_one_batch",
+                    "data=megapose_gso_geometry_n5_k1_masked_overfit_one_batch",
+                ],
+            )
+        self.assertEqual(list(cfg.gso.object_ids), [0])
+        self.assertEqual(cfg.train_dataset.length, 11)
+        self.assertEqual(cfg.train_dataset.weights.GSOSceneGeometryN5K1, 1)
+        self.assertEqual(cfg.train_dataset.weights.GSORenderGeometryN5K1, 0)
+        policy = cfg.train_dataset.GSOSceneGeometryN5K1.sampling_policy
+        self.assertEqual(policy.plan_selection, "first")
+        self.assertEqual(policy.reference_selection, "first")
+        self.assertEqual(policy.query_selection, "first")
+        self.assertEqual(policy.crop_center_jitter, 0.0)
+        self.assertFalse(policy.random_focal_target)
+        self.assertFalse(policy.per_view_focal_targets)
+        self.assertFalse(
+            cfg.train_dataset.GSOSceneGeometryN5K1.photometric_augmentation
+        )
+        self.assertEqual(cfg.train.max_img_per_gpu, 6)
+        self.assertEqual(cfg.train.iters_per_epoch, 10)
+        self.assertEqual(cfg.train.num_epoch, 60)
+        self.assertEqual(cfg.train.optimizer.lr, 1e-4)
+        self.assertEqual(cfg.train.optimizer.ray_lr, 1e-3)
+        self.assertEqual(cfg.train.optimizer.weight_decay, 0.0)
+        self.assertEqual(cfg.primary_val, "gso_geometry_overfit_train_batch")
+        self.assertFalse(cfg.val_datasets.gso_geometry_val_scene_n5_k1.enabled)
+        self.assertFalse(cfg.val_datasets.gso_geometry_val_render_n5_k1.enabled)
+        overfit_val = cfg.val_datasets.gso_geometry_overfit_train_batch
+        self.assertEqual(overfit_val.dataset.sources.scene.scene_split, "train")
+        self.assertEqual(
+            overfit_val.dataset.protocol_name,
+            "geometry_scene_n5_k1_masked_overfit_one_batch",
+        )
+        self.assertEqual(overfit_val.runtime.iters_per_test, 1)
+
+    def test_geometry_n5_k1_small_scratch_profile_is_additive_and_consistent(self):
+        with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
+            cfg = compose(
+                config_name="default",
+                overrides=[
+                    "train=train_megapose_gso_geometry_small_scratch_ray_336x252",
+                    "data=megapose_gso_geometry_n5_k1_masked",
+                ],
+            )
+        self.assertEqual(OmegaConf.to_container(cfg.train.resolution), [[336, 252]])
+        self.assertEqual(list(cfg.train.image_num_range), [6, 6])
+        self.assertEqual(cfg.model.encoder_size, "small")
+        self.assertEqual(cfg.model.decoder_size, "small")
+        self.assertTrue(cfg.model.freeze_encoder)
+        self.assertTrue(cfg.model.use_ray_conditioning)
+        self.assertFalse(cfg.model.use_visibility_mask_conditioning)
+        self.assertEqual(cfg.train.optimizer.lr, 5e-5)
+        self.assertEqual(cfg.train.optimizer.ray_lr, 5e-4)
+        self.assertEqual(
+            list(cfg.train_dataset.weights),
+            ["GSOSceneGeometryN5K1", "GSORenderGeometryN5K1"],
+        )
+        targets = {
+            "GSOSceneGeometryN5K1":
+                "datasets.object_sampling.GeometryConstrainedScenePairPolicy",
+            "GSORenderGeometryN5K1":
+                "datasets.object_sampling.GeometryConstrainedRenderToScenePolicy",
+        }
+        for name, target in targets.items():
+            dataset = cfg.train_dataset[name]
+            self.assertEqual(dataset.sampling_policy._target_, target)
+            self.assertTrue(dataset.photometric_augmentation)
+            self.assertEqual(list(dataset.photometric_brightness), [0.7, 1.3])
+            self.assertEqual(dataset.photometric_jpeg_prob, 0.5)
+            self.assertEqual(dataset.photometric_blur_prob, 0.5)
+            self.assertEqual(list(dataset.sampling_policy.num_reference_range), [5, 5])
+            self.assertEqual(list(dataset.sampling_policy.num_query_range), [1, 1])
+            self.assertEqual(dataset.sampling_policy.positive_angle_degrees, 10.0)
+            self.assertEqual(dataset.sampling_policy.focal_relative_tolerance, 0.1)
+            self.assertEqual(dataset.sampling_policy.crop_aspect, 4 / 3)
+            self.assertTrue(dataset.sampling_policy.per_view_focal_targets)
+            self.assertEqual(dataset.reference_treatment.rgb, "object_only")
+            self.assertEqual(dataset.query_treatment.rgb, "object_only")
+            self.assertEqual(dataset.reference_treatment.mask_condition, "none")
+        self.assertEqual(
+            list(cfg.val_datasets),
+            ["gso_geometry_val_scene_n5_k1", "gso_geometry_val_render_n5_k1"],
+        )
+        for entry in cfg.val_datasets.values():
+            self.assertFalse(
+                OmegaConf.select(
+                    entry.dataset,
+                    "photometric_augmentation",
+                    default=False,
+                )
+            )
+            self.assertEqual(entry.dataset.sources.scene.scene_split, "val")
+            self.assertEqual(entry.dataset.sampling_policy.crop_center_jitter, 0.0)
+            self.assertFalse(entry.dataset.sampling_policy.random_focal_target)
+            self.assertFalse(entry.dataset.sampling_policy.per_view_focal_targets)
+
+    def test_geometry_blackwell_production_profile_uses_measured_batch(self):
+        with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
+            cfg = compose(
+                config_name="default",
+                overrides=[
+                    "train=train_megapose_gso_geometry_small_scratch_ray_rtxpro6000_70gb_336x252",
+                    "data=megapose_gso_geometry_n5_k1_masked",
+                ],
+            )
+        self.assertEqual(OmegaConf.to_container(cfg.train.resolution), [[336, 252]])
+        self.assertEqual(list(cfg.train.image_num_range), [6, 6])
+        self.assertEqual(cfg.train.max_img_per_gpu, 288)
+        self.assertEqual(cfg.train.max_img_per_gpu // 6, 48)
+        self.assertEqual(cfg.train.num_workers, 8)
+        self.assertTrue(cfg.train.persistent_workers)
+        self.assertEqual(cfg.train.num_epoch, 80)
+        self.assertEqual(cfg.train.iters_per_epoch, 500)
+        self.assertEqual(cfg.train.lr_scheduler.pct_start, 0.0125)
+        self.assertEqual(cfg.train.optimizer.lr, 1e-4)
+        self.assertEqual(cfg.train.optimizer.ray_lr, 1e-4)
+        self.assertEqual(cfg.train.optimizer.encoder_lr, 0.0)
+        self.assertFalse(cfg.metrics["items"].object_pose.report_per_object)
+        self.assertEqual(cfg.test.num_workers, 2)
+        self.assertFalse(cfg.test.persistent_workers)
+        self.assertEqual(cfg.test.iters_per_test, 0)
+        self.assertTrue(cfg.log.save_best)
+        self.assertEqual(
+            list(cfg.val_datasets),
+            ["gso_geometry_val_scene_n5_k1", "gso_geometry_val_render_n5_k1"],
+        )
+        for entry in cfg.val_datasets.values():
+            self.assertEqual(entry.runtime.num_workers, 2)
+            self.assertEqual(entry.runtime.iters_per_test, 0)
+            self.assertEqual(list(entry.runtime.image_num_range), [6, 6])
+
+    def test_geometry_pretrained_pi3_ray_blackwell_profile_is_consistent(self):
+        with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
+            cfg = compose(
+                config_name="default",
+                overrides=[
+                    "train=train_megapose_gso_geometry_pi3_finetune_ray_rtxpro6000_70gb_336x252",
+                    "data=megapose_gso_geometry_n5_k1_masked",
+                ],
+            )
+
+        self.assertEqual(OmegaConf.to_container(cfg.train.resolution), [[336, 252]])
+        self.assertEqual(list(cfg.train.image_num_range), [6, 6])
+        self.assertEqual(cfg.model.encoder_size, "large")
+        self.assertEqual(cfg.model.decoder_size, "large")
+        self.assertTrue(cfg.model.freeze_encoder)
+        self.assertFalse(cfg.model.load_vggt)
+        self.assertEqual(cfg.model.ckpt, "ckpts/Pi3/model.safetensors")
+        self.assertTrue(cfg.model.use_ray_conditioning)
+        self.assertFalse(cfg.model.use_visibility_mask_conditioning)
+        self.assertEqual(cfg.train.max_img_per_gpu, 156)
+        self.assertEqual(cfg.train.max_img_per_gpu // 6, 26)
+        self.assertEqual(cfg.train.num_workers, 8)
+        self.assertTrue(cfg.train.persistent_workers)
+        self.assertEqual(cfg.train.num_epoch, 30)
+        self.assertEqual(cfg.train.iters_per_epoch, 500)
+        self.assertEqual(cfg.train.num_epoch * cfg.train.iters_per_epoch, 15000)
+        self.assertAlmostEqual(
+            cfg.train.lr_scheduler.pct_start
+            * cfg.train.num_epoch
+            * cfg.train.iters_per_epoch,
+            500.0,
+        )
+        self.assertEqual(cfg.train.optimizer.lr, 5e-6)
+        self.assertEqual(cfg.train.optimizer.ray_lr, 1e-5)
+        self.assertEqual(cfg.train.optimizer.encoder_lr, 0.0)
+        self.assertEqual(cfg.test.max_img_per_gpu, 768)
+        self.assertEqual(cfg.test.max_img_per_gpu // 6, 128)
+        self.assertEqual(cfg.test.num_workers, 2)
+        self.assertFalse(cfg.test.persistent_workers)
+        self.assertFalse(cfg.metrics["items"].object_pose.report_per_object)
+        self.assertIn("ray_geometry", cfg.metrics["items"])
+        self.assertEqual(
+            list(cfg.val_datasets),
+            ["gso_geometry_val_scene_n5_k1", "gso_geometry_val_render_n5_k1"],
+        )
+        for entry in cfg.val_datasets.values():
+            self.assertEqual(entry.runtime.max_img_per_gpu, 768)
+            self.assertEqual(entry.runtime.num_workers, 2)
+            self.assertEqual(entry.runtime.iters_per_test, 0)
+
     def test_mesh_free_cross_scene_profile_composes(self):
         with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
             cfg = compose(
@@ -268,6 +490,7 @@ class MegaPoseGSOConfigTest(unittest.TestCase):
         self.assertEqual(
             list(cfg.metrics["items"].object_pose.symmetric_ids), []
         )
+        self.assertFalse(cfg.metrics["items"].object_pose.report_per_object)
 
     def test_composable_production_profiles_restore_mesh_pose_metric(self):
         profile_expectations = {
@@ -298,6 +521,9 @@ class MegaPoseGSOConfigTest(unittest.TestCase):
                 self.assertEqual(
                     cfg.metrics["items"].object_pose.models_folder,
                     cfg.gso.models_folder,
+                )
+                self.assertFalse(
+                    cfg.metrics["items"].object_pose.report_per_object
                 )
 
     def test_instance_disambiguated_render_scene_pair_baseline_is_strict_and_routed(self):

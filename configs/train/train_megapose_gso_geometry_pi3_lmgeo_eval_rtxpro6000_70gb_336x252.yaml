@@ -1,0 +1,104 @@
+# @package _global_
+
+# Eval-only restoration of the completed full-Pi3 + ray GSO checkpoint on the
+# matched LM-O new_val render-to-scene protocol.
+defaults:
+  - train_megapose_gso_geometry_pi3_finetune_ray_rtxpro6000_70gb_336x252
+  - _self_
+
+train:
+  eval_only: true
+  auto_resume: false
+  resume: ${oc.env:PI3_EVAL_CHECKPOINT,/media/internal/nvme/dtrofimov/spott3r/outputs/megapose_gso_geometry_pi3_finetune_ray_n5k1_336_warmup1000_photoaug_20260817_102019/ckpts/checkpoint_29}
+  image_num_range: [6, 6]
+  resolution:
+    - [336, 252]
+  random_reslution: false
+  num_epoch: 1
+  iters_per_epoch: 1
+  num_workers: 0
+
+test:
+  image_num_range: [6, 6]
+  max_img_per_gpu: 768
+  num_workers: 4
+  persistent_workers: false
+  prefetch_factor: 2
+  iters_per_test: 0
+  print_freq: 1
+
+metrics:
+  enabled: true
+  train_enabled: false
+  val_enabled: true
+  items:
+    object_pose:
+      _target_: pi3.metrics.object_pose.ObjectPoseMetric
+      metric_name: lmo_object_pose
+      object_model_namespaces: [lmo]
+      report_per_object: false
+      compute_adds_for_all: false
+      data_root: ${lmo.data_root}
+      models_folder: ${lmo.models_folder}
+      symmetric_ids: ${lmo.symmetric_ids}
+      solve_scale: true
+      # Metric reference depths fix only the otherwise ambiguous global scale.
+      # Rotation and translation remain fitted from reference camera poses.
+      scale_estimation: reference_depth
+      max_model_points: 20000
+      nn_chunk_size: 2048
+      device: cuda
+      # Exact post-crop visible query occupancy. The compact bin scalars go to
+      # TensorBoard and reusable per-query/summary tables go under output_dir.
+      query_occupancy_analysis: true
+      query_occupancy_bin_edges: [0.0, 0.005, 0.01, 0.02, 0.04, 0.08, 1.000001]
+      query_occupancy_artifact_dir: ${log.output_dir}/query_occupancy
+    camera:
+      _target_: pi3.metrics.camera.CameraAlignmentMetric
+      solve_scale: true
+      scale_estimation: reference_depth
+    correspondence: null
+    chamfer: null
+    ray_geometry:
+      _target_: pi3.metrics.ray_geometry.RayGeometryMetric
+      max_points_per_view: 4096
+      min_fit_points: 64
+      min_ray_variance: 1e-8
+
+visuals:
+  enabled: true
+  train_enabled: false
+  val_enabled: true
+  val_every_n_epochs: 1
+  items:
+    input_reference_frames:
+      _target_: pi3.visualizations.input_frames.InputFramesVisualizer
+      role: reference
+      max_views: 5
+      thumbnail_size: 128
+      columns: 5
+    input_query_frames:
+      _target_: pi3.visualizations.input_frames.InputFramesVisualizer
+      role: query
+      max_views: 1
+      thumbnail_size: 160
+      columns: 1
+    query_pose_overlay:
+      _target_: pi3.visualizations.pose_overlay.QueryPoseOverlayVisualizer
+      visualizer_name: lmo_query_pose_overlay
+      object_model_namespaces: [lmo]
+      data_root: ${lmo.data_root}
+      models_folder: ${lmo.models_folder}
+      solve_scale: true
+      scale_estimation: reference_depth
+      max_model_points: 20000
+      max_query_views: 1
+    depth_panel:
+      _target_: pi3.visualizations.depth_panel.DepthPanelVisualizer
+      include_reference: true
+      include_query: true
+    reference_reconstruction: null
+    visibility_condition: null
+
+# Checkpoint-writing overrides live in
+# `general=lmgeo_geometry_eval`, which Hydra composes after this train group.

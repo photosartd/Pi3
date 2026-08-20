@@ -1,0 +1,234 @@
+# @package _global_
+
+# Geometry-constrained MegaPose-GSO training.  This is intentionally additive:
+# the original composable protocols and their samplers remain unchanged.
+primary_val: gso_geometry_val_scene_n5_k1
+
+gso:
+  data_root: ${oc.env:PI3_GSO_DATA_ROOT,/media/internal/nvme/dtrofimov/datasets/MegaPose-GSO-fixed}
+  assets_root: ${oc.env:PI3_GSO_ASSETS_ROOT,/media/internal/nvme/dtrofimov/datasets/MegaPose-GSO-assets}
+  references_root: ${oc.env:PI3_GSO_REFERENCES_ROOT,${gso.assets_root}/renders}
+  index_path: null
+  split_path: null
+  references_index_path: null
+  object_ids: all
+  visibility_min: 0.1
+  min_visible_pixels: 64
+  depth_corruption_policy: clean_only
+  mask_type: mask_visib
+  models_folder: models_eval
+  photometric_brightness: [0.7, 1.3]
+  photometric_contrast: [0.7, 1.3]
+  photometric_saturation: [0.7, 1.3]
+  photometric_hue: [-0.1, 0.1]
+  photometric_gamma: [0.7, 1.3]
+  photometric_jpeg_prob: 0.5
+  photometric_jpeg_quality: [20, 100]
+  photometric_blur_prob: 0.5
+  photometric_blur_resize_ratio: [0.25, 1.0]
+
+  geometry_train_index: ${oc.env:PI3_GSO_GEOMETRY_TRAIN_INDEX,${gso.data_root}/pi3_index/megapose_gso_geometry_v1.sqlite}
+  geometry_val_index: ${oc.env:PI3_GSO_GEOMETRY_VAL_INDEX,${gso.data_root}/pi3_index/megapose_gso_geometry_val_v1.sqlite}
+  scene_train_plans: ${oc.env:PI3_GSO_SCENE_TRAIN_PLANS,${gso.data_root}/pi3_index/megapose_gso_geometry_train_n5_plans.sqlite}
+  scene_val_plans: ${oc.env:PI3_GSO_SCENE_VAL_PLANS,${gso.data_root}/pi3_index/megapose_gso_geometry_val_n5_plans.sqlite}
+  render_geometry_index: ${oc.env:PI3_GSO_RENDER_GEOMETRY_INDEX,${gso.references_root}/pi3_index/render_geometry_v1.sqlite}
+  render_plans: ${oc.env:PI3_GSO_RENDER_PLANS,${gso.references_root}/pi3_index/render_geometry_n5_plans.sqlite}
+
+_gso_scene_train: &gso_scene_train
+  _target_: datasets.object_sources.MegaPoseGSOSceneSource
+  data_root: ${gso.data_root}
+  index_path: ${gso.index_path}
+  split_path: ${gso.split_path}
+  source_name: scene
+  object_namespace: gso
+  object_ids: ${gso.object_ids}
+  scene_split: train
+  visibility_min: ${gso.visibility_min}
+  min_visible_pixels: ${gso.min_visible_pixels}
+  depth_corruption_policy: ${gso.depth_corruption_policy}
+  mask_type: ${gso.mask_type}
+
+_gso_scene_val: &gso_scene_val
+  <<: *gso_scene_train
+  scene_split: val
+
+_gso_render_source: &gso_render_source
+  _target_: datasets.object_sources.IndexedBOPReferenceSource
+  bank_root: ${gso.references_root}
+  index_path: ${gso.references_index_path}
+  source_name: render
+  object_namespace: gso
+  object_ids: ${gso.object_ids}
+  mask_type: ${gso.mask_type}
+
+_gso_model_catalog: &gso_model_catalog
+  _target_: datasets.object_sources.BOPObjectModelCatalog
+  data_root: ${gso.assets_root}
+  models_folder: ${gso.models_folder}
+  object_namespace: gso
+
+_masked_view: &masked_view
+  rgb: object_only
+  depth: object_only
+  mask_condition: none
+
+_dataset_base: &dataset_base
+  _target_: datasets.object_pose_dataset.ComposableObjectPoseDataset
+  dataset_domain: MegaPoseGSO
+  object_model_catalog: *gso_model_catalog
+  reference_treatment: *masked_view
+  query_treatment: *masked_view
+  aug_crop: false
+  aug_focal: false
+  z_far: 0
+  max_refetch: 100
+  transform:
+    _partial_: true
+    _target_: datasets.base.transforms.ImgToTensor
+  shuffle: false
+
+# Keep role-consistent photometric augmentation strictly train-only. One
+# recipe is shared by all references in a sample, and an independent recipe is
+# shared by all queries. Geometry and validation inputs remain unchanged.
+_train_dataset_base: &train_dataset_base
+  <<: *dataset_base
+  photometric_augmentation: true
+  photometric_brightness: ${gso.photometric_brightness}
+  photometric_contrast: ${gso.photometric_contrast}
+  photometric_saturation: ${gso.photometric_saturation}
+  photometric_hue: ${gso.photometric_hue}
+  photometric_gamma: ${gso.photometric_gamma}
+  photometric_jpeg_prob: ${gso.photometric_jpeg_prob}
+  photometric_jpeg_quality: ${gso.photometric_jpeg_quality}
+  photometric_blur_prob: ${gso.photometric_blur_prob}
+  photometric_blur_resize_ratio: ${gso.photometric_blur_resize_ratio}
+
+_train_geometry_options: &train_geometry_options
+  positive_angle_degrees: 10.0
+  focal_relative_tolerance: 0.1
+  crop_aspect: 1.3333333333333333
+  crop_margin_fraction: 0.05
+  crop_center_jitter: 0.20
+  plan_selection: random
+  random_focal_target: true
+  per_view_focal_targets: true
+  max_query_attempts: 256
+  num_reference_range: [5, 5]
+  num_query_range: [1, 1]
+  reference_selection: random
+  query_selection: random
+  allow_repeat: false
+
+_val_geometry_options: &val_geometry_options
+  positive_angle_degrees: 10.0
+  focal_relative_tolerance: 0.1
+  crop_aspect: 1.3333333333333333
+  crop_margin_fraction: 0.05
+  crop_center_jitter: 0.0
+  plan_selection: first
+  random_focal_target: false
+  per_view_focal_targets: false
+  max_query_attempts: 1024
+  num_reference_range: [5, 5]
+  num_query_range: [1, 1]
+  reference_selection: first
+  query_selection: first
+  allow_repeat: false
+
+train_dataset:
+  length: auto
+  weights:
+    GSOSceneGeometryN5K1: 1
+    GSORenderGeometryN5K1: 1
+
+  GSOSceneGeometryN5K1:
+    <<: *train_dataset_base
+    protocol_name: geometry_scene_n5_k1_masked
+    sources:
+      scene: *gso_scene_train
+    sampling_policy:
+      <<: *train_geometry_options
+      _target_: datasets.object_sampling.GeometryConstrainedScenePairPolicy
+      scene_source: scene
+      require_different_scene: true
+      geometry_plan_path: ${gso.scene_train_plans}
+      query_geometry_index_path: ${gso.geometry_train_index}
+    mode: train
+
+  GSORenderGeometryN5K1:
+    <<: *train_dataset_base
+    protocol_name: geometry_render_n5_k1_masked
+    sources:
+      render: *gso_render_source
+      scene: *gso_scene_train
+    sampling_policy:
+      <<: *train_geometry_options
+      _target_: datasets.object_sampling.GeometryConstrainedRenderToScenePolicy
+      reference_source: render
+      query_source: scene
+      geometry_plan_path: ${gso.render_plans}
+      query_geometry_index_path: ${gso.geometry_train_index}
+      # Some objects have few scene frames whose crop-only focal range reaches
+      # the render bank. Search farther instead of relying on BaseDataset's
+      # cross-object refetch fallback and silently under-sampling them.
+      max_query_attempts: 4096
+    mode: train
+
+train_dataloader:
+  drop_last: true
+  shuffle: true
+
+_val_dataloader: &val_dataloader
+  drop_last: false
+  shuffle: false
+
+_val_runtime: &val_runtime
+  image_num_range: [6, 6]
+  max_img_per_gpu: ${test.max_img_per_gpu}
+  iters_per_test: ${test.iters_per_test}
+  num_workers: ${test.num_workers}
+  print_freq: ${test.print_freq}
+
+_scene_val: &scene_val
+  <<: *dataset_base
+  protocol_name: geometry_val_scene_n5_k1_masked
+  resolution: ${train.resolution}
+  sources:
+    scene: *gso_scene_val
+  sampling_policy:
+    <<: *val_geometry_options
+    _target_: datasets.object_sampling.GeometryConstrainedScenePairPolicy
+    scene_source: scene
+    require_different_scene: true
+    geometry_plan_path: ${gso.scene_val_plans}
+    query_geometry_index_path: ${gso.geometry_val_index}
+  mode: val
+
+_render_val: &render_val
+  <<: *dataset_base
+  protocol_name: geometry_val_render_n5_k1_masked
+  resolution: ${train.resolution}
+  sources:
+    render: *gso_render_source
+    scene: *gso_scene_val
+  sampling_policy:
+    <<: *val_geometry_options
+    _target_: datasets.object_sampling.GeometryConstrainedRenderToScenePolicy
+    reference_source: render
+    query_source: scene
+    geometry_plan_path: ${gso.render_plans}
+    query_geometry_index_path: ${gso.geometry_val_index}
+  mode: val
+
+test_dataset: *scene_val
+test_dataloader: *val_dataloader
+
+val_datasets:
+  gso_geometry_val_scene_n5_k1:
+    dataset: *scene_val
+    dataloader: *val_dataloader
+    runtime: *val_runtime
+  gso_geometry_val_render_n5_k1:
+    dataset: *render_val
+    dataloader: *val_dataloader
+    runtime: *val_runtime

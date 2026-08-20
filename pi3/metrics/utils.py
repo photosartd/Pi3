@@ -76,6 +76,95 @@ def invert_se3(poses: np.ndarray) -> np.ndarray:
     return inv[0] if single else inv
 
 
+def camera_center_error_components(
+    pred_center: np.ndarray,
+    gt_center: np.ndarray,
+) -> dict[str, float]:
+    """Decompose an object-frame camera-center error around the object origin.
+
+    ``radial`` is the component along the GT object-to-camera direction and
+    ``tangential`` is the orthogonal component. Their squared sum equals the
+    squared Euclidean center error. ``radius`` compares only object distance,
+    while ``direction`` measures the orbit/viewing-direction discrepancy.
+    """
+
+    pred_center = np.asarray(pred_center, dtype=np.float64).reshape(3)
+    gt_center = np.asarray(gt_center, dtype=np.float64).reshape(3)
+    delta = pred_center - gt_center
+    gt_radius = float(np.linalg.norm(gt_center))
+    pred_radius = float(np.linalg.norm(pred_center))
+    total = float(np.linalg.norm(delta))
+    if gt_radius <= 1e-12:
+        return {
+            "total_m": total,
+            "radial_m": float("nan"),
+            "tangential_m": float("nan"),
+            "radius_m": abs(pred_radius - gt_radius),
+            "direction_deg": float("nan"),
+        }
+
+    gt_direction = gt_center / gt_radius
+    radial_signed = float(np.dot(delta, gt_direction))
+    tangential = float(
+        np.linalg.norm(delta - radial_signed * gt_direction)
+    )
+    direction_deg = float("nan")
+    if pred_radius > 1e-12:
+        cosine = float(
+            np.clip(np.dot(pred_center / pred_radius, gt_direction), -1.0, 1.0)
+        )
+        direction_deg = float(np.degrees(np.arccos(cosine)))
+    return {
+        "total_m": total,
+        "radial_m": abs(radial_signed),
+        "tangential_m": tangential,
+        "radius_m": abs(pred_radius - gt_radius),
+        "direction_deg": direction_deg,
+    }
+
+
+def metric_depth_error_summary(
+    pred_depth: np.ndarray,
+    gt_depth: np.ndarray,
+    valid_mask: np.ndarray,
+    *,
+    scale: float,
+) -> dict[str, float]:
+    """Summarize one view's predicted depth after one reference-derived scale."""
+
+    pred_depth = np.asarray(pred_depth, dtype=np.float64)
+    gt_depth = np.asarray(gt_depth, dtype=np.float64)
+    valid = (
+        np.asarray(valid_mask, dtype=bool)
+        & np.isfinite(pred_depth)
+        & np.isfinite(gt_depth)
+        & (pred_depth > 1e-8)
+        & (gt_depth > 1e-8)
+    )
+    if not np.any(valid):
+        return {
+            "mae_m": float("nan"),
+            "median_abs_m": float("nan"),
+            "median_relative": float("nan"),
+            "median_bias_m": float("nan"),
+            "scale_log_error": float("nan"),
+        }
+    pred_metric = float(scale) * pred_depth[valid]
+    gt_valid = gt_depth[valid]
+    error = pred_metric - gt_valid
+    abs_error = np.abs(error)
+    view_log_scale = float(
+        np.median(np.log(gt_valid) - np.log(pred_depth[valid]))
+    )
+    return {
+        "mae_m": float(np.mean(abs_error)),
+        "median_abs_m": float(np.median(abs_error)),
+        "median_relative": float(np.median(abs_error / gt_valid)),
+        "median_bias_m": float(np.median(error)),
+        "scale_log_error": abs(view_log_scale - float(np.log(scale))),
+    }
+
+
 def project_to_rotation(matrix: np.ndarray) -> np.ndarray:
     """Project a near-rotation matrix onto SO(3)."""
 
@@ -104,11 +193,17 @@ class SimilarityTransform:
         rotation: np.ndarray,
         translation: np.ndarray,
         underconstrained_scale: bool = False,
+        scale_estimation: str = "camera_centers",
+        depth_scale_valid_views: int = 0,
+        depth_scale_log_mad: float = float("nan"),
     ):
         self.scale = float(scale)
         self.rotation = np.asarray(rotation, dtype=np.float64).reshape(3, 3)
         self.translation = np.asarray(translation, dtype=np.float64).reshape(3)
         self.underconstrained_scale = bool(underconstrained_scale)
+        self.scale_estimation = str(scale_estimation)
+        self.depth_scale_valid_views = int(depth_scale_valid_views)
+        self.depth_scale_log_mad = float(depth_scale_log_mad)
 
     def transform_points(self, points_world: np.ndarray) -> np.ndarray:
         """Map predicted-world points to object coordinates."""
@@ -140,8 +235,40 @@ def estimate_world_to_object_sim3(
     gt_T_C_O_refs: np.ndarray,
     *,
     solve_scale: bool = True,
+    scale_estimation: str = "camera_centers",
+    pred_local_points_refs: np.ndarray | None = None,
+    gt_points_object_refs: np.ndarray | None = None,
+    valid_masks_refs: np.ndarray | None = None,
+    min_depth_pixels_per_view: int = 64,
 ) -> SimilarityTransform:
-    """Estimate a Sim(3) from predicted reference cameras to GT object frame."""
+    """Estimate a reference-only Sim(3) from predicted world to object frame.
+
+    ``camera_centers`` is the historical estimator: reference camera
+    orientations determine rotation, while corresponding reference camera
+    centers determine scale and translation. ``reference_depth`` retains the
+    same camera-derived rotation and translation fit, but replaces the scale
+    with a robust metric-depth estimate. Reference GT point maps are derived
+    from metric depth, intrinsics, and known poses. For each reference view,
+    the estimator takes the median log ratio of GT camera-space depth to
+    predicted local depth over valid object pixels. View estimates are then
+    combined with an equal-weight median in log space. The depths deliberately
+    remain camera-origin depths: independently centering each visible surface
+    would make the estimate invariant to per-view translations that are not
+    part of one global Sim(3). Query depth is never used.
+
+    When fewer than one reference view has enough valid depth pixels, the
+    depth estimator falls back to the historical camera-center scale and marks
+    the result as underconstrained. Missing depth inputs are a configuration
+    error and raise immediately rather than silently changing the protocol.
+    """
+
+    valid_scale_estimations = {"camera_centers", "reference_depth"}
+    scale_estimation = str(scale_estimation)
+    if scale_estimation not in valid_scale_estimations:
+        raise ValueError(
+            f"Unknown scale_estimation={scale_estimation!r}; expected one of "
+            f"{sorted(valid_scale_estimations)}"
+        )
 
     pred_T_W_C_refs = np.asarray(pred_T_W_C_refs, dtype=np.float64)
     gt_T_C_O_refs = np.asarray(gt_T_C_O_refs, dtype=np.float64)
@@ -167,18 +294,127 @@ def estimate_world_to_object_sim3(
 
     scale = 1.0
     underconstrained = False
+    scale_estimation_used = "disabled"
+    depth_scale_valid_views = 0
+    depth_scale_log_mad = float("nan")
     if solve_scale:
         pred_centered = pred_centers - pred_mean
         gt_centered = gt_centers - gt_mean
         pred_rot_centered = pred_centered @ rotation.T
         denom = float(np.sum(pred_rot_centered * pred_rot_centered))
+        camera_center_scale = 1.0
+        camera_center_underconstrained = False
         if len(pred_centers) < 2 or denom < 1e-12:
-            underconstrained = True
+            camera_center_underconstrained = True
         else:
-            scale = float(np.sum(gt_centered * pred_rot_centered) / denom)
-            if not np.isfinite(scale) or abs(scale) < 1e-12:
-                scale = 1.0
+            camera_center_scale = float(
+                np.sum(gt_centered * pred_rot_centered) / denom
+            )
+            if (
+                not np.isfinite(camera_center_scale)
+                or camera_center_scale <= 1e-12
+            ):
+                camera_center_scale = 1.0
+                camera_center_underconstrained = True
+
+        if scale_estimation == "reference_depth":
+            if (
+                pred_local_points_refs is None
+                or gt_points_object_refs is None
+                or valid_masks_refs is None
+            ):
+                raise ValueError(
+                    "reference_depth scale estimation requires predicted local "
+                    "points, GT object-frame point maps derived from depth, and "
+                    "valid masks for the references"
+                )
+            pred_local_points_refs = np.asarray(
+                pred_local_points_refs, dtype=np.float64
+            )
+            gt_points_object_refs = np.asarray(
+                gt_points_object_refs, dtype=np.float64
+            )
+            valid_masks_refs = np.asarray(valid_masks_refs, dtype=bool)
+            if (
+                pred_local_points_refs.ndim < 2
+                or pred_local_points_refs.shape[-1] != 3
+            ):
+                raise ValueError(
+                    "pred_local_points_refs must end in XYZ, got "
+                    f"{pred_local_points_refs.shape}"
+                )
+            if (
+                gt_points_object_refs.shape != pred_local_points_refs.shape
+                or valid_masks_refs.shape != pred_local_points_refs.shape[:-1]
+            ):
+                raise ValueError(
+                    "Reference depth alignment shape mismatch: "
+                    f"pred={pred_local_points_refs.shape}, "
+                    f"gt={gt_points_object_refs.shape}, "
+                    f"mask={valid_masks_refs.shape}"
+                )
+            if pred_local_points_refs.shape[0] != len(pred_centers):
+                raise ValueError(
+                    "Reference depth view count does not match reference poses: "
+                    f"{pred_local_points_refs.shape[0]} vs {len(pred_centers)}"
+                )
+
+            per_view_log_scales = []
+            min_pixels = max(1, int(min_depth_pixels_per_view))
+            for view_idx, (pred_points, gt_points_object, valid_mask) in enumerate(
+                zip(
+                    pred_local_points_refs,
+                    gt_points_object_refs,
+                    valid_masks_refs,
+                )
+            ):
+                gt_T_C_O = gt_T_C_O_refs[view_idx]
+                gt_points_camera = (
+                    gt_points_object @ gt_T_C_O[:3, :3].T
+                    + gt_T_C_O[:3, 3]
+                )
+                valid = (
+                    valid_mask
+                    & np.isfinite(pred_points).all(axis=-1)
+                    & np.isfinite(gt_points_camera).all(axis=-1)
+                    & (pred_points[..., 2] > 1e-8)
+                    & (gt_points_camera[..., 2] > 1e-8)
+                )
+                if int(valid.sum()) < min_pixels:
+                    continue
+                log_ratios = np.log(gt_points_camera[..., 2][valid]) - np.log(
+                    pred_points[..., 2][valid]
+                )
+                finite_log_ratios = log_ratios[np.isfinite(log_ratios)]
+                if len(finite_log_ratios) >= min_pixels:
+                    per_view_log_scales.append(
+                        float(np.median(finite_log_ratios))
+                    )
+
+            depth_scale_valid_views = len(per_view_log_scales)
+            if per_view_log_scales:
+                per_view_log_scales = np.asarray(
+                    per_view_log_scales, dtype=np.float64
+                )
+                median_log_scale = float(np.median(per_view_log_scales))
+                scale = float(np.exp(median_log_scale))
+                depth_scale_log_mad = float(
+                    np.median(np.abs(per_view_log_scales - median_log_scale))
+                )
+                if np.isfinite(scale) and scale > 1e-12:
+                    scale_estimation_used = "reference_depth"
+                else:
+                    scale = camera_center_scale
+                    scale_estimation_used = "camera_centers_fallback"
+                    underconstrained = True
+            else:
+                scale = camera_center_scale
+                scale_estimation_used = "camera_centers_fallback"
                 underconstrained = True
+        else:
+            scale = camera_center_scale
+            scale_estimation_used = "camera_centers"
+            underconstrained = camera_center_underconstrained
 
     translation = gt_mean - scale * (rotation @ pred_mean)
     return SimilarityTransform(
@@ -186,6 +422,9 @@ def estimate_world_to_object_sim3(
         rotation=rotation,
         translation=translation,
         underconstrained_scale=underconstrained,
+        scale_estimation=scale_estimation_used,
+        depth_scale_valid_views=depth_scale_valid_views,
+        depth_scale_log_mad=depth_scale_log_mad,
     )
 
 

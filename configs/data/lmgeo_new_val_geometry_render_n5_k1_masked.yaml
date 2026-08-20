@@ -1,0 +1,84 @@
+# @package _global_
+
+# Oracle matched-distribution transfer evaluation for the completed
+# geometry-constrained GSO model.  This profile is validation-only and leaves
+# every historical LMGeo data profile unchanged.
+primary_val: lmo_new_val_geometry_render_n5_k1
+
+lmo:
+  data_root: ${oc.env:PI3_LMO_DATA_ROOT,/vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/lm-o}
+  models_folder: models_eval
+  symmetric_ids: [10, 11]
+  reference_geometry_plans: ${oc.env:PI3_LMO_REFERENCE_GEOMETRY_PLANS,${lmo.data_root}/pi3_index/lmgeo_train_geometry_n5_plans.sqlite}
+  new_val_geometry_index: ${oc.env:PI3_LMO_NEW_VAL_GEOMETRY_INDEX,${lmo.data_root}/pi3_index/lmgeo_new_val_geometry_v1.sqlite}
+
+_lmo_geometry_matched: &lmo_geometry_matched
+  _target_: datasets.lmgeo_dataset.LMGeoGeometryMatchedSequenceDataset
+  data_root: ${lmo.data_root}
+  object_ids: all
+  reference_split: train
+  query_split: new_val
+  query_scene_ids: all
+  query_subscene_ids: all
+  query_window_size: 25
+  query_source: windows
+  num_reference_range: [5, 5]
+  num_query_range: [1, 1]
+  reference_rgb_masking: true
+  query_rgb_masking: true
+  depth_masking: true
+  mask_type: mask_visib
+  visibility_min: 0.1
+  reference_selection: first
+  query_selection: first
+  depth_unit_scale: 0.001
+  # Planned object crops replace the historical optical-centre filter and
+  # eager legacy preprocessing checks.
+  filter_center_crop_visibility: false
+  filter_preprocessed_query_depth: false
+  min_preprocessed_query_depth_pixels: 1
+  allow_repeat: false
+  context_reference_fraction: 0.0
+  visibility_mask_conditioning: false
+  condition_reference_visibility: false
+  condition_query_visibility: false
+  aug_crop: false
+  aug_focal: false
+  photometric_augmentation: false
+  z_far: 0
+  reference_geometry_plan_path: ${lmo.reference_geometry_plans}
+  query_geometry_index_path: ${lmo.new_val_geometry_index}
+  positive_angle_degrees: 10.0
+  focal_relative_tolerance: 0.1
+  crop_aspect: 1.3333333333333333
+  crop_margin_fraction: 0.05
+  crop_center_jitter: 0.0
+  plan_selection: first
+  resolution: ${train.resolution}
+  transform:
+    _partial_: true
+    _target_: datasets.base.transforms.ImgToTensor
+  shuffle: false
+  mode: val
+
+_val_dataloader: &val_dataloader
+  drop_last: false
+  shuffle: false
+
+_val_runtime: &val_runtime
+  image_num_range: [6, 6]
+  max_img_per_gpu: ${test.max_img_per_gpu}
+  iters_per_test: ${test.iters_per_test}
+  num_workers: ${test.num_workers}
+  print_freq: ${test.print_freq}
+
+# Historical fields remain populated for generic trainer compatibility.
+test_dataset: *lmo_geometry_matched
+test_dataloader: *val_dataloader
+
+val_datasets:
+  lmo_new_val_geometry_render_n5_k1:
+    dataset: *lmo_geometry_matched
+    dataloader: *val_dataloader
+    runtime: *val_runtime
+

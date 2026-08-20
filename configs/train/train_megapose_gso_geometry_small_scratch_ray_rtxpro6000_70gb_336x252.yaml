@@ -1,0 +1,48 @@
+# @package _global_
+
+# Production RTX PRO 6000 profile for the compact geometry-constrained model.
+# Use with PI3_CUDA_MEMORY_LIMIT_GIB=70 and
+# data=megapose_gso_geometry_n5_k1_masked.
+defaults:
+  - train_megapose_gso_geometry_small_scratch_ray_336x252
+  - _self_
+
+train:
+  # Fixed N=5/K=1 means six images/sample.  A measured six-update smoke packed
+  # 48 samples / 288 images and peaked at 42,357 MiB allocated and 43,074 MiB
+  # reserved under the 70 GiB allocator cap.
+  max_img_per_gpu: 288
+  num_workers: 8
+  persistent_workers: true
+  prefetch_factor: 2
+
+  # The loader is a stochastic generator, so "epoch" is only a validation and
+  # checkpoint interval. 80 x 500 gives a 40k-update ceiling; use the held-out
+  # scene/render curves and best checkpoint rather than treating 80 as a pass
+  # count over a finite dataset.
+  num_epoch: 80
+  iters_per_epoch: 500
+  lr_scheduler:
+    # 500 / 40,000 updates: enough to initialize AdamW moments for the random
+    # decoder/head without spending four reporting epochs below the peak LR.
+    pct_start: 0.0125
+  optimizer:
+    # The compact decoder/head and the zero-initialized ray projection are all
+    # trained from scratch. Keep one peak LR for the first generalization run;
+    # a faster ray group should require evidence from its own ablation.
+    lr: 1e-4
+    encoder_lr: 0.0
+    ray_lr: 1e-4
+    visibility_mask_lr: 0.0
+
+test:
+  # Each enabled loader has only 189 fixed held-out samples.  Keep validation
+  # workers non-persistent so the two loaders do not retain worker pools.
+  max_img_per_gpu: 128
+  num_workers: 2
+  persistent_workers: false
+  prefetch_factor: 2
+  iters_per_test: 0
+
+log:
+  save_best: true

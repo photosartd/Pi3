@@ -21,12 +21,16 @@ class ReferenceReconstructionVisualizer(BaseVisualizer):
         self,
         *,
         solve_scale: bool = True,
+        scale_estimation: str = "camera_centers",
+        min_depth_pixels_per_view: int = 64,
         voxel_size: float | None = None,
         max_pred_points: int = 12000,
         max_gt_points: int = 12000,
         size: int = 320,
     ):
         self.solve_scale = bool(solve_scale)
+        self.scale_estimation = str(scale_estimation)
+        self.min_depth_pixels_per_view = int(min_depth_pixels_per_view)
         self.voxel_size = voxel_size
         self.max_pred_points = int(max_pred_points)
         self.max_gt_points = int(max_gt_points)
@@ -49,6 +53,8 @@ class ReferenceReconstructionVisualizer(BaseVisualizer):
             batch,
             batch_idx=batch_idx,
             solve_scale=self.solve_scale,
+            scale_estimation=self.scale_estimation,
+            min_depth_pixels_per_view=self.min_depth_pixels_per_view,
         )
         if alignment is None:
             return {}
@@ -88,7 +94,16 @@ class ReferenceReconstructionVisualizer(BaseVisualizer):
             )
             for name, axes in views
         ]
-        return {"orthographic": make_grid(panels, columns=len(panels))}
+        grid = make_grid(panels, columns=len(panels))
+        grid = add_title(
+            grid,
+            (
+                f"aggregate of {int(refs.sum())} references | "
+                f"Sim(3) scale={alignment.scale:.5f} "
+                f"({alignment.scale_estimation})"
+            ),
+        )
+        return {"orthographic": grid}
 
     def _project_pair(self, pred_points: np.ndarray, gt_points: np.ndarray, *, axes: tuple[int, int]) -> Image.Image:
         canvas = np.zeros((self.size, self.size, 3), dtype=np.uint8)

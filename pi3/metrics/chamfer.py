@@ -39,6 +39,8 @@ class ReferenceChamferMetric(BaseMetric):
         models_folder: str = "models_eval",
         unit_scale: float = 0.001,
         solve_scale: bool = True,
+        scale_estimation: str = "camera_centers",
+        min_depth_pixels_per_view: int = 64,
         voxel_size: float | None = None,
         voxel_size_d: float | None = 0.01,
         max_pred_points: int = 20000,
@@ -49,6 +51,8 @@ class ReferenceChamferMetric(BaseMetric):
     ):
         self.model_cache = BopModelCache(data_root, models_folder=models_folder, unit_scale=unit_scale)
         self.solve_scale = bool(solve_scale)
+        self.scale_estimation = str(scale_estimation)
+        self.min_depth_pixels_per_view = int(min_depth_pixels_per_view)
         self.voxel_size = voxel_size
         self.voxel_size_d = voxel_size_d
         self.max_pred_points = int(max_pred_points)
@@ -91,6 +95,11 @@ class ReferenceChamferMetric(BaseMetric):
         pred = extract_prediction(prediction)
         pred_points = pred["points"].detach().float().cpu().numpy()
         pred_T_W_C = pred["camera_poses"].detach().float().cpu().numpy()
+        pred_local_points = (
+            pred["local_points"].detach().float().cpu().numpy()
+            if self.scale_estimation == "reference_depth"
+            else None
+        )
         gt_T_C_O = stack_view_tensor(batch, "T_C_O").astype(np.float64)
         gt_points = stack_view_tensor(batch, "pts3d").astype(np.float64)
         valid_masks = stack_view_tensor(batch, "valid_mask").astype(bool)
@@ -105,6 +114,15 @@ class ReferenceChamferMetric(BaseMetric):
                 pred_T_W_C[batch_idx, refs],
                 gt_T_C_O[batch_idx, refs],
                 solve_scale=self.solve_scale,
+                scale_estimation=self.scale_estimation,
+                pred_local_points_refs=(
+                    pred_local_points[batch_idx, refs]
+                    if pred_local_points is not None
+                    else None
+                ),
+                gt_points_object_refs=gt_points[batch_idx, refs],
+                valid_masks_refs=valid_masks[batch_idx, refs],
+                min_depth_pixels_per_view=self.min_depth_pixels_per_view,
             )
 
             pred_ref_points = pred_points[batch_idx, refs]
@@ -155,7 +173,22 @@ class ReferenceChamferMetric(BaseMetric):
 
         device = pred_points.device
         pred_T_W_C = pred["camera_poses"].detach().float().cpu().numpy()
+        pred_local_points = (
+            pred["local_points"].detach().float().cpu().numpy()
+            if self.scale_estimation == "reference_depth"
+            else None
+        )
         gt_T_C_O = self._stack_views(batch, "T_C_O", device=device).detach().cpu().numpy().astype(np.float64)
+        gt_points_object = (
+            self._stack_views(batch, "pts3d", device=device)
+            .detach()
+            .float()
+            .cpu()
+            .numpy()
+            .astype(np.float64)
+            if self.scale_estimation == "reference_depth"
+            else None
+        )
         ref_mask = self._stack_views(batch, "is_reference", device=device).bool()
         obj_ids = self._stack_views(batch, "object_id", device=device)[:, 0].detach().cpu().numpy().astype(np.int64)
 
@@ -169,6 +202,21 @@ class ReferenceChamferMetric(BaseMetric):
                 pred_T_W_C[batch_idx, refs_cpu],
                 gt_T_C_O[batch_idx, refs_cpu],
                 solve_scale=self.solve_scale,
+                scale_estimation=self.scale_estimation,
+                pred_local_points_refs=(
+                    pred_local_points[batch_idx, refs_cpu]
+                    if pred_local_points is not None
+                    else None
+                ),
+                gt_points_object_refs=gt_points_object[batch_idx, refs_cpu],
+                valid_masks_refs=(
+                    self._stack_views(batch, "valid_mask", device=device)[batch_idx, refs]
+                    .detach()
+                    .bool()
+                    .cpu()
+                    .numpy()
+                ),
+                min_depth_pixels_per_view=self.min_depth_pixels_per_view,
             )
 
             ref_indices = torch.where(refs)[0]

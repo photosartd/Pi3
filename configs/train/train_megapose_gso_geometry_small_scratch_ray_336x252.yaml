@@ -1,0 +1,85 @@
+# @package _global_
+
+# Compact Pi3 decoder/head training for the geometry-constrained N=5/K=1
+# MegaPose-GSO protocol.  DINOv2-S stays pretrained and frozen; every Pi3
+# decoder/head and the ray-conditioning projection starts from scratch.
+defaults:
+  - train_megapose_gso_composable_rtxpro6000_blackwell_70gb_336x252_dynamic
+  - _self_
+
+gso_profile:
+  num_reference_range: [5, 5]
+  num_query_range: [1, 1]
+  max_refetch: 100
+
+model:
+  encoder_size: small
+  encoder_pretrained: true
+  encoder_ckpt: null
+  decoder_size: small
+  head_dim: 384
+  point_decoder_dim: 384
+  point_decoder_heads: 6
+  point_decoder_depth: 5
+  camera_decoder_dim: 384
+  camera_decoder_heads: 6
+  camera_decoder_depth: 5
+  camera_head_dim: 256
+  global_point_decoder_dim: 384
+  global_point_decoder_heads: 6
+  global_point_decoder_depth: 5
+  load_vggt: false
+  freeze_encoder: true
+  train_conf: false
+  ckpt: null
+  use_visibility_mask_conditioning: false
+  use_ray_conditioning: true
+
+train:
+  image_num_range: [6, 6]
+  max_img_per_gpu: 144
+  resolution:
+    - [336, 252]
+  random_reslution: false
+  num_epoch: 80
+  iters_per_epoch: 500
+  val_every_n_epochs: 1
+  print_freq: 10
+  num_workers: 2
+  persistent_workers: false
+  prefetch_factor: 2
+  lr_scheduler:
+    pct_start: 0.10
+  optimizer:
+    lr: 5e-5
+    encoder_lr: 0.0
+    ray_lr: 5e-4
+    visibility_mask_lr: 0.0
+
+test:
+  image_num_range: [6, 6]
+  max_img_per_gpu: 128
+  num_workers: 2
+  persistent_workers: false
+  prefetch_factor: 2
+  iters_per_test: 0
+  print_freq: 10
+
+metrics:
+  items:
+    ray_geometry:
+      _target_: pi3.metrics.ray_geometry.RayGeometryMetric
+      max_points_per_view: 4096
+      min_fit_points: 64
+      min_ray_variance: 1e-8
+
+visuals:
+  enabled: true
+  train_enabled: false
+  val_enabled: true
+  val_every_n_epochs: 1
+
+log:
+  ckpt_interval: 5
+  max_checkpoints: 3
+  save_best: false

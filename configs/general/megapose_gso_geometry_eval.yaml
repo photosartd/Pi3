@@ -1,0 +1,13 @@
+# @package _global_
+
+# Evaluation-only logging policy for standalone MegaPose-GSO geometry
+# checkpoint restoration. Hydra composes `general` after `train`, so these
+# overrides must live in a separate group rather than the train profile.
+defaults:
+  - default
+  - _self_
+
+log:
+  save_best: false
+  save_checkpoints: false
+  ckpt_interval: 999

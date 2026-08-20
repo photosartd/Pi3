@@ -1,0 +1,16 @@
+# @package _global_
+
+# Evaluation-only logging policy for the geometry-matched LM-O transfer test.
+# This is a separate general profile because the default Hydra composition
+# loads `general` after `train`; putting these overrides in the train profile
+# would therefore only look effective in source without changing the resolved
+# job.
+defaults:
+  - default
+  - _self_
+
+log:
+  save_best: false
+  save_checkpoints: false
+  ckpt_interval: 999
+

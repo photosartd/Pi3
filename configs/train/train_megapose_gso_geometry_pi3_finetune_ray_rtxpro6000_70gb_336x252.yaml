@@ -1,0 +1,73 @@
+# @package _global_
+
+# Fine-tune the released full-size Pi3 checkpoint on the geometry-constrained
+# MegaPose-GSO N=5/K=1 task.  Every historical Pi3 module is checkpoint-loaded;
+# only the Pi3X-style ray projection is absent from the checkpoint and starts
+# from its exact zero initialization.
+defaults:
+  - train_megapose_gso_composable_rtxpro6000_blackwell_70gb_336x252_dynamic
+  - _self_
+
+model:
+  load_vggt: false
+  freeze_encoder: true
+  ckpt: ckpts/Pi3/model.safetensors
+  use_ray_conditioning: true
+  use_visibility_mask_conditioning: false
+
+train:
+  image_num_range: [6, 6]
+
+  # The full-size checkpoint-loaded model is substantially larger than the
+  # compact scratch model. 156 images is the established safe 70 GiB budget
+  # for this architecture at 336x252; fixed six-view samples pack 26 samples.
+  max_img_per_gpu: 156
+  num_workers: 8
+  persistent_workers: true
+  prefetch_factor: 2
+
+  # Match the established LM-O fine-tuning horizon: 15,000 updates. The
+  # stochastic data generator means these are reporting epochs, not complete
+  # passes through a finite sample list.
+  num_epoch: 30
+  iters_per_epoch: 500
+  val_every_n_epochs: 1
+
+  optimizer:
+    # Historical Pi3 weights use the completed LM-O fine-tuning peak LR. The
+    # new 402k-parameter zero-initialized ray projection uses the already tested
+    # LM-O ray-conditioning LR.
+    lr: 5e-6
+    encoder_lr: 0.0
+    ray_lr: 1e-5
+    visibility_mask_lr: 0.0
+
+  lr_scheduler:
+    # (1 / 30) * (30 * 500) = exactly 500 OneCycle warm-up updates.
+    pct_start: 0.03333333333333333
+
+test:
+  image_num_range: [6, 6]
+  # Validation is no-grad. The established 768-image budget packs 128 of the
+  # 189 held-out objects per batch, so each scene/render loader takes 2 batches.
+  max_img_per_gpu: 768
+  num_workers: 2
+  persistent_workers: false
+  prefetch_factor: 2
+  iters_per_test: 0
+
+metrics:
+  items:
+    ray_geometry:
+      _target_: pi3.metrics.ray_geometry.RayGeometryMetric
+      max_points_per_view: 4096
+      min_fit_points: 64
+      min_ray_variance: 1e-8
+
+visuals:
+  enabled: true
+  train_enabled: false
+  val_enabled: true
+  # Keep full validation metrics every epoch, but avoid rendering large visual
+  # panels on every validation pass.
+  val_every_n_epochs: 5

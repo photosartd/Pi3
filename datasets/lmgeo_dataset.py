@@ -10,6 +10,14 @@ from datasets.object_centric import (
     ObjectDatasetAdapter,
     PlannedObjectView,
     RawObjectView,
+    ViewTreatment,
+)
+from datasets.object_geometry import (
+    GeometryFeatureIndex,
+    GeometryPlanIndex,
+    normalized_focal_scalar,
+    normalized_focal_shape,
+    object_preserving_crop_spec,
 )
 
 
@@ -217,9 +225,15 @@ class LMGeoDataset(ObjectDatasetAdapter):
             with Image.open(rgb_path) as image:
                 image_size = image.size
 
+        scene_id = int(Path(scene_dir).name)
         return {
             "split": split,
             "scene_dir": str(scene_dir),
+            # Stable BOP identities used by optional derived-geometry indexes.
+            # Legacy LMGeo loaders ignore these additive fields.
+            "frame_id": scene_id * 1_000_000 + int(im_id),
+            "scene_id": scene_id,
+            "view_id": int(im_id),
             "im_id": int(im_id),
             "gt_id": int(gt_id),
             "object_id": int(object_id),
@@ -1367,6 +1381,404 @@ class LMGeoSequenceDataset(LMGeoDataset):
             metadata=plan_metadata,
         )
         return self._materialize_sample_plan(plan, rng=rng)
+
+
+class LMGeoGeometryMatchedSequenceDataset(LMGeoSequenceDataset):
+    """Opt-in LM-O render-to-scene evaluation with GSO geometry constraints.
+
+    The legacy :class:`LMGeoSequenceDataset` selection path is intentionally
+    unchanged.  This subclass consumes immutable derived geometry sidecars,
+    filters the ordinary LMGeo query-window manifest to constructible samples,
+    and attaches the same ``planned_object_crop`` dictionaries used by the GSO
+    geometry protocol.
+
+    Reference plans are computed only from the LM-O ``train`` reference bank.
+    Query GT is used solely to enforce the configured positive-view condition;
+    it is never used by the reference-only Sim(3) fit.  Consequently this is an
+    oracle "adequate keyframes supplied" evaluation, not a deployable retrieval
+    protocol.
+    """
+
+    def _build_reference_records(self, object_id=None):
+        """Index a BOP reference scene without reopening every RGB image.
+
+        ``LMGeoSequenceDataset`` deliberately keeps its historical conservative
+        path checks.  The matched protocol has a fully validated BOP bank and
+        10,504 reference views, so resolving the common size/extension once per
+        object avoids thousands of unnecessary network reads while preserving
+        the same returned record schema.
+        """
+
+        object_id = self.object_id if object_id is None else int(object_id)
+        scene_dir = self.data_root / self.reference_split / f"{object_id:06d}"
+        scene_gt = self._load_json(scene_dir / "scene_gt.json")
+        scene_gt_info = self._load_json(scene_dir / "scene_gt_info.json")
+        scene_camera = self._load_json(scene_dir / "scene_camera.json")
+        image_size = self._first_scene_image_size(scene_dir, scene_gt)
+        rgb_ext = self._scene_rgb_ext(scene_dir)
+        records = []
+        for key in sorted(scene_gt, key=lambda value: int(value)):
+            im_id = int(key)
+            for gt_id, gt in enumerate(scene_gt[key]):
+                if int(gt.get("obj_id", -1)) != object_id:
+                    continue
+                info = scene_gt_info[key][gt_id]
+                if float(info.get("visib_fract", 1.0)) < self.visibility_min:
+                    continue
+                records.append(
+                    self._record_from_gt(
+                        scene_dir,
+                        im_id,
+                        gt_id,
+                        gt,
+                        info,
+                        scene_camera[key],
+                        self.reference_split,
+                        object_id=object_id,
+                        image_size=image_size,
+                        rgb_ext=rgb_ext,
+                        trust_paths=True,
+                    )
+                )
+                break
+        if not records:
+            raise ValueError(
+                f"No LM-O reference records for object {object_id} in {scene_dir}"
+            )
+        return self._filter_records_visible_after_center_crop(records, "reference")
+
+    def __init__(
+        self,
+        *args,
+        reference_geometry_plan_path,
+        query_geometry_index_path,
+        positive_angle_degrees=10.0,
+        focal_relative_tolerance=0.1,
+        crop_aspect=4.0 / 3.0,
+        crop_margin_fraction=0.05,
+        crop_center_jitter=0.0,
+        plan_selection="first",
+        **kwargs,
+    ):
+        self.reference_geometry_plan_path = Path(
+            reference_geometry_plan_path
+        ).expanduser().resolve()
+        self.query_geometry_index_path = Path(
+            query_geometry_index_path
+        ).expanduser().resolve()
+        self.positive_angle_degrees = float(positive_angle_degrees)
+        self.focal_relative_tolerance = float(focal_relative_tolerance)
+        self.geometry_crop_aspect = float(crop_aspect)
+        self.geometry_crop_margin_fraction = float(crop_margin_fraction)
+        self.geometry_crop_center_jitter = float(crop_center_jitter)
+        self.geometry_plan_selection = str(plan_selection)
+
+        if not 0.0 < self.positive_angle_degrees <= 180.0:
+            raise ValueError("positive_angle_degrees must be in (0, 180]")
+        if not 0.0 <= self.focal_relative_tolerance < 1.0:
+            raise ValueError("focal_relative_tolerance must be in [0, 1)")
+        if self.geometry_crop_aspect <= 0.0:
+            raise ValueError("crop_aspect must be positive")
+        if self.geometry_crop_margin_fraction < 0.0:
+            raise ValueError("crop_margin_fraction must be non-negative")
+        if not 0.0 <= self.geometry_crop_center_jitter <= 1.0:
+            raise ValueError("crop_center_jitter must be in [0, 1]")
+        if self.geometry_plan_selection not in {"first", "closest"}:
+            raise ValueError("plan_selection must be 'first' or 'closest'")
+
+        super().__init__(*args, **kwargs)
+        if self.num_reference_range != (5, 5) or self.num_query_range != (1, 1):
+            raise ValueError(
+                "LMGeoGeometryMatchedSequenceDataset currently implements fixed N=5/K=1"
+            )
+        if self.query_selection != "first":
+            raise ValueError(
+                "Matched validation requires query_selection='first' so the query "
+                "manifest is deterministic"
+            )
+        if self.context_reference_fraction != 0.0:
+            raise ValueError("Matched render-to-scene evaluation cannot mix context references")
+        if self.aug_crop or self.aug_focal:
+            raise ValueError(
+                "Planned calibrated crops require legacy aug_crop/aug_focal to be false"
+            )
+
+        self.reference_geometry_plans = GeometryPlanIndex(
+            self.reference_geometry_plan_path
+        )
+        if self.reference_geometry_plans.reference_source_kind != "render":
+            raise ValueError(
+                "LM-O matched render-to-scene evaluation requires render reference plans"
+            )
+        if self.reference_geometry_plans.reference_count != 5:
+            raise ValueError(
+                "Reference plan catalogue must contain fixed five-view plans"
+            )
+        constraints = self.reference_geometry_plans.constraints
+        if float(constraints.get("reference_visibility_min", 0.0)) < 0.3:
+            raise ValueError("Reference plans must enforce visibility >= 0.3")
+        if float(constraints.get("union_surface_min", 0.0)) < 0.5:
+            raise ValueError("Reference plans must enforce union surface coverage >= 0.5")
+        self.query_geometry = GeometryFeatureIndex(
+            self.query_geometry_index_path, source_kind="scene"
+        )
+        self._geometry_plan_vector_cache = {}
+
+        original_samples = list(self.samples)
+        matched_samples, rejection_counts = self._build_geometry_matched_samples(
+            original_samples
+        )
+        if not matched_samples:
+            raise ValueError(
+                "No LM-O new_val query has a compatible five-reference geometry plan"
+            )
+        self.samples = matched_samples
+        self.dataset_label = "LMGeoGeometryMatched"
+        self.geometry_eligibility = {
+            "candidate_samples": len(original_samples),
+            "eligible_samples": len(matched_samples),
+            "eligible_fraction": len(matched_samples) / len(original_samples),
+            **rejection_counts,
+        }
+        print(
+            f"[{self.dataset_label}] geometry eligibility: "
+            f"{len(matched_samples)}/{len(original_samples)} "
+            f"({100.0 * self.geometry_eligibility['eligible_fraction']:.2f}%), "
+            f"rejections={rejection_counts}"
+        )
+
+    def _compatible_plan_matches(self, query_feature, plans):
+        if not int(query_feature["crop_feasible"]):
+            return [], "query_crop"
+        direction = np.asarray(
+            [
+                query_feature["view_x"],
+                query_feature["view_y"],
+                query_feature["view_z"],
+            ],
+            dtype=np.float32,
+        )
+        cosine = float(np.cos(np.deg2rad(self.positive_angle_degrees)))
+        object_id = int(plans[0].object_id)
+        cache = getattr(self, "_geometry_plan_vector_cache", None)
+        if cache is None:
+            cache = self._geometry_plan_vector_cache = {}
+        arrays = cache.get(object_id)
+        if arrays is None or arrays[0] is not plans:
+            arrays = (
+                plans,
+                np.asarray([plan.focal_low for plan in plans], dtype=np.float64),
+                np.asarray([plan.focal_high for plan in plans], dtype=np.float64),
+                np.asarray(
+                    [plan.focal_shape_low for plan in plans], dtype=np.float64
+                ),
+                np.asarray(
+                    [plan.focal_shape_high for plan in plans], dtype=np.float64
+                ),
+                np.stack([plan.directions for plan in plans], axis=0),
+            )
+            cache[object_id] = arrays
+        _, focal_lows, focal_highs, shape_lows, shape_highs, directions = arrays
+        query_low = normalized_focal_scalar(query_feature)
+        query_high = min(
+            normalized_focal_scalar(query_feature, maximum=True),
+            query_low * (1.0 + self.focal_relative_tolerance),
+        )
+        lows = np.maximum(query_low, focal_lows)
+        highs = np.minimum(query_high, focal_highs)
+        shape = normalized_focal_shape(query_feature)
+        focal_valid = (
+            (lows <= highs + 1e-12)
+            & (shape_lows <= shape)
+            & (shape <= shape_highs)
+        )
+        similarities = np.einsum("pnc,c->pn", directions, direction)
+        positive_indices = np.argmax(similarities, axis=1)
+        best = similarities[np.arange(len(plans)), positive_indices]
+        valid = focal_valid & (best + 1e-7 >= cosine)
+        matches = []
+        for index in np.flatnonzero(valid):
+            similarity = float(best[index])
+            matches.append(
+                (
+                    plans[int(index)],
+                    (float(lows[index]), float(highs[index])),
+                    int(positive_indices[index]),
+                    float(
+                        np.rad2deg(
+                            np.arccos(np.clip(similarity, -1.0, 1.0))
+                        )
+                    ),
+                )
+            )
+        if matches:
+            if self.geometry_plan_selection == "closest":
+                matches.sort(key=lambda value: (value[3], value[0].plan_id))
+            return matches, None
+        return [], "positive_angle" if bool(focal_valid.any()) else "focal"
+
+    def _build_geometry_matched_samples(self, samples):
+        matched = []
+        rejections = {
+            "missing_query_geometry": 0,
+            "missing_reference_plans": 0,
+            "query_crop": 0,
+            "focal": 0,
+            "positive_angle": 0,
+        }
+        for sample in samples:
+            object_id = int(sample["object_id"])
+            query_record = sample["query_records"][0]
+            query_feature = self.query_geometry.feature_for_record(query_record)
+            if query_feature is None:
+                rejections["missing_query_geometry"] += 1
+                continue
+            plans = self.reference_geometry_plans.plans_for_object(object_id)
+            if not plans:
+                rejections["missing_reference_plans"] += 1
+                continue
+            matches, reason = self._compatible_plan_matches(query_feature, plans)
+            if not matches:
+                rejections[str(reason)] += 1
+                continue
+            plan, interval, positive_index, positive_angle = matches[0]
+            item = dict(sample)
+            item["geometry_query_record"] = query_record
+            item["geometry_query_feature"] = query_feature
+            item["geometry_reference_plan"] = plan
+            item["geometry_target_interval"] = interval
+            item["geometry_positive_index"] = positive_index
+            item["geometry_positive_angle_degrees"] = positive_angle
+            matched.append(item)
+        return matched, rejections
+
+    def _planned_reference_records(self, sample, target, rng):
+        object_id = int(sample["object_id"])
+        plan = sample["geometry_reference_plan"]
+        by_view = {
+            int(record["view_id"]): record
+            for record in self.reference_records_by_object[object_id]
+        }
+        try:
+            records = [by_view[int(view_id)] for view_id in plan.view_ids]
+        except KeyError as exc:
+            raise ValueError(
+                f"Reference plan {plan.plan_id} refers to missing LM-O view {exc}"
+            ) from exc
+        feature_map = self.reference_geometry_plans.features_by_ids(
+            plan.feature_ids
+        )
+        output = []
+        for record, feature_id in zip(records, plan.feature_ids):
+            item = dict(record)
+            item["reference_source"] = "render"
+            item["planned_object_crop"] = object_preserving_crop_spec(
+                feature_map[int(feature_id)],
+                target_normalized_focal=target,
+                aspect=self.geometry_crop_aspect,
+                margin_fraction=self.geometry_crop_margin_fraction,
+                center_jitter=self.geometry_crop_center_jitter,
+                rng=rng,
+            )
+            output.append(item)
+        return output
+
+    def _get_views(self, index, resolution, rng):
+        if self.frame_num != 6:
+            raise ValueError(
+                "LMGeoGeometryMatchedSequenceDataset requires exactly six model views"
+            )
+        sample = self.samples[int(index) % len(self.samples)]
+        low, high = (float(value) for value in sample["geometry_target_interval"])
+        target = 0.5 * (low + high)
+        self._current_resolution = resolution
+        self._prepare_sample_photometric_augmentation(rng)
+        reference_records = self._planned_reference_records(sample, target, rng)
+        query_record = dict(sample["geometry_query_record"])
+        query_record["planned_object_crop"] = object_preserving_crop_spec(
+            sample["geometry_query_feature"],
+            target_normalized_focal=target,
+            aspect=self.geometry_crop_aspect,
+            margin_fraction=self.geometry_crop_margin_fraction,
+            center_jitter=self.geometry_crop_center_jitter,
+            rng=rng,
+        )
+        plan = sample["geometry_reference_plan"]
+        metadata = {
+            "sampling_policy": "lmgeo_geometry_render_to_scene",
+            "object_id": int(sample["object_id"]),
+            "query_scene_id": int(sample["query_scene_id"]),
+            "query_subscene_id": int(sample["query_subscene_id"]),
+            "reference_count": 5,
+            "query_count": 1,
+            "reference_plan_id": int(plan.plan_id),
+            "reference_union_coverage": float(plan.union_coverage),
+            "positive_reference_index": int(sample["geometry_positive_index"]),
+            "positive_angle_degrees": float(
+                sample["geometry_positive_angle_degrees"]
+            ),
+            "target_normalized_focal": float(target),
+            "per_view_target_normalized_focal": (target,) * 6,
+            "reference": [
+                (record["split"], record["im_id"], record["gt_id"])
+                for record in reference_records
+            ],
+            "query": [
+                (query_record["split"], query_record["im_id"], query_record["gt_id"])
+            ],
+        }
+        sample_plan = self.key_query_sampling_policy.plan(
+            reference_records=reference_records,
+            query_records=[query_record],
+            reference_rgb_masking=self.reference_rgb_masking,
+            query_rgb_masking=self.query_rgb_masking,
+            reference_treatments=[
+                ViewTreatment(
+                    rgb="object_only", depth="object_only", mask_condition="none"
+                )
+                for _ in reference_records
+            ],
+            query_treatments=[
+                ViewTreatment(
+                    rgb="object_only", depth="object_only", mask_condition="none"
+                )
+            ],
+            metadata=metadata,
+        )
+        return self._materialize_sample_plan(sample_plan, rng=rng)
+
+    def _materialize_sample_plan(self, plan, *, rng):
+        """Materialize fixed one-cost views without legacy query expansion.
+
+        Historical LMGeo query subclasses can expand one physical query into
+        paired model views.  This protocol is fixed K=1 and must retain its
+        explicit object-only treatment through the final resize, so every
+        request is processed directly.
+        """
+
+        self.this_views_info = dict(plan.metadata)
+        output = []
+        for request in plan.views:
+            if int(request.model_view_cost) != 1:
+                raise ValueError("Matched LM-O views must each have model_view_cost=1")
+            view = self.object_view_processor.process(self, request, rng=rng)
+            if request.view_role == "query":
+                view["query_pair_index"] = np.int64(request.query_pair_index)
+            view.update(request.view_updates)
+            output.append(view)
+        if len(output) != plan.model_view_count:
+            raise RuntimeError("Matched LM-O plan materialized the wrong view count")
+        return output
+
+    def close(self):
+        """Release process-local SQLite handles owned by the opt-in sidecars."""
+
+        plans = getattr(self, "reference_geometry_plans", None)
+        if plans is not None:
+            plans.close()
+        queries = getattr(self, "query_geometry", None)
+        if queries is not None:
+            queries.close()
 
 
 class LMGeoAnchorScenePairSequenceDataset(LMGeoSequenceDataset):

@@ -1,0 +1,26 @@
+# @package _global_
+
+# Same compact scratch/ray one-batch diagnostic, packed to the measured local
+# 144-image training budget: 24 distinct six-view samples per optimizer step.
+defaults:
+  - train_megapose_gso_geometry_small_scratch_ray_336x252_overfit_one_batch
+  - _self_
+
+train:
+  max_img_per_gpu: 144
+  # One optimizer step is one complete fixed 24-sample batch. The long ceiling
+  # permits manual termination after metrics show a decisive improvement.
+  num_epoch: 600
+  iters_per_epoch: 1
+  val_every_n_epochs: 10
+
+test:
+  max_img_per_gpu: 144
+  iters_per_test: 1
+
+metrics:
+  train_every_n_steps: 10
+
+visuals:
+  train_every_n_steps: 50
+  val_every_n_epochs: 10

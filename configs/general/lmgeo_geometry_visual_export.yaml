@@ -1,0 +1,31 @@
+# @package _global_
+
+# Side-effect policy for scripts/export_lmgeo_geometry_visuals.py. Model and
+# dataset settings still come from the ordinary matched evaluation profiles.
+defaults:
+  - lmgeo_geometry_eval
+  - _self_
+
+name: lmgeo_geometry_visual_export
+
+export:
+  output: /media/internal/nvme/dtrofimov/spott3r/outputs/lmgeo_geometry_matched_visual_gallery
+  samples: 20
+  seed: 20260818
+  maximum_width: 1800
+  overwrite: false
+
+log:
+  # Keep Hydra/Accelerate runtime bookkeeping beside, not inside, the gallery.
+  # The gallery can therefore enforce an empty-output safety check.
+  output_dir: ${export.output}_runtime
+  tensorboard_dir: null
+  ckpt_dir: ${log.output_dir}/ckpts
+  use_tensorboard: false
+  use_wandb: false
+  save_best: false
+  save_checkpoints: false
+
+hydra:
+  run:
+    dir: ${log.output_dir}

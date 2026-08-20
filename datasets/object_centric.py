@@ -12,10 +12,12 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, MutableMapping, Sequence
 
 import numpy as np
+from PIL import Image
 
 from datasets.base.base_dataset import BaseDataset
 from datasets.base.observation import ObservationCapability
 from datasets.role_photometric import RoleConsistentPhotometricAugmentation
+import pi3.utils.cropping as cropping
 
 
 @dataclass(frozen=True)
@@ -382,19 +384,39 @@ class DatasetGeometryTransform(ObjectViewTransform):
 
 class CropResizeTransform(ObjectViewTransform):
     name = "crop_resize"
-    requires = frozenset({"geometry_transformed"})
+    requires = frozenset({"planned_crop_transformed"})
     provides = frozenset({"resized_view"})
 
     def apply(self, state, *, adapter, request, rng):
-        outputs = adapter._crop_resize_if_necessary(
-            state["rgb"],
-            state["depthmap"],
-            state["camera_intrinsics"],
-            adapter._current_resolution,
-            rng=rng,
-            info=state["record"].get("rgb_path", state["record"]),
-            far_mask=np.asarray(state["object_mask"], dtype=np.uint8),
-        )
+        if state["transform_meta"].get("object_crop_applied", False):
+            if adapter.aug_crop or adapter.aug_focal:
+                raise ValueError(
+                    "Planned object crops already encode crop/focal augmentation; "
+                    "set legacy aug_crop and aug_focal to false"
+                )
+            rescaled = cropping.rescale_image_depthmap(
+                state["rgb"],
+                state["depthmap"],
+                state["camera_intrinsics"],
+                np.asarray(adapter._current_resolution, dtype=np.int64),
+                far_mask=np.asarray(state["object_mask"], dtype=np.uint8),
+            )
+            outputs = (rescaled[0], rescaled[1], rescaled[2], rescaled[4])
+            if outputs[0].size != tuple(adapter._current_resolution):
+                raise ValueError(
+                    "Planned object crop aspect does not match model resolution: "
+                    f"{outputs[0].size} != {tuple(adapter._current_resolution)}"
+                )
+        else:
+            outputs = adapter._crop_resize_if_necessary(
+                state["rgb"],
+                state["depthmap"],
+                state["camera_intrinsics"],
+                adapter._current_resolution,
+                rng=rng,
+                info=state["record"].get("rgb_path", state["record"]),
+                far_mask=np.asarray(state["object_mask"], dtype=np.uint8),
+            )
         (
             state["rgb"],
             state["depthmap"],
@@ -402,6 +424,67 @@ class CropResizeTransform(ObjectViewTransform):
             object_mask,
         ) = outputs
         state["object_mask"] = np.asarray(object_mask > 0, dtype=np.float32)
+
+
+class PlannedObjectCropTransform(ObjectViewTransform):
+    """Apply an optional policy-selected crop without changing extrinsics."""
+
+    name = "planned_object_crop"
+    requires = frozenset({"geometry_transformed"})
+    provides = frozenset({"planned_crop_transformed"})
+
+    def apply(self, state, *, adapter, request, rng):
+        spec = state["record"].get("planned_object_crop")
+        if spec is None:
+            state["transform_meta"].setdefault("object_crop_applied", False)
+            return
+        if spec.get("format") != "pi3_object_crop_v1":
+            raise ValueError(f"Unsupported planned object crop: {spec!r}")
+        source_height, source_width = state["depthmap"].shape
+        expected_width, expected_height = (int(value) for value in spec["source_size_wh"])
+        if (source_width, source_height) != (expected_width, expected_height):
+            raise ValueError(
+                "Planned crop source size changed: "
+                f"{(source_width, source_height)} != {(expected_width, expected_height)}"
+            )
+        l, t, r, b = (int(value) for value in spec["bbox_xyxy"])
+        if not (0 <= l < r <= source_width and 0 <= t < b <= source_height):
+            raise ValueError(f"Planned crop is outside the source image: {(l,t,r,b)}")
+        source_intrinsics = np.asarray(
+            state["camera_intrinsics"], dtype=np.float32
+        ).copy()
+        outputs = cropping.crop_image_depthmap(
+            state["rgb"],
+            state["depthmap"],
+            state["camera_intrinsics"],
+            (l, t, r, b),
+            far_mask=np.asarray(state["object_mask"], dtype=np.uint8),
+        )
+        (
+            state["rgb"],
+            state["depthmap"],
+            state["camera_intrinsics"],
+            _,
+            object_mask,
+        ) = outputs
+        state["object_mask"] = np.asarray(object_mask > 0, dtype=np.float32)
+        metadata = state["transform_meta"]
+        metadata.update(
+            {
+                "object_crop_applied": True,
+                "object_crop_bbox_xyxy": np.asarray((l, t, r, b), dtype=np.int32),
+                "object_crop_source_intrinsics": source_intrinsics,
+                "object_crop_target_normalized_focal": np.float32(
+                    spec["target_normalized_focal"]
+                ),
+                "object_crop_actual_normalized_focal": np.float32(
+                    spec["actual_normalized_focal"]
+                ),
+                "object_crop_center_shift_xy": np.asarray(
+                    spec["center_shift_xy"], dtype=np.int32
+                ),
+            }
+        )
 
 
 class RolePhotometricTransform(ObjectViewTransform):
@@ -415,9 +498,39 @@ class RolePhotometricTransform(ObjectViewTransform):
         )
 
 
+class FinalObjectMaskTransform(ObjectViewTransform):
+    """Reapply object-only treatments after interpolation/photometrics."""
+
+    name = "final_object_masking"
+    requires = frozenset({"augmented_view"})
+    provides = frozenset({"final_masked_view"})
+
+    def apply(self, state, *, adapter, request, rng):
+        treatment = request.treatment
+        # Preserve the established interpolation behavior for every legacy
+        # sample. Exact post-resize remasking is part of the explicit planned
+        # crop protocol only.
+        if treatment is None or not state["transform_meta"].get(
+            "object_crop_applied", False
+        ):
+            return
+        mask = np.asarray(state["object_mask"] > 0.5)
+        if treatment.rgb == "object_only":
+            image = np.asarray(state["rgb"]).copy()
+            image[~mask] = 0
+            # ``BaseDataset`` deliberately receives PIL images and performs
+            # tensor conversion afterwards.  Keep that established contract
+            # while making the post-resize masking exact.
+            state["rgb"] = Image.fromarray(image)
+        if treatment.depth == "object_only":
+            depth = np.asarray(state["depthmap"]).copy()
+            depth[~mask] = 0
+            state["depthmap"] = depth
+
+
 class VisibilityConditionTransform(ObjectViewTransform):
     name = "visibility_condition"
-    requires = frozenset({"augmented_view"})
+    requires = frozenset({"final_masked_view"})
     provides = frozenset({"conditioned_view"})
 
     def apply(self, state, *, adapter, request, rng):
@@ -468,8 +581,10 @@ class ObjectViewProcessor:
             or (
                 ObjectMaskTransform(),
                 DatasetGeometryTransform(),
+                PlannedObjectCropTransform(),
                 CropResizeTransform(),
                 RolePhotometricTransform(),
+                FinalObjectMaskTransform(),
                 VisibilityConditionTransform(),
             )
         )

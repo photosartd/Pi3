@@ -1,0 +1,24 @@
+# @package _global_
+
+# Eval-only variant of `megapose_gso_geometry_n5_k1_masked` for a bigger,
+# more representative render-to-scene held-out validation. The base profile's
+# `gso_geometry_val_render_n5_k1` policy deterministically draws exactly one
+# query per held-out object (`GeometryConstrainedRenderToScenePolicy.natural_length`
+# is one-per-object by construction); this profile instead enumerates one
+# feasible query per held-out cross-scene group, up to
+# `max_query_groups_per_object` groups per object, using the
+# `enumerate_query_groups` flag added to `_GeometryConstrainedReferencePolicy`.
+# Scene-to-scene validation (`gso_geometry_val_scene_n5_k1`) is untouched.
+defaults:
+  - megapose_gso_geometry_n5_k1_masked
+  - _self_
+
+val_datasets:
+  gso_geometry_val_render_n5_k1:
+    dataset:
+      sampling_policy:
+        enumerate_query_groups: true
+        # ~87-94 candidate scene groups/held-out object exist; this cap keeps
+        # the enumerated set close in scale to the matched LM-O evaluation
+        # (1,364 queries) instead of enumerating tens of thousands of queries.
+        max_query_groups_per_object: 12

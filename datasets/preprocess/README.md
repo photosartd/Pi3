@@ -1,5 +1,10 @@
 # MegaPose-GSO one-time preprocessing
 
+For the complete pipeline in order -- acquiring the scene shards, downloading
+meshes, rendering, packing the reference bank into tar shards, and training --
+see [`docs/megapose_gso_data_pipeline.md`](../../docs/megapose_gso_data_pipeline.md).
+This page documents each script's own details.
+
 Optional GSO mesh acquisition is documented separately in
 [`download/README.md`](download/README.md). Mesh download and scene indexing
 are independent: download only the assets required by mesh-based rendering or

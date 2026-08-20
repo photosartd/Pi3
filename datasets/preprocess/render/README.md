@@ -49,8 +49,8 @@ both sphere motion and in-plane roll), and only then assigns filenames
 ordering is part of the bank fingerprint. The default `coverage` order remains
 for backward-compatible resumption of existing banks.
 
-After the full bank completes, validate it and build the compact worker-facing
-index once:
+After the full bank completes, pack it into tar shards and build the compact
+worker-facing index in one step:
 
 ```bash
 python datasets/preprocess/render/object_reference_index.py \
@@ -62,13 +62,52 @@ python datasets/preprocess/render/object_reference_index.py \
   --verify-workers 8
 ```
 
-This writes `renders/pi3_index/references.sqlite` atomically. Omit
-`--allow-incomplete` for the production index: every validated model-catalogue
-object and every configured view must be complete. The raw GSO mapping includes
-source entries rejected during model preparation, so it is not itself the
-required render set. `--verify-images all` performs a final full PNG decode;
+This is a from-scratch rebuild every time, not incremental: it validates
+every object/view exactly as before, then packs every RGB/depth/mask/
+mask_visib PNG into uncompressed `renders/shard-NNNNNN.tar` files (never
+splitting one object across two shards, target ~512 MiB/shard via
+`--shard-target-bytes`), and writes `renders/pi3_index/references.sqlite`
+(format `pi3_object_reference_index_v2`) recording each payload's shard +
+exact byte offset/size. Both are written atomically -- shards to a temp name
+then renamed, the database to a temp file then renamed -- so a crash never
+leaves a half-built index or a half-written shard at its final name. A rerun
+also removes any stale `shard-*.tar` left over from a previous, larger build
+at the same `--bank-root`.
+
+This replaces the older `pi3_object_reference_index_v1` format, which stored
+one loose file per payload (about 1.9M files / 41 GB for the full 946-object,
+512-view MegaPose-GSO bank) and is no longer read by `IndexedBOPReferenceSource`.
+Rerun this command to migrate an existing v1 bank; nothing else changes.
+
+Omit `--allow-incomplete` for the production index: every validated
+model-catalogue object and every configured view must be complete. The raw
+GSO mapping includes source entries rejected during model preparation, so it
+is not itself the required render set. `--verify-images all` re-decodes every
+packed payload (read back through its real shard offset, so this also proves
+the offsets are correct, not just that the source PNGs were valid);
 `--verify-workers` only parallelizes those independent decodes.
-Training details are in `docs/object_pose_composition.md`.
+
+Once `--verify-images all` has passed, add `--delete-source-after-verify` to
+reclaim the ~41 GB of now-redundant loose per-object files (everything they
+contained is already in the packed shards and the SQLite index; only the
+top-level `reference_bank.json` is kept). This is a separate, explicit flag
+rather than the default so a first migration can be inspected/compared
+before anything is deleted:
+
+```bash
+python datasets/preprocess/render/object_reference_index.py \
+  --bank-root /media/internal/nvme/dtrofimov/datasets/MegaPose-GSO-assets/renders \
+  --namespace gso \
+  --mapping-path /media/internal/nvme/dtrofimov/datasets/MegaPose-GSO-assets/gso_models.json \
+  --required-object-ids-path /media/internal/nvme/dtrofimov/datasets/MegaPose-GSO-assets/models_eval/models_info.json \
+  --verify-images all \
+  --verify-workers 8 \
+  --delete-source-after-verify
+```
+
+Training details are in `docs/object_pose_composition.md`. The full pipeline,
+end to end from acquiring the source datasets to training, is in
+[`docs/megapose_gso_data_pipeline.md`](../../../docs/megapose_gso_data_pipeline.md).
 
 Defaults are 256 views, 720×540, scaled LM-O intrinsics and 0.5 m nominal
 camera distance. Camera positions use a full Fibonacci sphere rather than the

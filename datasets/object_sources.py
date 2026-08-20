@@ -147,6 +147,63 @@ class BOPObjectModelCatalog:
         return self.models_root / f"obj_{object_id:06d}.ply"
 
 
+class ShardPayloadReader:
+    """LRU pool of open tar-shard file descriptors for ``os.pread`` access.
+
+    Shared by every source that stores its RGB/depth/mask payloads packed
+    into a handful of uncompressed tar shards instead of one file per
+    payload, with byte offset/size recorded per payload in a SQLite index.
+    Random access is then one ``pread`` syscall against an already-open file
+    descriptor, with no per-sample ``open()``/filesystem-metadata lookup and
+    no tar member scanning.
+    """
+
+    def __init__(self, root, *, max_open_shards):
+        self.root = Path(root)
+        self.max_open_shards = int(max_open_shards)
+        if self.max_open_shards <= 0:
+            raise ValueError("max_open_shards must be positive")
+        self._shard_fds: OrderedDict[str, int] = OrderedDict()
+
+    def _path(self, relative_path):
+        path = Path(str(relative_path))
+        return path if path.is_absolute() else self.root / path
+
+    def read(self, relative_path, offset, size):
+        relative_path = str(relative_path)
+        descriptor = self._shard_fds.pop(relative_path, None)
+        if descriptor is None:
+            descriptor = os.open(self._path(relative_path), os.O_RDONLY)
+        self._shard_fds[relative_path] = descriptor
+        while len(self._shard_fds) > self.max_open_shards:
+            _, old = self._shard_fds.popitem(last=False)
+            os.close(old)
+        size = int(size)
+        data = os.pread(descriptor, size, int(offset))
+        if len(data) != size:
+            raise IOError(f"Short read for {relative_path}")
+        return data
+
+    def close(self):
+        for descriptor in self._shard_fds.values():
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        self._shard_fds = OrderedDict()
+
+    def __getstate__(self):
+        state = dict(self.__dict__)
+        state["_shard_fds"] = OrderedDict()
+        return state
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
 class IndexedBOPReferenceSource(ObjectViewSource):
     """Read a BOP-style clean reference bank through its compact SQLite index."""
 
@@ -161,6 +218,7 @@ class IndexedBOPReferenceSource(ObjectViewSource):
         mask_type="mask_visib",
         expected_fingerprint=None,
         object_model_available=False,
+        max_open_shards=8,
     ):
         self.bank_root = Path(bank_root).expanduser().resolve()
         self.index_path = (
@@ -184,8 +242,14 @@ class IndexedBOPReferenceSource(ObjectViewSource):
         connection = self._readonly_connection()
         try:
             metadata = dict(connection.execute("SELECT key, value FROM metadata"))
-            if metadata.get("format") != "pi3_object_reference_index_v1":
-                raise ValueError(f"Unsupported reference index {self.index_path}")
+            if metadata.get("format") != "pi3_object_reference_index_v2":
+                raise ValueError(
+                    f"Unsupported reference index {self.index_path}: expected "
+                    "pi3_object_reference_index_v2 (packed tar-shard payloads). "
+                    "Rebuild it with datasets/preprocess/render/object_reference_index.py "
+                    "-- older pi3_object_reference_index_v1 indexes (loose per-view "
+                    "files) are no longer read by this loader."
+                )
             if metadata.get("index_complete") != "1":
                 raise ValueError(f"Incomplete reference index {self.index_path}")
             if metadata.get("namespace") != self.object_namespace:
@@ -214,6 +278,9 @@ class IndexedBOPReferenceSource(ObjectViewSource):
         self._object_ids = available
         self._runtime_pid: int | None = None
         self._db: sqlite3.Connection | None = None
+        self._payload_reader = ShardPayloadReader(
+            self.bank_root, max_open_shards=max_open_shards
+        )
 
     @staticmethod
     def _normalize_ids(value):
@@ -270,11 +337,14 @@ class IndexedBOPReferenceSource(ObjectViewSource):
         self._ensure_runtime()
         rows = self._db.execute(
             """
-            SELECT object_id, view_id, coverage_view_id, T_C_O_f32, K_f32,
-                   depth_scale, rgb_relpath, depth_relpath, mask_relpath,
-                   mask_visib_relpath, bbox_obj_json, bbox_visib_json,
-                   px_count_all, px_count_visib
-            FROM views WHERE object_id=? ORDER BY view_id
+            SELECT v.object_id, v.view_id, v.coverage_view_id, v.T_C_O_f32, v.K_f32,
+                   v.depth_scale, v.rgb_offset, v.rgb_size, v.depth_offset, v.depth_size,
+                   v.mask_offset, v.mask_size, v.mask_visib_offset, v.mask_visib_size,
+                   v.bbox_obj_json, v.bbox_visib_json, v.px_count_all, v.px_count_visib,
+                   s.relative_path
+            FROM views AS v
+            JOIN shards AS s ON s.id = v.shard_id
+            WHERE v.object_id=? ORDER BY v.view_id
             """,
             (int(group.object_id),),
         ).fetchall()
@@ -302,16 +372,19 @@ class IndexedBOPReferenceSource(ObjectViewSource):
             )
         return records
 
-    def _payload_path(self, record, field):
-        return self.bank_root / str(record[field])
+    def _read_payload(self, record, payload):
+        return self._payload_reader.read(
+            record["relative_path"],
+            record[f"{payload}_offset"],
+            record[f"{payload}_size"],
+        )
 
     def load_raw_object_view(self, record):
-        with Image.open(self._payload_path(record, "rgb_relpath")) as image:
+        with Image.open(io.BytesIO(self._read_payload(record, "rgb"))) as image:
             rgb = np.asarray(image.convert("RGB")).copy()
-        with Image.open(self._payload_path(record, "depth_relpath")) as image:
+        with Image.open(io.BytesIO(self._read_payload(record, "depth"))) as image:
             raw_depth = np.asarray(image).copy()
-        mask_field = f"{self.mask_type}_relpath"
-        with Image.open(self._payload_path(record, mask_field)) as image:
+        with Image.open(io.BytesIO(self._read_payload(record, self.mask_type))) as image:
             object_mask = np.asarray(image) > 0
         depthmap = (
             raw_depth.astype(np.float32)
@@ -338,8 +411,11 @@ class IndexedBOPReferenceSource(ObjectViewSource):
                 pass
         self._db = None
         self._runtime_pid = None
+        self._payload_reader.close()
 
     def __getstate__(self):
+        # `_payload_reader` (a plain object) is pickled by recursing into its
+        # own `__getstate__`, which already drops its open file descriptors.
         state = dict(self.__dict__)
         state["_db"] = None
         state["_runtime_pid"] = None
@@ -457,7 +533,9 @@ class MegaPoseGSOSceneSource(ObjectViewSource):
             )
         self._runtime_pid: int | None = None
         self._db: sqlite3.Connection | None = None
-        self._shard_fds: OrderedDict[str, int] = OrderedDict()
+        self._payload_reader = ShardPayloadReader(
+            self.data_root, max_open_shards=self.max_open_shards
+        )
 
     def _validate_configuration(self):
         if not self.data_root.is_dir():
@@ -751,24 +829,13 @@ class MegaPoseGSOSceneSource(ObjectViewSource):
             )
         return records
 
-    def _payload_path(self, relative_path):
-        path = Path(str(relative_path))
-        return path if path.is_absolute() else self.data_root / path
-
     def _read_payload(self, record, payload):
         self._ensure_runtime()
-        relative_path = str(record["relative_path"])
-        descriptor = self._shard_fds.pop(relative_path, None)
-        if descriptor is None:
-            descriptor = os.open(self._payload_path(relative_path), os.O_RDONLY)
-        self._shard_fds[relative_path] = descriptor
-        while len(self._shard_fds) > self.max_open_shards:
-            _, old = self._shard_fds.popitem(last=False)
-            os.close(old)
-        size = int(record[f"{payload}_size"])
-        data = os.pread(descriptor, size, int(record[f"{payload}_offset"]))
-        if len(data) != size:
-            raise IOError(f"Short read for {relative_path}:{payload}")
+        data = self._payload_reader.read(
+            record["relative_path"],
+            record[f"{payload}_offset"],
+            record[f"{payload}_size"],
+        )
         return data
 
     @staticmethod
@@ -846,18 +913,16 @@ class MegaPoseGSOSceneSource(ObjectViewSource):
             except sqlite3.Error:
                 pass
         self._db = None
-        for descriptor in getattr(self, "_shard_fds", {}).values():
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
-        self._shard_fds = OrderedDict()
+        payload_reader = getattr(self, "_payload_reader", None)
+        if payload_reader is not None:
+            payload_reader.close()
         self._runtime_pid = None
 
     def __getstate__(self):
+        # `_payload_reader` (a plain object) is pickled by recursing into its
+        # own `__getstate__`, which already drops its open file descriptors.
         state = dict(self.__dict__)
         state["_db"] = None
-        state["_shard_fds"] = OrderedDict()
         state["_runtime_pid"] = None
         return state
 

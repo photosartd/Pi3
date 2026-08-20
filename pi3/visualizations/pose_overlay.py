@@ -39,6 +39,8 @@ class QueryPoseOverlayVisualizer(BaseVisualizer):
         object_model_namespaces: list[str] | tuple[str, ...] | None = None,
         models_folder: str = "models_eval",
         solve_scale: bool = True,
+        scale_estimation: str = "camera_centers",
+        min_depth_pixels_per_view: int = 64,
         max_model_points: int = 20000,
         max_query_views: int = 3,
     ):
@@ -54,6 +56,8 @@ class QueryPoseOverlayVisualizer(BaseVisualizer):
             max_model_points=max_model_points,
         )
         self.solve_scale = bool(solve_scale)
+        self.scale_estimation = str(scale_estimation)
+        self.min_depth_pixels_per_view = int(min_depth_pixels_per_view)
         self.max_query_views = max(1, int(max_query_views))
 
     def supports_batch(self, batch: list[dict[str, Any]]) -> bool:
@@ -79,6 +83,8 @@ class QueryPoseOverlayVisualizer(BaseVisualizer):
             batch,
             batch_idx=batch_idx,
             solve_scale=self.solve_scale,
+            scale_estimation=self.scale_estimation,
+            min_depth_pixels_per_view=self.min_depth_pixels_per_view,
         )
         if alignment is None:
             return {}

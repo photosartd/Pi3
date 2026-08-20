@@ -1,0 +1,58 @@
+# @package _global_
+
+# Memorize one deterministic N=5/K=1 scene-to-scene sample. The DINOv2-S
+# encoder remains pretrained/frozen, while the compact Pi3 decoders, heads,
+# and ray-conditioning adapter are trained from scratch as in the parent run.
+defaults:
+  - train_megapose_gso_geometry_small_scratch_ray_336x252
+  - _self_
+
+train:
+  image_num_range: [6, 6]
+  # Exactly one six-view sample per optimizer batch.
+  max_img_per_gpu: 6
+  num_workers: 0
+  persistent_workers: false
+  num_epoch: 60
+  iters_per_epoch: 10
+  val_every_n_epochs: 5
+  print_freq: 10
+  dynamic_compile: false
+  auto_resume: false
+  optimizer:
+    # A safe but materially faster one-batch memorization LR for the 62M
+    # trainable random decoder/head parameters. The tiny zero-initialized ray
+    # adapter retains the parent's 10x modality-branch multiplier.
+    lr: 1e-4
+    encoder_lr: 0.0
+    ray_lr: 1e-3
+    visibility_mask_lr: 0.0
+    weight_decay: 0.0
+  lr_scheduler:
+    pct_start: 0.05
+    div_factor: 10.0
+    final_div_factor: 100.0
+
+test:
+  image_num_range: [6, 6]
+  max_img_per_gpu: 6
+  num_workers: 0
+  persistent_workers: false
+  iters_per_test: 1
+  print_freq: 1
+
+metrics:
+  train_enabled: true
+  val_enabled: true
+  train_every_n_steps: 10
+
+visuals:
+  train_enabled: true
+  val_enabled: true
+  train_every_n_steps: 100
+  val_every_n_epochs: 5
+
+log:
+  ckpt_interval: 20
+  max_checkpoints: 2
+  save_best: true

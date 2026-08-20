@@ -123,7 +123,15 @@ def choose_view_indices(indices, max_views: int, rng: Any | None = None) -> np.n
     return np.sort(rng.choice(indices, size=int(max_views), replace=False).astype(np.int64))
 
 
-def alignment_from_batch(prediction, batch, *, batch_idx: int = 0, solve_scale: bool = True):
+def alignment_from_batch(
+    prediction,
+    batch,
+    *,
+    batch_idx: int = 0,
+    solve_scale: bool = True,
+    scale_estimation: str = "camera_centers",
+    min_depth_pixels_per_view: int = 64,
+):
     """Estimate reference Sim(3) and return cached batch arrays."""
 
     pred = extract_prediction(prediction)
@@ -137,6 +145,23 @@ def alignment_from_batch(prediction, batch, *, batch_idx: int = 0, solve_scale: 
         pred_T_W_C[batch_idx, refs],
         gt_T_C_O[batch_idx, refs],
         solve_scale=solve_scale,
+        scale_estimation=scale_estimation,
+        pred_local_points_refs=(
+            pred["local_points"].detach().float().cpu().numpy()[batch_idx, refs]
+            if scale_estimation == "reference_depth"
+            else None
+        ),
+        gt_points_object_refs=(
+            stack_view_tensor(batch, "pts3d").astype(np.float64)[batch_idx, refs]
+            if scale_estimation == "reference_depth"
+            else None
+        ),
+        valid_masks_refs=(
+            stack_view_tensor(batch, "valid_mask").astype(bool)[batch_idx, refs]
+            if scale_estimation == "reference_depth"
+            else None
+        ),
+        min_depth_pixels_per_view=min_depth_pixels_per_view,
     )
     return alignment, pred_T_W_C, gt_T_C_O, ref_mask
 

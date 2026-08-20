@@ -1,0 +1,63 @@
+# @package _global_
+
+# Exact one-batch memorization probe for the geometry-constrained GSO protocol.
+# It deliberately evaluates on the training sample: this is a learnability
+# diagnostic, not a generalization measurement.
+defaults:
+  - megapose_gso_geometry_n5_k1_masked
+  - _self_
+
+primary_val: gso_geometry_overfit_train_batch
+
+gso:
+  # Object 0 has valid train-scene N=5 coverage plans and a CAD model. Limiting
+  # the source to one object makes every resized dataset index resolve to the
+  # same physical example.
+  object_ids: [0]
+
+train_dataset:
+  # Ten optimizer iterations consume ten indices/rank. One spare index keeps
+  # the loader's strict length safety check true. Resizing a one-object
+  # deterministic dataset only repeats that same sample.
+  length: 11
+  weights:
+    GSOSceneGeometryN5K1: 1
+    GSORenderGeometryN5K1: 0
+
+  GSOSceneGeometryN5K1:
+    protocol_name: geometry_scene_n5_k1_masked_overfit_one_batch
+    resolution: ${train.resolution}
+    # Keep the memorization target pixel-identical across epochs.
+    photometric_augmentation: false
+    sampling_policy:
+      crop_center_jitter: 0.0
+      plan_selection: first
+      random_focal_target: false
+      per_view_focal_targets: false
+      reference_selection: first
+      query_selection: first
+
+train_dataloader:
+  drop_last: true
+  shuffle: false
+
+test_dataset: ${train_dataset.GSOSceneGeometryN5K1}
+
+test_dataloader:
+  drop_last: false
+  shuffle: false
+
+val_datasets:
+  gso_geometry_val_scene_n5_k1:
+    enabled: false
+  gso_geometry_val_render_n5_k1:
+    enabled: false
+  gso_geometry_overfit_train_batch:
+    dataset: ${train_dataset.GSOSceneGeometryN5K1}
+    dataloader: ${test_dataloader}
+    runtime:
+      image_num_range: [6, 6]
+      max_img_per_gpu: 6
+      iters_per_test: 1
+      num_workers: 0
+      print_freq: 1
