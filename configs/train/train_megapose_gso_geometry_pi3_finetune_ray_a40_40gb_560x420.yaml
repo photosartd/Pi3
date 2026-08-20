@@ -1,0 +1,28 @@
+# @package _global_
+
+# Same recipe as train_megapose_gso_geometry_pi3_finetune_ray_rtxpro6000_70gb_336x252
+# (full-size Pi3 + zero-init ray adapter, GSO N=5/K=1, 15,000 updates) at
+# 560x420 (1200 patch tokens/view, 2.78x the 432 tokens/view at 336x252) and
+# an A40 40 GiB budget instead of a 70 GiB workstation.
+#
+# max_img_per_gpu/test.max_img_per_gpu were determined empirically on
+# 2026-08-20 by running this exact train config with PI3_CUDA_MEMORY_LIMIT_GIB=40
+# (a genuine allocator cap, not a guess) on a larger local GPU, sweeping images
+# until OOM. Measured train ceiling: 30 images/GPU (5 six-view samples) at
+# ~39.7 GiB reserved -- right at the cap. 24 images (4 samples) leaves real
+# margin for driver/fragmentation variance on an actual A40 and is what this
+# config uses. See docs/experiment_results/2026-08-20_gso_higher_resolution_smoke.md.
+defaults:
+  - train_megapose_gso_geometry_pi3_finetune_ray_rtxpro6000_70gb_336x252
+  - _self_
+
+train:
+  resolution:
+    - [560, 420]
+  max_img_per_gpu: 24
+
+test:
+  # Forward-only (no grad/optimizer state), so this holds much more than the
+  # train budget for the same resolution; 132 images/GPU measured comfortable
+  # at ~14.1 GiB reserved under the same 40 GiB cap.
+  max_img_per_gpu: 132
