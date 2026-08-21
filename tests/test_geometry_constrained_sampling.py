@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 
 from datasets.object_centric import RawObjectView, ViewTreatment
-from datasets.object_geometry import object_preserving_crop_spec
+from datasets.object_geometry import GeometryPlanIndex, object_preserving_crop_spec
 from datasets.object_pose_dataset import ComposableObjectPoseDataset
 from datasets.object_sampling import GeometryConstrainedScenePairPolicy
 from datasets.object_sources import ObjectViewGroup, ObjectViewSource
@@ -165,6 +165,37 @@ def _geometry_fixture(root):
 
 
 class GeometryConstrainedSamplingTest(unittest.TestCase):
+    def test_plan_catalogue_paths_are_portable_and_legacy_paths_relocate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            geometry, plan, _ = _geometry_fixture(Path(temporary))
+            connection = sqlite3.connect(plan)
+            try:
+                stored = connection.execute(
+                    "SELECT value FROM metadata WHERE key='geometry_index_path'"
+                ).fetchone()[0]
+                self.assertEqual(stored, geometry.name)
+
+                # Simulate a catalogue copied from the workstation to another
+                # filesystem while preserving the geometry DB as a sibling.
+                connection.execute(
+                    "UPDATE metadata SET value=? WHERE key='geometry_index_path'",
+                    (f"/missing/workstation/tree/{geometry.name}",),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            relocated = GeometryPlanIndex(plan)
+            self.assertEqual(relocated.geometry_index_path, geometry.resolve())
+            self.assertEqual(
+                relocated.geometry_index_path_source,
+                "relocated legacy metadata",
+            )
+
+            explicit = GeometryPlanIndex(plan, geometry_index_path=geometry)
+            self.assertEqual(explicit.geometry_index_path, geometry.resolve())
+            self.assertEqual(explicit.geometry_index_path_source, "runtime override")
+
     def test_seeded_plan_variants_preserve_exact_coverage_constraint(self):
         with tempfile.TemporaryDirectory() as temporary:
             geometry, _, _ = _geometry_fixture(Path(temporary))
@@ -246,6 +277,7 @@ class GeometryConstrainedSamplingTest(unittest.TestCase):
             self.assertEqual(result["plans"], 1)
             policy = GeometryConstrainedScenePairPolicy(
                 geometry_plan_path=plan,
+                reference_geometry_index_path=geometry,
                 query_geometry_index_path=geometry,
                 scene_source="scene",
                 require_different_scene=True,

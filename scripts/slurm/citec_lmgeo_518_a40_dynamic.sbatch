@@ -150,6 +150,10 @@ if [[ "$DATA_FAMILY" == "megapose_gso" ]]; then
         exit 2
       fi
     done
+    python scripts/validate_megapose_gso_geometry_runtime.py \
+      --data-root "$DATA_ROOT" \
+      --assets-root "$GSO_ASSETS_ROOT" \
+      --references-root "$GSO_REFERENCES_ROOT"
   fi
 fi
 

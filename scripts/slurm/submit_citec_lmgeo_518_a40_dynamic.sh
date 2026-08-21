@@ -21,6 +21,7 @@ CKPT_INTERVAL="${PI3_CKPT_INTERVAL:-1}"
 MAX_CHECKPOINTS="${PI3_MAX_CHECKPOINTS:-5}"
 DATA_CONFIG_HINT="${PI3_DATA_CONFIG:-lmgeo_trainpbr45_real_and_new_val}"
 TRAIN_CONFIG_HINT="${PI3_TRAIN_CONFIG:-train_lmgeo_finetune_a40_46gb}"
+REPO_DIR_HINT="${PI3_REPO_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 if [[ "$DATA_CONFIG_HINT" == megapose_gso_* ]]; then
   DEFAULT_JOB_PREFIX="pi3-gso-a40"
 else
@@ -123,6 +124,32 @@ if bool_is_true "$CONTINUE_MODE" && [[ -z "$RESUME_PATH" ]]; then
     echo "ERROR: --continue requested, but no checkpoint_* directory was found under: $RUN_DIR_FOR_CHECK/ckpts" >&2
     exit 2
   fi
+fi
+
+# Validate the complete transferred bundle on the login node before entering
+# the GPU queue.  This catches missing scene/reference shards, dangling GSO
+# model symlinks, incomplete geometry DBs and mismatched plan/geometry pairs.
+# The validator is stdlib-only; prefer the configured environment interpreter
+# when present, then fall back to python3.
+if [[ "$DATA_CONFIG_HINT" == megapose_gso_geometry_* ]]; then
+  DATA_ROOT_HINT="${PI3_DATA_ROOT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/MegaPose-GSO-fixed}"
+  ASSETS_ROOT_HINT="${PI3_GSO_ASSETS_ROOT:-/vol/coro/dtrofimov/data/projects/gfm-6dof/datasets/MegaPose-GSO-assets}"
+  REFERENCES_ROOT_HINT="${PI3_GSO_REFERENCES_ROOT:-$ASSETS_ROOT_HINT/renders}"
+  VALIDATOR="$REPO_DIR_HINT/scripts/validate_megapose_gso_geometry_runtime.py"
+  if [[ ! -f "$VALIDATOR" ]]; then
+    echo "ERROR: MegaPose-GSO runtime validator is missing: $VALIDATOR" >&2
+    exit 2
+  fi
+  ENV_PYTHON="${PI3_CONDA_ROOT:-/homes/dtrofimov/miniconda3}/envs/${PI3_CONDA_ENV:-pi3-lmgeo}/bin/python"
+  if [[ -x "$ENV_PYTHON" ]]; then
+    PREFLIGHT_PYTHON="$ENV_PYTHON"
+  else
+    PREFLIGHT_PYTHON="${PI3_PREFLIGHT_PYTHON:-python3}"
+  fi
+  "$PREFLIGHT_PYTHON" "$VALIDATOR" \
+    --data-root "$DATA_ROOT_HINT" \
+    --assets-root "$ASSETS_ROOT_HINT" \
+    --references-root "$REFERENCES_ROOT_HINT"
 fi
 
 case "$MODE" in

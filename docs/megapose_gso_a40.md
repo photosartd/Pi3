@@ -17,6 +17,36 @@ pi3_index/megapose_gso.splits.json
 Changing training resolution does not require preprocessing again. RGB, depth,
 masks, poses, and intrinsics are resized/adjusted by the runtime loader.
 
+### Geometry-constrained bundle portability
+
+The `megapose_gso_geometry_n5_k1_masked` profile additionally requires the
+materialized train/validation geometry SQLite files and their N=5 plans. The
+reference bank is packed: `renders/pi3_index/references.sqlite` points to the
+70 relative `renders/shard-*.tar` files, so copying the complete `renders`
+directory preserves random access without unpacking it.
+
+Plan catalogues built before 2026-08-21 contain the workstation's absolute
+`geometry_index_path` in SQLite metadata. This is now treated as legacy
+provenance rather than a runtime location: the dataset config explicitly pairs
+each plan with its Hydra-selected geometry index, and the reader can also
+relocate a copied legacy plan to a same-named sibling. Existing transferred
+indexes do **not** need regeneration. Newly generated plan and surface-bitset
+metadata is relative to its owning SQLite file.
+
+Before `sbatch`, geometry submissions automatically run:
+
+```bash
+python scripts/validate_megapose_gso_geometry_runtime.py \
+  --data-root "$PI3_DATA_ROOT" \
+  --assets-root "$PI3_GSO_ASSETS_ROOT" \
+  --references-root "$PI3_GSO_REFERENCES_ROOT"
+```
+
+It checks all scene/reference TAR sizes, SQLite completion and plan/geometry
+fingerprints, the model catalogue, and every resolved model symlink. Missing
+`.surface_bits` files are only a warning: they are required to regenerate or
+reanalyze plans, not to train from already-materialized SQLite plans.
+
 ## 336x252 profiles
 
 Use one of these complete train/data pairs:

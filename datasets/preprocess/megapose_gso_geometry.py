@@ -39,6 +39,28 @@ PLAN_FORMAT = "pi3_object_geometry_plan_v1"
 POPCOUNT = np.asarray([int(value).bit_count() for value in range(256)], dtype=np.uint8)
 
 
+def _portable_metadata_path(owner_path: Path, target_path: Path) -> str:
+    """Store a path relative to the SQLite that owns the metadata."""
+
+    owner_path = Path(owner_path).expanduser().resolve()
+    target_path = Path(target_path).expanduser().resolve()
+    return os.path.relpath(target_path, start=owner_path.parent)
+
+
+def _resolve_metadata_path(owner_path: Path, stored_path: str | Path) -> Path:
+    """Read portable metadata and relocate legacy absolute sibling paths."""
+
+    owner_path = Path(owner_path).expanduser().resolve()
+    raw_path = Path(stored_path).expanduser()
+    if not raw_path.is_absolute():
+        return (owner_path.parent / raw_path).resolve()
+    resolved = raw_path.resolve()
+    if resolved.is_file():
+        return resolved
+    relocated = (owner_path.parent / raw_path.name).resolve()
+    return relocated if relocated.is_file() else resolved
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS metadata (
     key TEXT PRIMARY KEY,
@@ -962,7 +984,7 @@ def initialize_output(
     )
     connection.execute(
         "INSERT OR REPLACE INTO metadata VALUES ('bits_path', ?)",
-        (str(Path(bits_path).resolve()),),
+        (_portable_metadata_path(output_path, bits_path),),
     )
     # These indexes are useful for reports but expensive to maintain across
     # roughly ten million append-only feature inserts.  A completed index is
@@ -1580,7 +1602,7 @@ def collect_capacity_statistics(
     fingerprint = json.loads(metadata["fingerprint"])
     point_count = int(fingerprint["settings"]["surface_point_count"])
     byte_count = (point_count + 7) // 8
-    bits_path = Path(metadata["bits_path"])
+    bits_path = _resolve_metadata_path(index_path, metadata["bits_path"])
     bit_count = bits_path.stat().st_size // byte_count
     bitsets = np.memmap(bits_path, mode="r", dtype=np.uint8, shape=(bit_count, byte_count))
     object_ids = [
@@ -1879,7 +1901,7 @@ def build_reference_plan_catalog(
         fingerprint = json.loads(metadata["fingerprint"])
         point_count = int(fingerprint["settings"]["surface_point_count"])
         byte_count = (point_count + 7) // 8
-        bits_path = Path(metadata["bits_path"])
+        bits_path = _resolve_metadata_path(geometry_index_path, metadata["bits_path"])
         bitsets = np.memmap(
             bits_path,
             mode="r",
@@ -1916,7 +1938,10 @@ def build_reference_plan_catalog(
             (
                 ("format", PLAN_FORMAT),
                 ("index_complete", "0"),
-                ("geometry_index_path", str(geometry_index_path)),
+                (
+                    "geometry_index_path",
+                    _portable_metadata_path(output_path, geometry_index_path),
+                ),
                 ("geometry_fingerprint", json.dumps(fingerprint, sort_keys=True)),
                 ("reference_source_kind", reference_source_kind),
                 ("constraints", json.dumps(constraints, sort_keys=True)),

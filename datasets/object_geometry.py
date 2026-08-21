@@ -88,10 +88,46 @@ class GeometryReferencePlan:
         )
 
 
+def _resolve_plan_geometry_index_path(
+    plan_path: Path,
+    stored_path: str | Path,
+    override_path: str | Path | None,
+) -> tuple[Path, str]:
+    """Resolve a plan's geometry DB without tying copied indexes to one host.
+
+    Plan catalogues created before the portable-path fix stored an absolute
+    build-host path.  Prefer an explicit runtime pairing when supplied.  New
+    relative metadata is interpreted from the plan catalogue directory, while
+    a missing legacy absolute path may be relocated to a same-named sibling.
+    The sibling rule matches every v1 scene/render plan produced by this repo.
+    """
+
+    if override_path is not None:
+        return Path(override_path).expanduser().resolve(), "runtime override"
+
+    raw_path = Path(stored_path).expanduser()
+    if not raw_path.is_absolute():
+        return (plan_path.parent / raw_path).resolve(), "relative metadata"
+
+    resolved = raw_path.resolve()
+    if resolved.is_file():
+        return resolved, "absolute metadata"
+
+    relocated = (plan_path.parent / raw_path.name).resolve()
+    if relocated.is_file():
+        return relocated, "relocated legacy metadata"
+    return resolved, "missing absolute metadata"
+
+
 class GeometryPlanIndex:
     """Process-safe reader for a reference-plan catalogue and its geometry."""
 
-    def __init__(self, plan_path: str | Path):
+    def __init__(
+        self,
+        plan_path: str | Path,
+        *,
+        geometry_index_path: str | Path | None = None,
+    ):
         self.plan_path = Path(plan_path).expanduser().resolve()
         if not self.plan_path.is_file():
             raise FileNotFoundError(f"Geometry plan catalogue does not exist: {self.plan_path}")
@@ -102,7 +138,15 @@ class GeometryPlanIndex:
                 raise ValueError(f"Unsupported geometry-plan catalogue: {self.plan_path}")
             if metadata.get("index_complete") != "1":
                 raise ValueError(f"Incomplete geometry-plan catalogue: {self.plan_path}")
-            self.geometry_index_path = Path(metadata["geometry_index_path"]).resolve()
+            stored_geometry_path = metadata["geometry_index_path"]
+            (
+                self.geometry_index_path,
+                self.geometry_index_path_source,
+            ) = _resolve_plan_geometry_index_path(
+                self.plan_path,
+                stored_geometry_path,
+                geometry_index_path,
+            )
             self.reference_source_kind = str(metadata["reference_source_kind"])
             self.constraints = json.loads(metadata["constraints"])
             self.reference_count = int(self.constraints["reference_count"])
@@ -116,7 +160,11 @@ class GeometryPlanIndex:
             connection.close()
         if not self.geometry_index_path.is_file():
             raise FileNotFoundError(
-                f"Plan geometry index does not exist: {self.geometry_index_path}"
+                f"Plan geometry index does not exist: {self.geometry_index_path} "
+                f"(resolved from {self.geometry_index_path_source}; plan: "
+                f"{self.plan_path}). Pass geometry_index_path explicitly, copy "
+                "the geometry SQLite next to this legacy plan catalogue, or rebuild "
+                "the plan catalogue with portable relative metadata."
             )
         self._runtime_pid: int | None = None
         self._plan_db: sqlite3.Connection | None = None

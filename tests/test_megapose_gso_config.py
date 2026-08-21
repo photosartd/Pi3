@@ -130,6 +130,14 @@ class MegaPoseGSOConfigTest(unittest.TestCase):
             self.assertEqual(dataset.query_treatment.rgb, "object_only")
             self.assertEqual(dataset.reference_treatment.mask_condition, "none")
         self.assertEqual(
+            cfg.train_dataset.GSOSceneGeometryN5K1.sampling_policy.reference_geometry_index_path,
+            cfg.gso.geometry_train_index,
+        )
+        self.assertEqual(
+            cfg.train_dataset.GSORenderGeometryN5K1.sampling_policy.reference_geometry_index_path,
+            cfg.gso.render_geometry_index,
+        )
+        self.assertEqual(
             list(cfg.val_datasets),
             ["gso_geometry_val_scene_n5_k1", "gso_geometry_val_render_n5_k1"],
         )
@@ -145,6 +153,14 @@ class MegaPoseGSOConfigTest(unittest.TestCase):
             self.assertEqual(entry.dataset.sampling_policy.crop_center_jitter, 0.0)
             self.assertFalse(entry.dataset.sampling_policy.random_focal_target)
             self.assertFalse(entry.dataset.sampling_policy.per_view_focal_targets)
+        self.assertEqual(
+            cfg.val_datasets.gso_geometry_val_scene_n5_k1.dataset.sampling_policy.reference_geometry_index_path,
+            cfg.gso.geometry_val_index,
+        )
+        self.assertEqual(
+            cfg.val_datasets.gso_geometry_val_render_n5_k1.dataset.sampling_policy.reference_geometry_index_path,
+            cfg.gso.render_geometry_index,
+        )
 
     def test_geometry_blackwell_production_profile_uses_measured_batch(self):
         with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):

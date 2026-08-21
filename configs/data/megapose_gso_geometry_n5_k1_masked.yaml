@@ -152,6 +152,7 @@ train_dataset:
       scene_source: scene
       require_different_scene: true
       geometry_plan_path: ${gso.scene_train_plans}
+      reference_geometry_index_path: ${gso.geometry_train_index}
       query_geometry_index_path: ${gso.geometry_train_index}
     mode: train
 
@@ -167,6 +168,7 @@ train_dataset:
       reference_source: render
       query_source: scene
       geometry_plan_path: ${gso.render_plans}
+      reference_geometry_index_path: ${gso.render_geometry_index}
       query_geometry_index_path: ${gso.geometry_train_index}
       # Some objects have few scene frames whose crop-only focal range reaches
       # the render bank. Search farther instead of relying on BaseDataset's
@@ -201,6 +203,7 @@ _scene_val: &scene_val
     scene_source: scene
     require_different_scene: true
     geometry_plan_path: ${gso.scene_val_plans}
+    reference_geometry_index_path: ${gso.geometry_val_index}
     query_geometry_index_path: ${gso.geometry_val_index}
   mode: val
 
@@ -217,6 +220,7 @@ _render_val: &render_val
     reference_source: render
     query_source: scene
     geometry_plan_path: ${gso.render_plans}
+    reference_geometry_index_path: ${gso.render_geometry_index}
     query_geometry_index_path: ${gso.geometry_val_index}
   mode: val
 

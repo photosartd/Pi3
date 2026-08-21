@@ -317,6 +317,7 @@ class _GeometryConstrainedReferencePolicy(_ReferenceQueryPolicy):
         *,
         geometry_plan_path,
         query_geometry_index_path,
+        reference_geometry_index_path=None,
         positive_angle_degrees=10.0,
         focal_relative_tolerance=0.1,
         crop_aspect=4.0 / 3.0,
@@ -331,7 +332,10 @@ class _GeometryConstrainedReferencePolicy(_ReferenceQueryPolicy):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.geometry_plans = GeometryPlanIndex(geometry_plan_path)
+        self.geometry_plans = GeometryPlanIndex(
+            geometry_plan_path,
+            geometry_index_path=reference_geometry_index_path,
+        )
         self.query_geometry = GeometryFeatureIndex(
             query_geometry_index_path, source_kind="scene"
         )
