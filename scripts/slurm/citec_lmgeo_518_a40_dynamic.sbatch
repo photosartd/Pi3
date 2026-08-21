@@ -23,8 +23,23 @@ TRAIN_CONFIG="${PI3_TRAIN_CONFIG:-train_lmgeo_finetune_a40_46gb}"
 DATA_CONFIG="${PI3_DATA_CONFIG:-lmgeo_trainpbr45_real_and_new_val}"
 GSO_OBJECT_ASSET_DATA=false
 case "$DATA_CONFIG" in
-  megapose_gso_composable_*|megapose_gso_baseline_*|megapose_gso_transfer_*)
+  megapose_gso_composable_*|megapose_gso_baseline_*|megapose_gso_transfer_*|megapose_gso_geometry_*)
     GSO_OBJECT_ASSET_DATA=true
+    ;;
+esac
+# The geometry-constrained N=5/K=1 data profile (megapose_gso_geometry_n5_k1_masked
+# and its overfit/smoke siblings) additionally derives six SQLite index/plan
+# paths from gso.data_root/gso.references_root. Their own config default is
+# `${oc.env:PI3_GSO_..., ${gso.data_root}/...}` -- correct once gso.data_root is
+# overridden below, but only if the matching PI3_GSO_... env var is unset, since
+# oc.env short-circuits on any set value regardless of Hydra CLI overrides.
+# Force them via explicit CLI overrides instead so a stray/forgotten
+# PI3_GSO_GEOMETRY_TRAIN_INDEX-style env var (e.g. left over in a login shell)
+# can never silently win over the paths this script computes.
+GSO_GEOMETRY_DATA=false
+case "$DATA_CONFIG" in
+  megapose_gso_geometry_*)
+    GSO_GEOMETRY_DATA=true
     ;;
 esac
 DATA_FAMILY="${PI3_DATA_FAMILY:-}"
@@ -120,6 +135,21 @@ if [[ "$DATA_FAMILY" == "megapose_gso" ]]; then
       echo "Set PI3_GSO_REFERENCES_ROOT or build the reference index before submission." >&2
       exit 2
     fi
+  fi
+  if [[ "$GSO_GEOMETRY_DATA" == true ]]; then
+    for GEOMETRY_FILE in \
+      "$DATA_ROOT/pi3_index/megapose_gso_geometry_v1.sqlite" \
+      "$DATA_ROOT/pi3_index/megapose_gso_geometry_val_v1.sqlite" \
+      "$DATA_ROOT/pi3_index/megapose_gso_geometry_train_n5_plans.sqlite" \
+      "$DATA_ROOT/pi3_index/megapose_gso_geometry_val_n5_plans.sqlite" \
+      "$GSO_REFERENCES_ROOT/pi3_index/render_geometry_v1.sqlite" \
+      "$GSO_REFERENCES_ROOT/pi3_index/render_geometry_n5_plans.sqlite"; do
+      if [[ ! -f "$GEOMETRY_FILE" ]]; then
+        echo "ERROR: GSO geometry index/plan file is missing: $GEOMETRY_FILE" >&2
+        echo "Sync it from the workstation or rebuild it with scripts/prepare_megapose_gso_geometry_index.py before submission." >&2
+        exit 2
+      fi
+    done
   fi
 fi
 
@@ -252,6 +282,20 @@ else
     COMMON_OVERRIDES+=(
       "gso.assets_root=$GSO_ASSETS_ROOT"
       "gso.references_root=$GSO_REFERENCES_ROOT"
+    )
+  fi
+  if [[ "$GSO_GEOMETRY_DATA" == true ]]; then
+    # Explicit CLI overrides beat oc.env unconditionally, unlike the config's
+    # own ${oc.env:PI3_GSO_..., ${gso.data_root}/...} defaults, which silently
+    # lose to a same-named env var even when it's stale. See the comment by
+    # GSO_GEOMETRY_DATA above.
+    COMMON_OVERRIDES+=(
+      "gso.geometry_train_index=$DATA_ROOT/pi3_index/megapose_gso_geometry_v1.sqlite"
+      "gso.geometry_val_index=$DATA_ROOT/pi3_index/megapose_gso_geometry_val_v1.sqlite"
+      "gso.scene_train_plans=$DATA_ROOT/pi3_index/megapose_gso_geometry_train_n5_plans.sqlite"
+      "gso.scene_val_plans=$DATA_ROOT/pi3_index/megapose_gso_geometry_val_n5_plans.sqlite"
+      "gso.render_geometry_index=$GSO_REFERENCES_ROOT/pi3_index/render_geometry_v1.sqlite"
+      "gso.render_plans=$GSO_REFERENCES_ROOT/pi3_index/render_geometry_n5_plans.sqlite"
     )
   fi
 fi
