@@ -114,7 +114,7 @@ class PointLoss(nn.Module):
 
         return loss
 
-    def forward(self, pred, gt):
+    def forward(self, pred, gt, *, align_scale=True):
         pred_local_pts = pred['local_points']
         gt_local_pts = gt['local_points']
         valid_masks = gt['valid_masks']
@@ -127,14 +127,23 @@ class PointLoss(nn.Module):
         weights_ = weights_.clamp_min(0.1 * weighted_mean(weights_, valid_masks, dim=(-2, -1), keepdim=True))
         weights_ = 1 / (weights_ + 1e-6)
 
-        # alignment
-        with torch.no_grad():
-            xyz_pred_local = self.prepare_ROE(pred_local_pts.reshape(B, N, H, W, 3), valid_masks.reshape(B, N, H, W), target_size=self.local_align_res).contiguous()
-            xyz_gt_local = self.prepare_ROE(gt_local_pts.reshape(B, N, H, W, 3), valid_masks.reshape(B, N, H, W), target_size=self.local_align_res).contiguous()
-            xyz_weights_local = self.prepare_ROE((weights_[..., None]).reshape(B, N, H, W, 1), valid_masks.reshape(B, N, H, W), target_size=self.local_align_res).contiguous()[:, :, 0]
+        if align_scale:
+            with torch.no_grad():
+                xyz_pred_local = self.prepare_ROE(pred_local_pts.reshape(B, N, H, W, 3), valid_masks.reshape(B, N, H, W), target_size=self.local_align_res).contiguous()
+                xyz_gt_local = self.prepare_ROE(gt_local_pts.reshape(B, N, H, W, 3), valid_masks.reshape(B, N, H, W), target_size=self.local_align_res).contiguous()
+                xyz_weights_local = self.prepare_ROE((weights_[..., None]).reshape(B, N, H, W, 1), valid_masks.reshape(B, N, H, W), target_size=self.local_align_res).contiguous()[:, :, 0]
 
-            S_opt_local = align_points_scale(xyz_pred_local, xyz_gt_local, xyz_weights_local)
-            S_opt_local[S_opt_local <= 0] *= -1
+                S_opt_local = align_points_scale(xyz_pred_local, xyz_gt_local, xyz_weights_local)
+                S_opt_local[S_opt_local <= 0] *= -1
+        else:
+            # Metric supervision has one fixed physical unit for every view.
+            # A fitted per-sample (or per-view) scale would hide the quantity
+            # this mode is intended to learn.
+            S_opt_local = torch.ones(
+                B,
+                device=pred_local_pts.device,
+                dtype=pred_local_pts.dtype,
+            )
 
         aligned_local_pts = S_opt_local.view(B, 1, 1, 1, 1) * pred_local_pts
 
@@ -402,6 +411,7 @@ class Pi3Loss(nn.Module):
     def __init__(
         self,
         train_conf=False,
+        scale_mode: str = "aligned",
         correspondence_weight: float = 0.0,
         correspondence_patch_size: int = 14,
         correspondence_max_reference_per_query: int = 1,
@@ -418,6 +428,9 @@ class Pi3Loss(nn.Module):
         correspondence_min_dino_weight: float = 0.05,
     ):
         super().__init__()
+        self.scale_mode = str(scale_mode)
+        if self.scale_mode not in {"aligned", "metric"}:
+            raise ValueError("scale_mode must be 'aligned' or 'metric'")
         self.point_loss = PointLoss(train_conf=train_conf)
         self.camera_loss = CameraLoss()
         self.correspondence_weight = float(correspondence_weight)
@@ -449,18 +462,20 @@ class Pi3Loss(nn.Module):
         gt_pts = torch.einsum('bij, bnhwj -> bnhwi', w2c_target, homogenize_points(gt_pts))[..., :3]
         poses = torch.einsum('bij, bnjk -> bnik', w2c_target, poses)
 
-        # normalize points
-        valid_batch = masks.sum([-1, -2, -3]) > 0
-        if valid_batch.sum() > 0:
-            B_ = valid_batch.sum()
-            all_pts = gt_pts[valid_batch].clone()
-            all_pts[~masks[valid_batch]] = 0
-            all_pts = all_pts.reshape(B_, N, -1, 3)
-            all_dis = all_pts.norm(dim=-1)
-            norm_factor = all_dis.sum(dim=[-1, -2]) / (masks[valid_batch].float().sum(dim=[-1, -2, -3]) + 1e-8)
+        if self.scale_mode == "aligned":
+            # Historical Pi3 supervision: normalize each sample before fitting
+            # one additional prediction-to-GT scale in PointLoss.
+            valid_batch = masks.sum([-1, -2, -3]) > 0
+            if valid_batch.sum() > 0:
+                B_ = valid_batch.sum()
+                all_pts = gt_pts[valid_batch].clone()
+                all_pts[~masks[valid_batch]] = 0
+                all_pts = all_pts.reshape(B_, N, -1, 3)
+                all_dis = all_pts.norm(dim=-1)
+                norm_factor = all_dis.sum(dim=[-1, -2]) / (masks[valid_batch].float().sum(dim=[-1, -2, -3]) + 1e-8)
 
-            gt_pts[valid_batch] = gt_pts[valid_batch] / norm_factor[..., None, None, None, None]
-            poses[valid_batch, ..., :3, 3] /= norm_factor[..., None, None]
+                gt_pts[valid_batch] = gt_pts[valid_batch] / norm_factor[..., None, None, None, None]
+                poses[valid_batch, ..., :3, 3] /= norm_factor[..., None, None]
 
         extrinsics = se3_inverse(poses)
         gt_local_pts = torch.einsum('bnij, bnhwj -> bnhwi', extrinsics, homogenize_points(gt_pts))[..., :3]
@@ -477,6 +492,8 @@ class Pi3Loss(nn.Module):
         )
     
     def normalize_pred(self, pred, gt):
+        if self.scale_mode == "metric":
+            return pred
         local_points = pred['local_points']
         camera_poses = pred['camera_poses']
         B, N, H, W, _ = local_points.shape
@@ -509,7 +526,11 @@ class Pi3Loss(nn.Module):
         details = dict()
 
         # Local Point Loss
-        point_loss, point_loss_details, scale = self.point_loss(pred, gt)
+        point_loss, point_loss_details, scale = self.point_loss(
+            pred,
+            gt,
+            align_scale=self.scale_mode == "aligned",
+        )
         final_loss += point_loss
         details.update(point_loss_details)
 

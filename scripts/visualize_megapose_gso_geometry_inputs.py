@@ -101,14 +101,15 @@ def _json_value(value):
 
 
 def _make_sheet(views, sample_metadata, path: Path) -> dict:
-    width, height = 336, 252
+    first_rgb = _rgb_image(views[0]["img"])
+    width, height = first_rgb.size
     label_height = 44
     canvas = Image.new("RGB", (width * len(views), (height + label_height) * 3), "white")
     draw = ImageDraw.Draw(canvas)
     records = []
     directions = []
     for column, view in enumerate(views):
-        rgb = _rgb_image(view["img"])
+        rgb = first_rgb if column == 0 else _rgb_image(view["img"])
         if rgb.size != (width, height):
             raise AssertionError(f"Unexpected input size {rgb.size}")
         mask = np.asarray(view["object_visibility_mask"]) > 0.5
@@ -149,13 +150,33 @@ def _make_sheet(views, sample_metadata, path: Path) -> dict:
                 "scene_id": int(view["source_scene_id"]),
                 "view_id": int(view["view_id"]),
                 "visibility": float(view["visib_fract"]),
-                "crop_bbox_xyxy": np.asarray(view["object_crop_bbox_xyxy"]).tolist(),
-                "crop_center_shift_xy": np.asarray(view["object_crop_center_shift_xy"]).tolist(),
-                "target_normalized_focal": float(view["object_crop_target_normalized_focal"]),
-                "actual_normalized_focal": float(view["object_crop_actual_normalized_focal"]),
+                "crop_bbox_xyxy": np.asarray(
+                    view.get("object_crop_bbox_xyxy", [-1.0] * 4)
+                ).tolist(),
+                "crop_center_shift_xy": np.asarray(
+                    view.get("object_crop_center_shift_xy", [0.0, 0.0])
+                ).tolist(),
+                "target_normalized_focal": float(
+                    view.get("object_crop_target_normalized_focal", -1.0)
+                ),
+                "actual_normalized_focal": float(
+                    view.get("object_crop_actual_normalized_focal", norm_fx)
+                ),
                 "fx_over_width": norm_fx,
                 "fy_over_height": norm_fy,
                 "mask_fraction": float(mask.mean()),
+                "virtual_camera_applied": bool(
+                    view.get("virtual_camera_applied", False)
+                ),
+                "virtual_camera_zoom_requested": float(
+                    view.get("virtual_camera_zoom_requested", 1.0)
+                ),
+                "virtual_camera_zoom_safe_max": float(
+                    view.get("virtual_camera_zoom_safe_max", 1.0)
+                ),
+                "virtual_camera_zoom": float(
+                    view.get("virtual_camera_zoom", 1.0)
+                ),
             }
         )
     query_direction = directions[-1]

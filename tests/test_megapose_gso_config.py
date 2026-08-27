@@ -247,6 +247,103 @@ class MegaPoseGSOConfigTest(unittest.TestCase):
             self.assertEqual(entry.runtime.num_workers, 2)
             self.assertEqual(entry.runtime.iters_per_test, 0)
 
+    def test_metric_virtual_query_profile_is_isolated_and_scale_fixed(self):
+        with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
+            cfg = compose(
+                config_name="default",
+                overrides=[
+                    "train=train_megapose_gso_geometry_pi3_finetune_ray_metric_virtual_a40_40gb_560x420",
+                    "data=megapose_gso_geometry_n5_k1_masked_metric_virtual_query",
+                ],
+            )
+
+        self.assertEqual(cfg.loss.train_loss.scale_mode, "metric")
+        self.assertEqual(cfg.loss.test_loss.scale_mode, "metric")
+        self.assertEqual(cfg.train.clip_loss, 1000)
+        self.assertFalse(cfg.metrics["items"].object_pose.solve_scale)
+        self.assertFalse(cfg.metrics["items"].camera.solve_scale)
+        self.assertFalse(
+            cfg.visuals["items"].reference_reconstruction.solve_scale
+        )
+        self.assertEqual(
+            OmegaConf.to_container(cfg.train.resolution), [[560, 420]]
+        )
+        datasets = [
+            cfg.train_dataset.GSOSceneGeometryN5K1,
+            cfg.train_dataset.GSORenderGeometryN5K1,
+            cfg.test_dataset,
+            *(entry.dataset for entry in cfg.val_datasets.values()),
+        ]
+        for dataset in datasets:
+            virtual = dataset.virtual_camera_rectification
+            self.assertEqual(list(virtual.roles), ["query"])
+            self.assertEqual(list(virtual.zoom_range), [1.0, 5.0])
+            self.assertEqual(virtual.eval_zoom, 3.0)
+            self.assertEqual(virtual.zoom_sampling, "log_uniform")
+            self.assertTrue(virtual.safe_zoom)
+            self.assertTrue(virtual.replace_planned_crop)
+        # This first experiment deliberately reuses the existing plan DBs.
+        self.assertEqual(
+            cfg.train_dataset.GSOSceneGeometryN5K1.sampling_policy.geometry_plan_path,
+            cfg.gso.scene_train_plans,
+        )
+        self.assertEqual(
+            cfg.train_dataset.GSORenderGeometryN5K1.sampling_policy.geometry_plan_path,
+            cfg.gso.render_plans,
+        )
+
+        with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
+            baseline = compose(
+                config_name="default",
+                overrides=[
+                    "train=train_megapose_gso_geometry_pi3_finetune_ray_a40_40gb_560x420",
+                    "data=megapose_gso_geometry_n5_k1_masked",
+                ],
+            )
+        self.assertEqual(baseline.loss.train_loss.scale_mode, "aligned")
+        self.assertNotIn(
+            "virtual_camera_rectification",
+            baseline.train_dataset.GSOSceneGeometryN5K1,
+        )
+
+    def test_metric_virtual_query_336_profile_keeps_previous_336_budget(self):
+        with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
+            cfg = compose(
+                config_name="default",
+                overrides=[
+                    "train=train_megapose_gso_geometry_pi3_finetune_ray_metric_virtual_rtxpro6000_70gb_336x252",
+                    "data=megapose_gso_geometry_n5_k1_masked_metric_virtual_query",
+                ],
+            )
+
+        self.assertEqual(
+            OmegaConf.to_container(cfg.train.resolution), [[336, 252]]
+        )
+        self.assertEqual(cfg.train.max_img_per_gpu, 156)
+        self.assertEqual(cfg.test.max_img_per_gpu, 768)
+        self.assertEqual(cfg.train.image_num_range, [6, 6])
+        self.assertEqual(cfg.test.image_num_range, [6, 6])
+        self.assertTrue(cfg.model.use_ray_conditioning)
+        self.assertEqual(cfg.loss.train_loss.scale_mode, "metric")
+        self.assertEqual(cfg.loss.test_loss.scale_mode, "metric")
+        self.assertTrue(
+            cfg.metrics["items"].object_pose.query_occupancy_analysis
+        )
+        unresolved = OmegaConf.to_container(cfg, resolve=False)
+        self.assertEqual(
+            unresolved["metrics"]["items"]["object_pose"][
+                "query_occupancy_artifact_dir"
+            ],
+            "${log.output_dir}/query_occupancy",
+        )
+        self.assertEqual(
+            list(
+                cfg.train_dataset.GSOSceneGeometryN5K1
+                .virtual_camera_rectification.zoom_range
+            ),
+            [1.0, 5.0],
+        )
+
     def test_mesh_free_cross_scene_profile_composes(self):
         with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
             cfg = compose(

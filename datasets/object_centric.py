@@ -17,6 +17,7 @@ from PIL import Image
 from datasets.base.base_dataset import BaseDataset
 from datasets.base.observation import ObservationCapability
 from datasets.role_photometric import RoleConsistentPhotometricAugmentation
+from datasets.virtual_camera import VirtualCameraRectifier
 import pi3.utils.cropping as cropping
 
 
@@ -378,6 +379,7 @@ class DatasetGeometryTransform(ObjectViewTransform):
             T_C_O=state["T_C_O"],
             camera_pose=state["camera_pose"],
             view_role=request.view_role,
+            rng=rng,
         )
         state["transform_meta"] = dict(transform_meta)
 
@@ -435,6 +437,16 @@ class PlannedObjectCropTransform(ObjectViewTransform):
 
     def apply(self, state, *, adapter, request, rng):
         spec = state["record"].get("planned_object_crop")
+        if state["transform_meta"].get(
+            "virtual_camera_replaces_planned_crop", False
+        ):
+            state["transform_meta"].update(
+                {
+                    "object_crop_applied": False,
+                    "planned_object_crop_bypassed": bool(spec is not None),
+                }
+            )
+            return
         if spec is None:
             state["transform_meta"].setdefault("object_crop_applied", False)
             return
@@ -510,9 +522,11 @@ class FinalObjectMaskTransform(ObjectViewTransform):
         # Preserve the established interpolation behavior for every legacy
         # sample. Exact post-resize remasking is part of the explicit planned
         # crop protocol only.
-        if treatment is None or not state["transform_meta"].get(
-            "object_crop_applied", False
-        ):
+        geometry_warped = bool(
+            state["transform_meta"].get("object_crop_applied", False)
+            or state["transform_meta"].get("virtual_camera_applied", False)
+        )
+        if treatment is None or not geometry_warped:
             return
         mask = np.asarray(state["object_mask"] > 0.5)
         if treatment.rgb == "object_only":
@@ -704,6 +718,7 @@ class ObjectDatasetAdapter(BaseDataset, ABC):
         self,
         *args,
         object_view_transforms=None,
+        virtual_camera_rectification=None,
         photometric_augmentation=False,
         photometric_brightness=(0.7, 1.3),
         photometric_contrast=(0.7, 1.3),
@@ -720,6 +735,11 @@ class ObjectDatasetAdapter(BaseDataset, ABC):
         super().__init__(*args, **kwargs)
         self.key_query_sampling_policy = KeyQuerySamplingPolicy()
         self.object_view_processor = ObjectViewProcessor(object_view_transforms)
+        self.virtual_camera_rectifier = (
+            None
+            if virtual_camera_rectification is None
+            else VirtualCameraRectifier(virtual_camera_rectification)
+        )
         self._configure_role_photometric_augmentation(
             enabled=photometric_augmentation,
             brightness=photometric_brightness,
@@ -834,8 +854,25 @@ class ObjectDatasetAdapter(BaseDataset, ABC):
         T_C_O,
         camera_pose,
         view_role,
+        rng=None,
     ):
-        return rgb, depthmap, mask, intrinsics, T_C_O, camera_pose, {}
+        rectifier = getattr(self, "virtual_camera_rectifier", None)
+        if rectifier is None:
+            return rgb, depthmap, mask, intrinsics, T_C_O, camera_pose, {}
+        if rng is None:
+            rng = getattr(self, "_rng", np.random.default_rng(0))
+        return rectifier.transform(
+            record=record,
+            rgb=rgb,
+            depthmap=depthmap,
+            mask=mask,
+            intrinsics=intrinsics,
+            T_C_O=T_C_O,
+            camera_pose=camera_pose,
+            view_role=view_role,
+            rng=rng,
+            mode=getattr(self, "mode", "train"),
+        )
 
     def _configure_role_photometric_augmentation(self, *, enabled, **kwargs):
         self._role_photometric = RoleConsistentPhotometricAugmentation(

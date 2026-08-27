@@ -113,6 +113,18 @@ The named validations are:
 | `gso_heldout_render_n16_k1` | strict held-out GSO objects and scenes | render-to-scene, uniform sphere coverage | 19,460 tracks | 16+1 |
 | `lmo_bop19_render_n5_k1` | complete official LM-O BOP19 targets | render-to-scene | 1,444 target instances | 5+1 |
 
+> **Warning: this is not a calibrated keyframe-count ablation.** The old GSO
+> N=5 and N=16 loaders use the legacy full-frame render-to-scene pipeline. They
+> do not match the renders' effective normalized focal length/crop to the scene
+> query. The query can therefore be out of distribution in image scale and
+> perspective relative to every reference. A reference-only Sim(3) cannot
+> correct an intrinsics mismatch. Comparing these loaders only tests whether
+> adding more *focal-inconsistent* render references helps the same OOD query;
+> it must not be cited as evidence that more calibrated keyframes do or do not
+> help. The current geometry-constrained focal-consistent pipeline has only
+> been evaluated at N=5 and needs new N-specific plan catalogues for a valid
+> reference-count sweep.
+
 The GSO lengths enumerate every eligible object/scene track once, rather than
 one random track per object. Consequently, full validation is intentionally
 substantial: at the 768-image budget it has 153, 433, and 12 batches. Set each
@@ -203,6 +215,9 @@ only in training.
 | `lmo_pbr_new_val_render_n5_k1_all_query_conditioned` | LM-O synthetic oracle mask | 1,600 |
 | `lmo_bop19_render_n5_k1` | LM-O real BOP19 transfer, no query condition | 1,444 |
 | `lmo_bop19_render_n5_k1_all_query_conditioned` | LM-O real oracle mask | 1,444 |
+
+The focal-consistency warning above also applies to the N=5 versus N=16 GSO
+diagnostic pair in this profile.
 
 The paired loaders use the same deterministic references and query records.
 All LM-O diagnostic loaders deliberately have eager preprocessed-depth

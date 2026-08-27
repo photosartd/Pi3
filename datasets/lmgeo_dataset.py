@@ -435,8 +435,19 @@ class LMGeoDataset(ObjectDatasetAdapter):
         T_C_O,
         camera_pose,
         view_role,
+        rng=None,
     ):
-        return rgb, depthmap, mask, intrinsics, T_C_O, camera_pose, {}
+        return super()._maybe_transform_raw_view(
+            record=record,
+            rgb=rgb,
+            depthmap=depthmap,
+            mask=mask,
+            intrinsics=intrinsics,
+            T_C_O=T_C_O,
+            camera_pose=camera_pose,
+            view_role=view_role,
+            rng=rng,
+        )
 
     def _should_depth_mask_view(self, *, view_role, reference_source):
         force_object_masking = bool(view_role == "reference" and reference_source == "context_scene")

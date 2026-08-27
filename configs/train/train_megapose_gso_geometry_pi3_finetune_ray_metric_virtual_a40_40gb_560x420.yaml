@@ -1,0 +1,16 @@
+# @package _global_
+
+# Higher-resolution A40 version of the metric-scale/virtual-query experiment.
+# It inherits the 336x252 experiment contract and changes only resolution and
+# the empirically established per-GPU image budgets.
+defaults:
+  - train_megapose_gso_geometry_pi3_finetune_ray_metric_virtual_rtxpro6000_70gb_336x252
+  - _self_
+
+train:
+  resolution:
+    - [560, 420]
+  max_img_per_gpu: 24
+
+test:
+  max_img_per_gpu: 132

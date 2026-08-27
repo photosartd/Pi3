@@ -42,6 +42,7 @@ loss:
     train_loss: 
         _target_: pi3.models.loss.Pi3Loss
         train_conf: false
+        scale_mode: aligned
         correspondence_weight: 0.0
         correspondence_patch_size: 14
         correspondence_max_reference_per_query: 1
@@ -60,6 +61,7 @@ loss:
     test_loss:
         _target_: pi3.models.loss.Pi3Loss
         train_conf: false
+        scale_mode: aligned
         correspondence_weight: 0.0
         correspondence_patch_size: 14
         correspondence_max_reference_per_query: 1

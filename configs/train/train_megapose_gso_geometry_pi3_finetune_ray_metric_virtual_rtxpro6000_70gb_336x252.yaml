@@ -1,0 +1,40 @@
+# @package _global_
+
+# Metric-scale counterpart of the completed 336x252 full-Pi3 ray fine-tune.
+# The data config supplies query-only virtual-camera rectification; this train
+# profile changes only scale handling and scale-aware evaluation.
+defaults:
+  - train_megapose_gso_geometry_pi3_finetune_ray_rtxpro6000_70gb_336x252
+  - _self_
+
+loss:
+  train_loss:
+    scale_mode: metric
+  test_loss:
+    scale_mode: metric
+
+train:
+  # Avoid the historical batch-drop guard silently zeroing valid metric-scale
+  # transition batches. Gradient clipping remains enabled and unchanged.
+  clip_loss: 1000
+
+metrics:
+  items:
+    object_pose:
+      solve_scale: false
+      scale_estimation: reference_depth
+      # Zoom directly changes the number of object pixels/patches. Reuse the
+      # established occupancy analysis so pose gains are not confused with a
+      # shift toward easier, larger queries.
+      query_occupancy_analysis: true
+      query_occupancy_bin_edges: [0.0, 0.005, 0.01, 0.02, 0.04, 0.08, 1.000001]
+      query_occupancy_artifact_dir: ${log.output_dir}/query_occupancy
+    camera:
+      _target_: pi3.metrics.camera.CameraAlignmentMetric
+      solve_scale: false
+      scale_estimation: reference_depth
+
+visuals:
+  items:
+    reference_reconstruction:
+      solve_scale: false

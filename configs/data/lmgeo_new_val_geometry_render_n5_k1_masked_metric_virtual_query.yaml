@@ -1,0 +1,29 @@
+# @package _global_
+
+# Metric-scale/virtual-query counterpart of the established geometry-matched
+# LM-O render-to-scene evaluation.  The existing immutable reference plans and
+# query geometry index still select an adequate N=5/K=1 sample; only the query
+# materialization is replaced by the same calibrated virtual camera used by
+# the MegaPose-GSO metric-scale training run.
+defaults:
+  - lmgeo_new_val_geometry_render_n5_k1_masked
+  - _self_
+
+test_dataset:
+  virtual_camera_rectification: &virtual_query
+    roles: [query]
+    bbox_key: bbox_obj
+    zoom_range: [1.0, 5.0]
+    eval_zoom: 3.0
+    zoom_sampling: log_uniform
+    principal_point: image_center
+    bbox_margin_fraction: 0.05
+    safe_zoom: true
+    replace_planned_crop: true
+    depth_interpolation: nearest
+    min_valid_depth_pixels: 64
+
+val_datasets:
+  lmo_new_val_geometry_render_n5_k1:
+    dataset:
+      virtual_camera_rectification: *virtual_query

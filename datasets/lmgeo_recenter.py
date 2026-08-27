@@ -315,6 +315,7 @@ class LMGeoQueryRecenterZoomMixin:
         T_C_O,
         camera_pose,
         view_role,
+        rng=None,
     ):
         skip_recenter = bool(record.get("_lmgeo_skip_query_recenter", False))
         if view_role != "query" or skip_recenter:

@@ -9,6 +9,7 @@ validation example does not require changing the trainer.
 
 from __future__ import annotations
 
+import csv
 import json
 import math
 import os
@@ -86,6 +87,136 @@ def stratified_sample_indices(
     return output
 
 
+def _sample_query_identity(sample: Mapping[str, Any]) -> tuple[int, int, int, int]:
+    record = sample.get("geometry_query_record")
+    if record is None:
+        records = sample.get("query_records", ())
+        if len(records) != 1:
+            raise ValueError(
+                "Ranked visual selection requires one geometry_query_record "
+                "or exactly one query_record per sample"
+            )
+        record = records[0]
+    return (
+        int(record["object_id"]),
+        int(record["scene_id"]),
+        int(record["im_id"]),
+        int(record["gt_id"]),
+    )
+
+
+def ranked_good_bad_selections(
+    samples: Sequence[Mapping[str, Any]],
+    rows_path: str | os.PathLike[str],
+    count: int,
+    *,
+    rank_field: str = "query_used_d",
+) -> list[dict[str, Any]]:
+    """Select low/high-error examples per object from a full-eval row table.
+
+    The full validation row export is authoritative for sample quality and
+    avoids running the model over all 1,364 queries a second time merely to
+    choose a gallery.  Query identity, rather than CSV row order, maps each row
+    back to the immutable matched-dataset manifest.
+    """
+
+    count = min(max(0, int(count)), len(samples))
+    if count == 0:
+        return []
+    sample_by_identity: dict[tuple[int, int, int, int], int] = {}
+    for index, sample in enumerate(samples):
+        identity = _sample_query_identity(sample)
+        if identity in sample_by_identity:
+            raise ValueError(f"Duplicate query identity in sample manifest: {identity}")
+        sample_by_identity[identity] = index
+
+    rows_by_object: dict[int, list[tuple[float, int]]] = {}
+    with Path(rows_path).expanduser().open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        required = {"obj_id", "scene_id", "im_id", "gt_id", rank_field}
+        missing = required.difference(reader.fieldnames or ())
+        if missing:
+            raise ValueError(
+                f"Ranking rows {rows_path} are missing columns {sorted(missing)}"
+            )
+        for row in reader:
+            identity = (
+                int(float(row["obj_id"])),
+                int(float(row["scene_id"])),
+                int(float(row["im_id"])),
+                int(float(row["gt_id"])),
+            )
+            dataset_index = sample_by_identity.get(identity)
+            if dataset_index is None:
+                continue
+            value = float(row[rank_field])
+            if math.isfinite(value):
+                rows_by_object.setdefault(identity[0], []).append(
+                    (value, dataset_index)
+                )
+
+    object_ids = sorted({int(sample["object_id"]) for sample in samples})
+    missing_objects = [value for value in object_ids if not rows_by_object.get(value)]
+    if missing_objects:
+        raise ValueError(
+            f"Ranking rows do not cover dataset objects {missing_objects}: {rows_path}"
+        )
+    if count < len(object_ids):
+        raise ValueError(
+            f"At least {len(object_ids)} examples are required to cover every object"
+        )
+
+    # First guarantee one good example for every object. Then add one bad
+    # example per object. Any remaining slots use evenly spaced interior ranks.
+    selections: list[dict[str, Any]] = []
+    selected_indices: set[int] = set()
+
+    def append(object_id: int, position: int, role: str) -> None:
+        values = sorted(rows_by_object[object_id])
+        value, dataset_index = values[position]
+        if dataset_index in selected_indices:
+            return
+        selected_indices.add(dataset_index)
+        selections.append(
+            {
+                "dataset_index": int(dataset_index),
+                "selection_role": role,
+                "rank_field": str(rank_field),
+                "rank_value": float(value),
+            }
+        )
+
+    for object_id in object_ids:
+        append(object_id, 0, "good")
+    for object_id in object_ids:
+        if len(selections) >= count:
+            break
+        append(object_id, -1, "bad")
+
+    interior_round = 1
+    while len(selections) < count:
+        changed = False
+        for object_id in object_ids:
+            values = sorted(rows_by_object[object_id])
+            if len(values) <= 2:
+                continue
+            fraction = interior_round / (interior_round + 1)
+            position = min(len(values) - 2, max(1, round(fraction * (len(values) - 1))))
+            before = len(selections)
+            append(object_id, position, f"interior_{interior_round}")
+            changed |= len(selections) > before
+            if len(selections) >= count:
+                break
+        if not changed:
+            break
+        interior_round += 1
+    if len(selections) != count:
+        raise RuntimeError(
+            f"Could select only {len(selections)} of {count} requested examples"
+        )
+    return selections
+
+
 def _safe_name(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(value)).strip("_")
 
@@ -108,17 +239,44 @@ def _json_value(value: Any) -> Any:
 
 def compact_metrics(metrics: Mapping[str, float]) -> dict[str, float | None]:
     aliases = {
-        "pose_error_d": "lmo_object_pose/query_used_median_d",
-        "rotation_error_deg": "lmo_object_pose/query_rot_median_deg",
-        "translation_error_m": "lmo_object_pose/query_trans_median_m",
-        "camera_center_error_m": "camera/query_center_median_m",
-        "reference_center_error_m": "camera/reference_center_median_m",
-        "query_ray_error_deg": "ray_geometry/query/angular_median_deg",
-        "reference_ray_error_deg": "ray_geometry/reference/angular_median_deg",
+        "pose_error_d": (
+            "lmo_object_pose_scale_corrected/query_used_median_d",
+            "lmo_object_pose/query_used_median_d",
+            "lmo_object_pose_metric/query_used_median_d",
+        ),
+        "rotation_error_deg": (
+            "lmo_object_pose_scale_corrected/query_rot_median_deg",
+            "lmo_object_pose/query_rot_median_deg",
+            "lmo_object_pose_metric/query_rot_median_deg",
+        ),
+        "translation_error_m": (
+            "lmo_object_pose_scale_corrected/query_trans_median_m",
+            "lmo_object_pose/query_trans_median_m",
+            "lmo_object_pose_metric/query_trans_median_m",
+        ),
+        "strict_pose_error_d": ("lmo_object_pose_metric/query_used_median_d",),
+        "strict_rotation_error_deg": ("lmo_object_pose_metric/query_rot_median_deg",),
+        "strict_translation_error_m": ("lmo_object_pose_metric/query_trans_median_m",),
+        "scale_corrected_pose_error_d": (
+            "lmo_object_pose_scale_corrected/query_used_median_d",
+        ),
+        "scale_corrected_rotation_error_deg": (
+            "lmo_object_pose_scale_corrected/query_rot_median_deg",
+        ),
+        "scale_corrected_translation_error_m": (
+            "lmo_object_pose_scale_corrected/query_trans_median_m",
+        ),
+        "camera_center_error_m": ("camera/query_center_median_m",),
+        "reference_center_error_m": ("camera/reference_center_median_m",),
+        "query_ray_error_deg": ("ray_geometry/query/angular_median_deg",),
+        "reference_ray_error_deg": ("ray_geometry/reference/angular_median_deg",),
     }
     output: dict[str, float | None] = {}
-    for name, key in aliases.items():
-        value = float(metrics[key]) if key in metrics else float("nan")
+    for name, keys in aliases.items():
+        value = next(
+            (float(metrics[key]) for key in keys if key in metrics),
+            float("nan"),
+        )
         output[name] = value if math.isfinite(value) else None
     return output
 
@@ -170,12 +328,27 @@ def compose_overview(
             _title(images["input_query_frames/grid"], "LM-O query"),
         ]
     )
-    geometry_row = _horizontal(
-        [
-            _title(images["lmo_query_pose_overlay/queries"], "Query pose: green GT, red prediction"),
-            _title(images["reference_reconstruction/orthographic"], "Aligned reference reconstruction"),
-        ]
+    geometry_cards = [
+        _title(
+            images["lmo_query_pose_overlay/queries"],
+            "Strict metric query pose: green GT, red prediction",
+        )
+    ]
+    corrected_key = "lmo_query_pose_overlay_scale_corrected/queries"
+    if corrected_key in images:
+        geometry_cards.append(
+            _title(
+                images[corrected_key],
+                "Reference-depth-scale diagnostic: green GT, red prediction",
+            )
+        )
+    geometry_cards.append(
+        _title(
+            images["reference_reconstruction/orthographic"],
+            "Reference-depth-aligned reconstruction",
+        )
     )
+    geometry_row = _horizontal(geometry_cards)
     cards = [
         _fit_width(input_row, maximum_width),
         _fit_width(geometry_row, maximum_width),
@@ -199,6 +372,45 @@ def compose_overview(
     return canvas
 
 
+def compose_gallery_index(
+    overviews: Sequence[Image.Image],
+    *,
+    columns: int = 4,
+    thumbnail_width: int = 480,
+) -> Image.Image:
+    """Compose the exported overview sheets into one browseable contact sheet."""
+
+    if not overviews:
+        return Image.new("RGB", (1, 1), (0, 0, 0))
+    columns = max(1, int(columns))
+    thumbnails = [_fit_width(image, max(160, int(thumbnail_width))) for image in overviews]
+    rows = math.ceil(len(thumbnails) / columns)
+    row_heights = [
+        max(
+            image.height
+            for image in thumbnails[row * columns : (row + 1) * columns]
+        )
+        for row in range(rows)
+    ]
+    padding = 10
+    canvas = Image.new(
+        "RGB",
+        (
+            columns * thumbnails[0].width + (columns - 1) * padding,
+            sum(row_heights) + (rows - 1) * padding,
+        ),
+        (5, 5, 5),
+    )
+    top = 0
+    for row, row_height in enumerate(row_heights):
+        for column, image in enumerate(
+            thumbnails[row * columns : (row + 1) * columns]
+        ):
+            canvas.paste(image, (column * (thumbnails[0].width + padding), top))
+        top += row_height + padding
+    return canvas
+
+
 def _scalar(value: Any) -> Any:
     if torch.is_tensor(value):
         value = value.detach().cpu().reshape(-1)[0].item()
@@ -216,15 +428,28 @@ def _header_lines(
     loss: float,
 ) -> list[str]:
     query = next(view for view in batch if bool(_scalar(view["is_query"])))
+    strict_pose = values.get("strict_pose_error_d")
+    strict_rotation = values.get("strict_rotation_error_deg")
+    strict_translation = values.get("strict_translation_error_m")
+    corrected_pose = values.get("scale_corrected_pose_error_d")
+    corrected_translation = values.get("scale_corrected_translation_error_m")
+
+    def number(value: float | None, digits: int = 3) -> str:
+        return "n/a" if value is None else f"{value:.{digits}f}"
+
     return [
         (
             f"object={int(_scalar(query['object_id']))}  scene={int(_scalar(query['scene_id']))}  "
             f"image={int(_scalar(query['im_id']))}  gt={int(_scalar(query['gt_id']))}  loss={loss:.4f}"
         ),
         (
-            f"pose={values['pose_error_d']:.3f}d  rotation={values['rotation_error_deg']:.2f} deg  "
-            f"translation={100.0 * values['translation_error_m']:.2f} cm  "
-            f"camera-center={100.0 * values['camera_center_error_m']:.2f} cm"
+            f"strict: pose={number(strict_pose)}d  rotation={number(strict_rotation, 2)} deg  "
+            f"translation={number(None if strict_translation is None else 100.0 * strict_translation, 2)} cm"
+        ),
+        (
+            f"reference-depth scale: pose={number(corrected_pose)}d  "
+            f"translation={number(None if corrected_translation is None else 100.0 * corrected_translation, 2)} cm  "
+            f"strict camera-center={number(None if values.get('camera_center_error_m') is None else 100.0 * values['camera_center_error_m'], 2)} cm"
         ),
         (
             f"coverage={float(sample_info['reference_union_coverage']):.3f}  "
@@ -242,6 +467,9 @@ def _export_settings(cfg: DictConfig) -> dict[str, Any]:
         "seed": int(section.get("seed", 20260818)),
         "maximum_width": int(section.get("maximum_width", 1800)),
         "overwrite": bool(section.get("overwrite", False)),
+        "selection": str(section.get("selection", "stratified")),
+        "ranking_rows": section.get("ranking_rows", None),
+        "rank_field": str(section.get("rank_field", "query_used_d")),
     }
 
 
@@ -282,7 +510,32 @@ def main(cfg: DictConfig) -> None:
     samples = getattr(dataset, "samples", None)
     if samples is None:
         raise TypeError("Matched LM-O visual export requires a dataset sample manifest")
-    indices = stratified_sample_indices(samples, settings["samples"])
+    if settings["selection"] == "stratified":
+        selections = [
+            {
+                "dataset_index": int(index),
+                "selection_role": "stratified",
+                "rank_field": None,
+                "rank_value": None,
+            }
+            for index in stratified_sample_indices(samples, settings["samples"])
+        ]
+    elif settings["selection"] == "ranked_good_bad":
+        if not settings["ranking_rows"]:
+            raise ValueError(
+                "+export.ranking_rows is required for ranked_good_bad selection"
+            )
+        selections = ranked_good_bad_selections(
+            samples,
+            settings["ranking_rows"],
+            settings["samples"],
+            rank_field=settings["rank_field"],
+        )
+    else:
+        raise ValueError(
+            f"Unknown export selection {settings['selection']!r}; expected "
+            "'stratified' or 'ranked_good_bad'"
+        )
     if not any(
         visualizer.name == "reference_reconstruction"
         for visualizer in trainer.visual_manager.visualizers
@@ -306,9 +559,11 @@ def main(cfg: DictConfig) -> None:
     trainer.model.eval()
     started = time.monotonic()
     reports = []
+    gallery_overviews: list[Image.Image] = []
     try:
         with torch.no_grad():
-            for ordinal, dataset_index in enumerate(indices):
+            for ordinal, selection in enumerate(selections):
+                dataset_index = int(selection["dataset_index"])
                 sample_seed = settings["seed"] + ordinal
                 views = dataset[(dataset_index, 0, 6, sample_seed)]
                 sample_info = dict(dataset.this_views_info)
@@ -334,7 +589,8 @@ def main(cfg: DictConfig) -> None:
 
                 query = next(view for view in batch if bool(_scalar(view["is_query"])))
                 name = (
-                    f"example_{ordinal:02d}_obj_{int(_scalar(query['object_id'])):06d}_"
+                    f"example_{ordinal:02d}_{selection['selection_role']}_"
+                    f"obj_{int(_scalar(query['object_id'])):06d}_"
                     f"scene_{int(_scalar(query['scene_id'])):06d}_"
                     f"im_{int(_scalar(query['im_id'])):06d}_"
                     f"gt_{int(_scalar(query['gt_id'])):02d}"
@@ -353,10 +609,14 @@ def main(cfg: DictConfig) -> None:
                     maximum_width=settings["maximum_width"],
                 )
                 overview.save(example_dir / "overview.png")
+                gallery_overviews.append(overview.copy())
                 report = {
                     "ordinal": ordinal,
                     "dataset_index": int(dataset_index),
                     "sample_seed": int(sample_seed),
+                    "selection_role": selection["selection_role"],
+                    "selection_rank_field": selection["rank_field"],
+                    "selection_rank_value": selection["rank_value"],
                     "folder": name,
                     "object_id": int(_scalar(query["object_id"])),
                     "scene_id": int(_scalar(query["scene_id"])),
@@ -375,7 +635,7 @@ def main(cfg: DictConfig) -> None:
                 )
                 reports.append(report)
                 print(
-                    f"[{ordinal + 1:02d}/{len(indices):02d}] {name}: "
+                    f"[{ordinal + 1:02d}/{len(selections):02d}] {name}: "
                     f"pose={values['pose_error_d']:.3f}d "
                     f"rot={values['rotation_error_deg']:.2f}deg "
                     f"trans={100.0 * values['translation_error_m']:.2f}cm"
@@ -392,7 +652,13 @@ def main(cfg: DictConfig) -> None:
         "data_config": "lmgeo_new_val_geometry_render_n5_k1_masked",
         "sample_count": len(reports),
         "dataset_size": len(samples),
-        "selection": "object-stratified deterministic spread",
+        "selection": settings["selection"],
+        "ranking_rows": (
+            None
+            if settings["ranking_rows"] is None
+            else str(Path(settings["ranking_rows"]).expanduser().resolve())
+        ),
+        "rank_field": settings["rank_field"],
         "elapsed_seconds": time.monotonic() - started,
         "cuda_peak_allocated_bytes": (
             int(torch.cuda.max_memory_allocated(trainer.accelerator.device))
@@ -405,6 +671,7 @@ def main(cfg: DictConfig) -> None:
         json.dumps(_json_value(summary), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    compose_gallery_index(gallery_overviews).save(output / "gallery_index.png")
     trainer.accelerator.end_training()
     print(json.dumps({"output": str(output), "examples": len(reports)}, indent=2))
 

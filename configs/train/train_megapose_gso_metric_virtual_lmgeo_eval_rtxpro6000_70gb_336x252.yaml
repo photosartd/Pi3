@@ -1,0 +1,63 @@
+# @package _global_
+
+# Evaluate the completed MegaPose-GSO metric-scale/virtual-query checkpoint on
+# the geometry-matched LM-O new_val render-to-scene protocol.  Primary metrics
+# use a rigid reference-only alignment (scale fixed to one).  A second
+# reference-depth-scaled object-pose metric is retained only as a diagnostic:
+# a large gap between the two identifies cross-dataset metric-scale failure.
+defaults:
+  - train_megapose_gso_geometry_pi3_lmgeo_eval_rtxpro6000_70gb_336x252
+  - _self_
+
+train:
+  resume: ${oc.env:PI3_EVAL_CHECKPOINT,/media/internal/nvme/dtrofimov/spott3r/outputs/megapose_gso_metric_virtual_ray_336x252_20260825_165554/ckpts/checkpoint_24}
+
+loss:
+  test_loss:
+    scale_mode: metric
+
+metrics:
+  items:
+    object_pose:
+      metric_name: lmo_object_pose_metric
+      report_per_object: true
+      solve_scale: false
+      scale_estimation: reference_depth
+    object_pose_scale_corrected:
+      _target_: pi3.metrics.object_pose.ObjectPoseMetric
+      metric_name: lmo_object_pose_scale_corrected
+      object_model_namespaces: [lmo]
+      report_per_object: true
+      compute_adds_for_all: false
+      data_root: ${lmo.data_root}
+      models_folder: ${lmo.models_folder}
+      symmetric_ids: ${lmo.symmetric_ids}
+      solve_scale: true
+      scale_estimation: reference_depth
+      max_model_points: 20000
+      nn_chunk_size: 2048
+      device: cuda
+      query_occupancy_analysis: false
+    camera:
+      solve_scale: false
+      scale_estimation: reference_depth
+
+visuals:
+  items:
+    query_pose_overlay:
+      solve_scale: false
+      scale_estimation: reference_depth
+    # Keep the strict metric overlay above as the primary result, but render a
+    # second card from the identical prediction after applying only the
+    # reference-depth scalar.  This makes the cross-dataset scale failure
+    # visually separable from rotation/registration quality.
+    query_pose_overlay_scale_corrected:
+      _target_: pi3.visualizations.pose_overlay.QueryPoseOverlayVisualizer
+      visualizer_name: lmo_query_pose_overlay_scale_corrected
+      object_model_namespaces: [lmo]
+      data_root: ${lmo.data_root}
+      models_folder: ${lmo.models_folder}
+      solve_scale: true
+      scale_estimation: reference_depth
+      max_model_points: 20000
+      max_query_views: 1

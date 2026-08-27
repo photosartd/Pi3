@@ -1,10 +1,15 @@
 import unittest
+import csv
+import tempfile
+from pathlib import Path
 
 from PIL import Image
 
 from scripts.export_lmgeo_geometry_visuals import (
+    compose_gallery_index,
     compose_overview,
     evaluate_prediction_for_export,
+    ranked_good_bad_selections,
     stratified_sample_indices,
 )
 
@@ -81,6 +86,55 @@ class LMGeoVisualExportTest(unittest.TestCase):
         )
         self.assertEqual(overview.width, 1200)
         self.assertGreater(overview.height, 900)
+
+    def test_gallery_index_arranges_all_overviews(self):
+        images = [Image.new("RGB", (1200, 600 + index * 10), "blue") for index in range(5)]
+        gallery = compose_gallery_index(images, columns=4, thumbnail_width=300)
+        self.assertEqual(gallery.width, 1230)
+        self.assertGreater(gallery.height, 300)
+
+    def test_ranked_gallery_selects_one_good_and_bad_per_object(self):
+        samples = []
+        rows = []
+        for object_id in (1, 5, 6, 8):
+            for item in range(3):
+                samples.append(
+                    {
+                        "object_id": object_id,
+                        "geometry_query_record": {
+                            "object_id": object_id,
+                            "scene_id": 40 + object_id,
+                            "im_id": item,
+                            "gt_id": object_id + item,
+                        },
+                    }
+                )
+                rows.append(
+                    {
+                        "obj_id": object_id,
+                        "scene_id": 40 + object_id,
+                        "im_id": item,
+                        "gt_id": object_id + item,
+                        "query_used_d": float(item),
+                    }
+                )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rows.csv"
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+                writer.writeheader()
+                writer.writerows(rows)
+            selections = ranked_good_bad_selections(samples, path, 8)
+
+        self.assertEqual(len(selections), 8)
+        self.assertEqual(
+            [selection["selection_role"] for selection in selections],
+            ["good"] * 4 + ["bad"] * 4,
+        )
+        self.assertEqual(
+            [selection["rank_value"] for selection in selections],
+            [0.0] * 4 + [2.0] * 4,
+        )
 
 
 if __name__ == "__main__":

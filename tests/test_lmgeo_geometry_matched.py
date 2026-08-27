@@ -240,6 +240,47 @@ class LMGeoGeometryMatchedTest(unittest.TestCase):
             "reference_depth",
         )
 
+    def test_metric_virtual_eval_profile_is_scale_fixed_and_per_object(self):
+        with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
+            cfg = compose(
+                config_name="default",
+                overrides=[
+                    "train=train_megapose_gso_metric_virtual_lmgeo_eval_rtxpro6000_70gb_336x252",
+                    "data=lmgeo_new_val_geometry_render_n5_k1_masked_metric_virtual_query",
+                    "general=lmgeo_geometry_eval",
+                ],
+            )
+
+        self.assertTrue(cfg.train.eval_only)
+        self.assertEqual(cfg.loss.test_loss.scale_mode, "metric")
+        dataset = cfg.val_datasets.lmo_new_val_geometry_render_n5_k1.dataset
+        self.assertEqual(
+            dataset._target_,
+            "datasets.lmgeo_dataset.LMGeoGeometryMatchedSequenceDataset",
+        )
+        virtual = dataset.virtual_camera_rectification
+        self.assertEqual(list(virtual.roles), ["query"])
+        self.assertEqual(virtual.eval_zoom, 3.0)
+        self.assertEqual(virtual.principal_point, "image_center")
+        self.assertTrue(virtual.safe_zoom)
+        self.assertTrue(virtual.replace_planned_crop)
+
+        metric = cfg.metrics["items"].object_pose
+        self.assertEqual(metric.metric_name, "lmo_object_pose_metric")
+        self.assertTrue(metric.report_per_object)
+        self.assertFalse(metric.solve_scale)
+        diagnostic = cfg.metrics["items"].object_pose_scale_corrected
+        self.assertEqual(
+            diagnostic.metric_name, "lmo_object_pose_scale_corrected"
+        )
+        self.assertTrue(diagnostic.report_per_object)
+        self.assertTrue(diagnostic.solve_scale)
+        self.assertFalse(cfg.metrics["items"].camera.solve_scale)
+        self.assertFalse(cfg.visuals["items"].query_pose_overlay.solve_scale)
+        corrected_overlay = cfg.visuals["items"].query_pose_overlay_scale_corrected
+        self.assertTrue(corrected_overlay.solve_scale)
+        self.assertEqual(corrected_overlay.scale_estimation, "reference_depth")
+
 
 if __name__ == "__main__":
     unittest.main()
