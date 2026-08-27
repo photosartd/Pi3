@@ -6,6 +6,7 @@ from copy import deepcopy
 from .dinov2.layers import Mlp, PatchEmbed
 from ..utils.geometry import homogenize_points
 from .ray_conditioning import intrinsics_to_ray_map
+from .depth_conditioning import FactoredMetricDepthConditioner
 from .layers.pos_embed import RoPE2D, PositionGetter
 from .layers.block import BlockRope
 from .layers.attention import FlashAttentionRope
@@ -102,6 +103,17 @@ class Pi3(nn.Module):
             use_ray_conditioning=False,
             use_visibility_mask_conditioning=False,
             visibility_mask_conditioning_alpha=1.0,
+            use_metric_depth_conditioning=False,
+            metric_depth_conditioning_alpha=1.0,
+            metric_depth_scale_hidden_dim=128,
+            metric_depth_scale_statistic="mean",
+            metric_depth_min_valid_pixels=64,
+            metric_depth_unit_m=1.0,
+            metric_depth_reference_probability=1.0,
+            metric_depth_query_probability=0.0,
+            metric_depth_eval_reference_probability=1.0,
+            metric_depth_eval_query_probability=0.0,
+            metric_depth_dropout_granularity="view",
             ckpt=None,
         ):
         super().__init__()
@@ -295,6 +307,28 @@ class Pi3(nn.Module):
             nn.init.zeros_(self.visibility_mask_embed.proj.bias)
 
         # ----------------------
+        #  Metric Depth Condition
+        # ----------------------
+        self.use_metric_depth_conditioning = bool(use_metric_depth_conditioning)
+        self.metric_depth_conditioning_alpha = float(
+            metric_depth_conditioning_alpha
+        )
+        if self.use_metric_depth_conditioning:
+            self.metric_depth_conditioner = FactoredMetricDepthConditioner(
+                embed_dim=self.dec_embed_dim,
+                patch_size=self.patch_size,
+                scale_hidden_dim=metric_depth_scale_hidden_dim,
+                scale_statistic=metric_depth_scale_statistic,
+                min_valid_pixels=metric_depth_min_valid_pixels,
+                metric_unit_m=metric_depth_unit_m,
+                reference_probability=metric_depth_reference_probability,
+                query_probability=metric_depth_query_probability,
+                eval_reference_probability=metric_depth_eval_reference_probability,
+                eval_query_probability=metric_depth_eval_query_probability,
+                dropout_granularity=metric_depth_dropout_granularity,
+            )
+
+        # ----------------------
         #     Register_token
         # ----------------------
         num_register_tokens = 5
@@ -469,7 +503,18 @@ class Pi3(nn.Module):
         }
         return hidden, dino_features
 
-    def forward(self, imgs, intrinsics=None, visibility_mask_condition=None, visibility_mask_known=None):
+    def forward(
+        self,
+        imgs,
+        intrinsics=None,
+        visibility_mask_condition=None,
+        visibility_mask_known=None,
+        metric_depth=None,
+        metric_depth_valid=None,
+        metric_depth_is_reference=None,
+        metric_depth_is_query=None,
+        metric_depth_known_override=None,
+    ):
         imgs = (imgs - self.image_mean) / self.image_std
 
         B, N, _, H, W = imgs.shape
@@ -551,6 +596,48 @@ class Pi3(nn.Module):
                 "visibility_mask_conditioned_view_fraction": known_view.detach().float().mean(),
             }
 
+        metric_depth_output = None
+        if self.use_metric_depth_conditioning:
+            required = {
+                "metric_depth": metric_depth,
+                "metric_depth_valid": metric_depth_valid,
+                "metric_depth_is_reference": metric_depth_is_reference,
+                "metric_depth_is_query": metric_depth_is_query,
+            }
+            missing = [name for name, value in required.items() if value is None]
+            if missing:
+                raise ValueError(
+                    "Metric depth conditioning requires " + ", ".join(missing)
+                )
+            metric_depth_output = self.metric_depth_conditioner(
+                depth_m=metric_depth.to(device=hidden.device),
+                valid_mask=metric_depth_valid.to(device=hidden.device),
+                is_reference=metric_depth_is_reference.to(device=hidden.device),
+                is_query=metric_depth_is_query.to(device=hidden.device),
+                known_override=(
+                    None
+                    if metric_depth_known_override is None
+                    else metric_depth_known_override.to(device=hidden.device)
+                ),
+            )
+            if metric_depth_output.tokens.shape != hidden.shape:
+                raise RuntimeError(
+                    "Metric depth/image token shape mismatch: "
+                    f"{tuple(metric_depth_output.tokens.shape)} vs "
+                    f"{tuple(hidden.shape)}"
+                )
+            depth_alpha = torch.as_tensor(
+                self.metric_depth_conditioning_alpha,
+                device=hidden.device,
+                dtype=hidden.dtype,
+            )
+            hidden = hidden + depth_alpha * metric_depth_output.tokens.to(
+                dtype=hidden.dtype
+            )
+            metric_depth_output.statistics[
+                "metric_depth_conditioning_alpha"
+            ] = depth_alpha.detach().float()
+
         hidden, pos = self.decode(hidden, N, H, W)
 
         point_hidden = self.point_decoder(hidden, xpos=pos)
@@ -604,6 +691,19 @@ class Pi3(nn.Module):
             }
         if visibility_mask_stats:
             output["visibility_mask_conditioning_stats"] = visibility_mask_stats
+        if metric_depth_output is not None:
+            output["metric_depth_conditioning_stats"] = (
+                metric_depth_output.statistics
+            )
+            output["metric_depth_conditioning_known"] = (
+                metric_depth_output.known.detach()
+            )
+            output["metric_depth_conditioning_scale_m"] = (
+                metric_depth_output.scale_m.detach()
+            )
+            output["metric_depth_conditioning_valid_pixels"] = (
+                metric_depth_output.valid_pixels.detach()
+            )
         return output
 
     @staticmethod

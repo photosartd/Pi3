@@ -33,9 +33,17 @@ class ModelInputAdapter(ABC):
 class Pi3BatchAdapter(ModelInputAdapter):
     """Stack Pi3 inputs and supply unknown defaults for optional conditions."""
 
-    def __init__(self, *, use_visibility_mask_conditioning: bool = False):
+    def __init__(
+        self,
+        *,
+        use_visibility_mask_conditioning: bool = False,
+        use_metric_depth_conditioning: bool = False,
+    ):
         self.use_visibility_mask_conditioning = bool(
             use_visibility_mask_conditioning
+        )
+        self.use_metric_depth_conditioning = bool(
+            use_metric_depth_conditioning
         )
 
     @staticmethod
@@ -81,6 +89,15 @@ class Pi3BatchAdapter(ModelInputAdapter):
         )
         kwargs: dict[str, torch.Tensor] = {"intrinsics": intrinsics}
         batch_size = int(imgs.shape[0])
+        role_masks = {
+            role: self._stack_role(
+                batch,
+                f"is_{role}",
+                batch_size=batch_size,
+                device=imgs.device,
+            )
+            for role in ("reference", "query", "query_context")
+        }
 
         if self.use_visibility_mask_conditioning:
             condition = torch.stack(
@@ -108,15 +125,27 @@ class Pi3BatchAdapter(ModelInputAdapter):
             kwargs["visibility_mask_condition"] = condition
             kwargs["visibility_mask_known"] = known
 
-        role_masks = {
-            role: self._stack_role(
-                batch,
-                f"is_{role}",
-                batch_size=batch_size,
-                device=imgs.device,
+        if self.use_metric_depth_conditioning:
+            kwargs["metric_depth"] = torch.stack(
+                [
+                    self._condition_value(
+                        view, "depthmap", image=view["img"]
+                    )
+                    for view in batch
+                ],
+                dim=1,
             )
-            for role in ("reference", "query", "query_context")
-        }
+            kwargs["metric_depth_valid"] = torch.stack(
+                [
+                    self._condition_value(
+                        view, "valid_mask", image=view["img"]
+                    ).bool()
+                    for view in batch
+                ],
+                dim=1,
+            )
+            kwargs["metric_depth_is_reference"] = role_masks["reference"]
+            kwargs["metric_depth_is_query"] = role_masks["query"]
         capabilities = {
             capability.value: batch_supports_capability(batch, capability)
             for capability in ObservationCapability
@@ -127,4 +156,3 @@ class Pi3BatchAdapter(ModelInputAdapter):
             role_masks=role_masks,
             capabilities=capabilities,
         )
-

@@ -286,6 +286,7 @@ def warp_recenter_zoom_view(
     depth_interpolation: str = "nearest",
     min_valid_depth_pixels: int = 1,
     zoom: float | None = None,
+    safe_fill_fraction: float | None = None,
     principal_point: str = "preserve",
     safe_zoom: bool = False,
     bbox_margin_fraction: float = 0.0,
@@ -308,8 +309,6 @@ def warp_recenter_zoom_view(
         if zoom is None
         else float(zoom)
     )
-    if requested_zoom <= 0.0:
-        raise ValueError("Virtual camera zoom must be positive")
     safe_max = float("inf")
     if safe_zoom:
         safe_max = object_preserving_zoom_limit(
@@ -320,7 +319,25 @@ def warp_recenter_zoom_view(
             principal_point=principal_point,
             bbox_margin_fraction=bbox_margin_fraction,
         )
+    if safe_fill_fraction is not None:
+        safe_fill_fraction = float(safe_fill_fraction)
+        if not safe_zoom:
+            raise ValueError("safe_fill_fraction requires safe_zoom=True")
+        if not 0.0 < safe_fill_fraction <= 1.0:
+            raise ValueError("safe_fill_fraction must be in (0, 1]")
+        # ``safe_max`` is the zoom at which the expanded amodal object box
+        # touches the virtual image boundary. Sampling a fraction of that
+        # limit gives an occupancy-aware augmentation without ever clipping
+        # the requested object margin.
+        requested_zoom = safe_max * safe_fill_fraction
+    if requested_zoom <= 0.0:
+        raise ValueError("Virtual camera zoom must be positive")
     applied_zoom = min(requested_zoom, safe_max)
+    applied_safe_fill_fraction = (
+        float(applied_zoom / safe_max)
+        if np.isfinite(safe_max) and safe_max > 0.0
+        else 0.0
+    )
     homography, K_new = homography_for_recenter_zoom(
         intrinsics,
         R_old_to_new,
@@ -400,6 +417,12 @@ def warp_recenter_zoom_view(
             "virtual_camera_zoom_requested": np.float32(requested_zoom),
             "virtual_camera_zoom": np.float32(applied_zoom),
             "virtual_camera_zoom_safe_max": np.float32(safe_max),
+            "virtual_camera_safe_fill_fraction_requested": np.float32(
+                0.0 if safe_fill_fraction is None else safe_fill_fraction
+            ),
+            "virtual_camera_safe_fill_fraction": np.float32(
+                applied_safe_fill_fraction
+            ),
             "virtual_camera_valid_depth_pixels": np.int64(valid_depth_pixels),
             "virtual_camera_valid_depth_fraction": np.float32(
                 valid_depth_pixels / float(height * width)
@@ -447,6 +470,9 @@ class VirtualCameraRectificationConfig:
     zoom_range: tuple[float, float] = (1.0, 5.0)
     eval_zoom: float = 3.0
     zoom_sampling: str = "log_uniform"
+    zoom_policy: str = "range"
+    safe_fill_fraction_range: tuple[float, float] = (0.8, 1.0)
+    eval_safe_fill_fraction: float = 0.9
     principal_point: str = "image_center"
     bbox_margin_fraction: float = 0.05
     safe_zoom: bool = True
@@ -459,6 +485,10 @@ class VirtualCameraRectificationConfig:
         object.__setattr__(self, "roles", roles)
         zoom_range = tuple(float(value) for value in self.zoom_range)
         object.__setattr__(self, "zoom_range", zoom_range)
+        safe_fill_range = tuple(
+            float(value) for value in self.safe_fill_fraction_range
+        )
+        object.__setattr__(self, "safe_fill_fraction_range", safe_fill_range)
         if not roles or not set(roles).issubset({"reference", "query"}):
             raise ValueError("virtual-camera roles must contain reference/query")
         if len(zoom_range) != 2 or zoom_range[0] <= 0 or zoom_range[1] < zoom_range[0]:
@@ -467,6 +497,21 @@ class VirtualCameraRectificationConfig:
             raise ValueError("eval_zoom must be positive")
         if self.zoom_sampling not in {"uniform", "log_uniform"}:
             raise ValueError("zoom_sampling must be uniform or log_uniform")
+        if self.zoom_policy not in {"range", "safe_fill"}:
+            raise ValueError("zoom_policy must be range or safe_fill")
+        if (
+            len(safe_fill_range) != 2
+            or safe_fill_range[0] <= 0.0
+            or safe_fill_range[1] < safe_fill_range[0]
+            or safe_fill_range[1] > 1.0
+        ):
+            raise ValueError(
+                "safe_fill_fraction_range must be within (0, 1]"
+            )
+        if not 0.0 < float(self.eval_safe_fill_fraction) <= 1.0:
+            raise ValueError("eval_safe_fill_fraction must be in (0, 1]")
+        if self.zoom_policy == "safe_fill" and not self.safe_zoom:
+            raise ValueError("zoom_policy=safe_fill requires safe_zoom=True")
         if self.principal_point not in {"preserve", "image_center"}:
             raise ValueError("Unsupported virtual-camera principal point")
         if float(self.bbox_margin_fraction) < 0:
@@ -495,6 +540,14 @@ class VirtualCameraRectificationConfig:
             return float(np.exp(rng.uniform(math.log(low), math.log(high))))
         return float(rng.uniform(low, high))
 
+    def sample_safe_fill_fraction(
+        self, *, rng: np.random.Generator, mode: str
+    ) -> float:
+        if str(mode) != "train":
+            return float(self.eval_safe_fill_fraction)
+        low, high = self.safe_fill_fraction_range
+        return low if high == low else float(rng.uniform(low, high))
+
 
 class VirtualCameraRectifier:
     """Apply a configured virtual camera while emitting collatable metadata."""
@@ -515,6 +568,8 @@ class VirtualCameraRectifier:
             "virtual_camera_zoom_requested": np.float32(1.0),
             "virtual_camera_zoom": np.float32(1.0),
             "virtual_camera_zoom_safe_max": np.float32(1.0),
+            "virtual_camera_safe_fill_fraction_requested": np.float32(0.0),
+            "virtual_camera_safe_fill_fraction": np.float32(0.0),
             "virtual_camera_valid_depth_pixels": np.int64(0),
             "virtual_camera_valid_depth_fraction": np.float32(0.0),
             "virtual_camera_R_source_to_virtual": np.eye(3, dtype=np.float32),
@@ -555,6 +610,11 @@ class VirtualCameraRectifier:
             )
         bbox = bbox_from_record(record, self.config.bbox_key)
         requested_zoom = self.config.sample_zoom(rng=rng, mode=mode)
+        safe_fill_fraction = None
+        if self.config.zoom_policy == "safe_fill":
+            safe_fill_fraction = self.config.sample_safe_fill_fraction(
+                rng=rng, mode=mode
+            )
         return warp_recenter_zoom_view(
             rgb=rgb,
             depthmap=depthmap,
@@ -563,6 +623,7 @@ class VirtualCameraRectifier:
             T_C_O=T_C_O,
             bbox=bbox,
             zoom=requested_zoom,
+            safe_fill_fraction=safe_fill_fraction,
             principal_point=self.config.principal_point,
             safe_zoom=self.config.safe_zoom,
             bbox_margin_fraction=self.config.bbox_margin_fraction,

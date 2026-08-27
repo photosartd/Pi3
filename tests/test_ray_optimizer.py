@@ -23,6 +23,16 @@ class DummyVisibilityMaskModel(torch.nn.Module):
         self.head = torch.nn.Linear(4, 3)
 
 
+class DummyMetricDepthModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.encoder = torch.nn.Linear(3, 4)
+        self.metric_depth_conditioner = torch.nn.Sequential(
+            torch.nn.Conv2d(2, 4, kernel_size=1), torch.nn.Linear(4, 4)
+        )
+        self.head = torch.nn.Linear(4, 3)
+
+
 class DummyBaselineModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -30,7 +40,9 @@ class DummyBaselineModel(torch.nn.Module):
         self.head = torch.nn.Linear(4, 3)
 
 
-def optimizer_config(*, include_ray=False, include_visibility_mask=False):
+def optimizer_config(
+    *, include_ray=False, include_visibility_mask=False, include_metric_depth=False
+):
     values = {
         "type": "AdamW",
         "lr": 5e-6,
@@ -43,6 +55,8 @@ def optimizer_config(*, include_ray=False, include_visibility_mask=False):
         values["ray_lr"] = 1e-5
     if include_visibility_mask:
         values["visibility_mask_lr"] = 5e-5
+    if include_metric_depth:
+        values["metric_depth_lr"] = 2e-5
     return OmegaConf.create(values)
 
 
@@ -136,6 +150,28 @@ class RayOptimizerTest(unittest.TestCase):
         self.assertTrue(mask_groups)
         self.assertTrue(all(group["lr"] == 5e-5 for group in mask_groups))
         self.assertTrue(all(group["max_lr"] == 5e-5 for group in mask_groups))
+
+    def test_metric_depth_parameters_are_disjoint_and_use_their_own_lr(self):
+        model = DummyMetricDepthModel()
+        trainer = object.__new__(Pi3Trainer)
+        optimizer = trainer.build_optimizer(
+            optimizer_config(include_metric_depth=True), model
+        )
+        parameter_ids = [
+            id(parameter)
+            for group in optimizer.param_groups
+            for parameter in group["params"]
+        ]
+        self.assertEqual(len(parameter_ids), len(set(parameter_ids)))
+        self.assertEqual(len(parameter_ids), len(list(model.parameters())))
+        groups = [
+            group
+            for group in optimizer.param_groups
+            if group.get("group_name") == "metric_depth"
+        ]
+        self.assertTrue(groups)
+        self.assertTrue(all(group["lr"] == 2e-5 for group in groups))
+        self.assertTrue(all(group["max_lr"] == 2e-5 for group in groups))
 
 
 if __name__ == "__main__":

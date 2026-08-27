@@ -100,11 +100,16 @@ def _json_value(value):
     raise TypeError(type(value).__name__)
 
 
-def _make_sheet(views, sample_metadata, path: Path) -> dict:
+def _make_sheet(
+    views, sample_metadata, path: Path, *, metric_depth_conditioning: bool = False
+) -> dict:
     first_rgb = _rgb_image(views[0]["img"])
     width, height = first_rgb.size
     label_height = 44
-    canvas = Image.new("RGB", (width * len(views), (height + label_height) * 3), "white")
+    rows = 4 if metric_depth_conditioning else 3
+    canvas = Image.new(
+        "RGB", (width * len(views), (height + label_height) * rows), "white"
+    )
     draw = ImageDraw.Draw(canvas)
     records = []
     directions = []
@@ -123,7 +128,17 @@ def _make_sheet(views, sample_metadata, path: Path) -> dict:
         norm_fx = float(intrinsics[0, 0] / width)
         norm_fy = float(intrinsics[1, 1] / height)
         directions.append(_view_direction(view["T_C_O"]))
-        tiles = (rgb, _depth_image(depth), _ray_image(intrinsics, height, width))
+        valid_depth = mask & np.isfinite(depth) & (depth > 0)
+        depth_scale_m = (
+            float(depth[valid_depth].mean()) if np.any(valid_depth) else 1.0
+        )
+        normalized_depth = np.where(
+            valid_depth, depth / max(depth_scale_m, 1e-8), 0.0
+        )
+        tiles = [rgb, _depth_image(depth)]
+        if metric_depth_conditioning:
+            tiles.append(_depth_image(normalized_depth))
+        tiles.append(_ray_image(intrinsics, height, width))
         for row, tile in enumerate(tiles):
             top = row * (height + label_height)
             canvas.paste(tile, (column * width, top + label_height))
@@ -133,7 +148,13 @@ def _make_sheet(views, sample_metadata, path: Path) -> dict:
                 f"{role} {source}  scene={int(view['source_scene_id'])}\n"
                 f"fx/W={norm_fx:.3f} fy/H={norm_fy:.3f}"
                 if row == 0
-                else ("metric depth" if row == 1 else "ray-map input (x/z,y/z)")
+                else (
+                    f"metric depth; mean={depth_scale_m:.3f}m"
+                    if row == 1
+                    else "normalized depth + valid-mask adapter input"
+                    if metric_depth_conditioning and row == 2
+                    else "ray-map input (x/z,y/z)"
+                )
             )
             draw.multiline_text((column * width + 5, top + 4), caption, fill="black")
             border = "#00a050" if role == "REF" else "#e0a000"
@@ -165,6 +186,7 @@ def _make_sheet(views, sample_metadata, path: Path) -> dict:
                 "fx_over_width": norm_fx,
                 "fy_over_height": norm_fy,
                 "mask_fraction": float(mask.mean()),
+                "metric_depth_scale_mean_m": depth_scale_m,
                 "virtual_camera_applied": bool(
                     view.get("virtual_camera_applied", False)
                 ),
@@ -176,6 +198,12 @@ def _make_sheet(views, sample_metadata, path: Path) -> dict:
                 ),
                 "virtual_camera_zoom": float(
                     view.get("virtual_camera_zoom", 1.0)
+                ),
+                "virtual_camera_safe_fill_fraction_requested": float(
+                    view.get("virtual_camera_safe_fill_fraction_requested", 0.0)
+                ),
+                "virtual_camera_safe_fill_fraction": float(
+                    view.get("virtual_camera_safe_fill_fraction", 0.0)
                 ),
             }
         )
@@ -224,6 +252,9 @@ def main() -> None:
                     views,
                     dataset.this_views_info,
                     output / f"{args.component}_{sample_index:02d}.png",
+                    metric_depth_conditioning=bool(
+                        config.model.get("use_metric_depth_conditioning", False)
+                    ),
                 )
             )
     finally:

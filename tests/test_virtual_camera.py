@@ -113,6 +113,47 @@ class VirtualCameraTest(unittest.TestCase):
         self.assertGreater(len({round(value, 3) for value in values_a}), 50)
         self.assertEqual(config.sample_zoom(rng=first, mode="val"), 4.0)
 
+    def test_safe_fill_policy_tracks_object_preserving_limit(self):
+        rectifier = self._rectifier(
+            zoom_policy="safe_fill",
+            safe_fill_fraction_range=(0.8, 1.0),
+            eval_safe_fill_fraction=0.9,
+        )
+        outputs = rectifier.transform(
+            record={"bbox_obj": self.bbox},
+            rgb=self.rgb,
+            depthmap=self.depth,
+            mask=self.mask,
+            intrinsics=self.K,
+            T_C_O=self.T_C_O,
+            camera_pose=np.linalg.inv(self.T_C_O).astype(np.float32),
+            view_role="query",
+            rng=np.random.default_rng(5),
+            mode="val",
+        )
+        _, _, mask, _, _, _, metadata = outputs
+        self.assertAlmostEqual(
+            float(metadata["virtual_camera_safe_fill_fraction_requested"]),
+            0.9,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            float(metadata["virtual_camera_safe_fill_fraction"]),
+            0.9,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            float(metadata["virtual_camera_zoom"]),
+            0.9 * float(metadata["virtual_camera_zoom_safe_max"]),
+            places=5,
+        )
+        self.assertFalse(
+            mask[0].any()
+            or mask[-1].any()
+            or mask[:, 0].any()
+            or mask[:, -1].any()
+        )
+
     def test_virtual_query_bypasses_only_its_planned_crop(self):
         state = {
             "record": {"planned_object_crop": {"format": "not-read"}},

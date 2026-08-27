@@ -16,7 +16,10 @@ class Pi3Trainer(BaseTrainer):
         self.model_input_adapter = Pi3BatchAdapter(
             use_visibility_mask_conditioning=bool(
                 cfg.model.get("use_visibility_mask_conditioning", False)
-            )
+            ),
+            use_metric_depth_conditioning=bool(
+                cfg.model.get("use_metric_depth_conditioning", False)
+            ),
         )
 
     def build_optimizer(self, cfg_optimizer, model):
@@ -30,6 +33,10 @@ class Pi3Trainer(BaseTrainer):
                 (name, param) for name, param in model_.named_parameters()
                 if name.startswith("visibility_mask_embed.")
             ]
+            metric_depth_params = [
+                (name, param) for name, param in model_.named_parameters()
+                if name.startswith("metric_depth_conditioner.")
+            ]
             other_params = [
                 (name, param) for name, param in model_.named_parameters()
                 if (
@@ -37,12 +44,14 @@ class Pi3Trainer(BaseTrainer):
                     and '.encoder.' not in name
                     and not name.startswith("ray_embed.")
                     and not name.startswith("visibility_mask_embed.")
+                    and not name.startswith("metric_depth_conditioner.")
                 )
             ]
 
             print(f'Number of trainable encoder parameters:', sum(p.numel() for _, p in encoder_params if p.requires_grad))
             print(f'Number of trainable ray parameters:', sum(p.numel() for _, p in ray_params if p.requires_grad))
             print(f'Number of trainable visibility mask parameters:', sum(p.numel() for _, p in visibility_mask_params if p.requires_grad))
+            print(f'Number of trainable metric depth parameters:', sum(p.numel() for _, p in metric_depth_params if p.requires_grad))
             print(f'Length of trainable others:', sum(p.numel() for _, p in other_params if p.requires_grad))
 
             def handle_weight_decay(params, weight_decay, lr, group_name):
@@ -70,7 +79,7 @@ class Pi3Trainer(BaseTrainer):
                         "lr": lr,
                         "group_name": group_name,
                     }
-                    if group_name in {"ray", "visibility_mask"}:
+                    if group_name in {"ray", "visibility_mask", "metric_depth"}:
                         # The OneCycle scheduler otherwise caps every group at
                         # the base decoder LR. Preserve explicitly selected
                         # modality-branch peak LRs without changing historical
@@ -101,6 +110,16 @@ class Pi3Trainer(BaseTrainer):
                     cfg_optimizer.weight_decay,
                     visibility_mask_lr,
                     "visibility_mask",
+                ))
+            if metric_depth_params:
+                metric_depth_lr = cfg_optimizer.get(
+                    "metric_depth_lr", cfg_optimizer.lr
+                )
+                res.extend(handle_weight_decay(
+                    metric_depth_params,
+                    cfg_optimizer.weight_decay,
+                    metric_depth_lr,
+                    "metric_depth",
                 ))
             res.extend(handle_weight_decay(
                 other_params,
@@ -186,10 +205,14 @@ class Pi3Trainer(BaseTrainer):
         else:
             loss, details = self.test_loss(output, batch)
 
-        conditioning_stats = output.get("visibility_mask_conditioning_stats", {})
-        for key, value in conditioning_stats.items():
-            if torch.is_tensor(value):
-                details[f"{key}_loss_stat"] = value.detach()
+        for stats_key in (
+            "visibility_mask_conditioning_stats",
+            "metric_depth_conditioning_stats",
+        ):
+            conditioning_stats = output.get(stats_key, {})
+            for key, value in conditioning_stats.items():
+                if torch.is_tensor(value):
+                    details[f"{key}_loss_stat"] = value.detach()
         capability_device = output["local_points"].device
         for key, enabled in output.get("observation_capabilities", {}).items():
             details[f"batch_capability_{key}_loss_stat"] = torch.as_tensor(

@@ -344,6 +344,94 @@ class MegaPoseGSOConfigTest(unittest.TestCase):
             [1.0, 5.0],
         )
 
+    def test_metric_depth_safe_fill_profile_is_opt_in_and_relaxes_only_focal_pairing(self):
+        with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
+            cfg = compose(
+                config_name="default",
+                overrides=[
+                    "train=train_megapose_gso_geometry_pi3_finetune_ray_metric_depth_safe_fill_rtxpro6000_70gb_336x252",
+                    "data=megapose_gso_geometry_n5_k1_masked_metric_safe_fill_depth",
+                ],
+            )
+
+        self.assertTrue(cfg.model.use_metric_depth_conditioning)
+        self.assertEqual(cfg.model.metric_depth_reference_probability, 0.9)
+        self.assertEqual(cfg.model.metric_depth_query_probability, 0.0)
+        self.assertEqual(cfg.model.metric_depth_dropout_granularity, "sample")
+        self.assertEqual(cfg.train.optimizer.metric_depth_lr, 1e-5)
+        self.assertIn("metric_depth", cfg.metrics["items"])
+        self.assertFalse(
+            cfg.visuals["items"].metric_depth_panel.align_scale
+        )
+        for dataset in (
+            cfg.train_dataset.GSOSceneGeometryN5K1,
+            cfg.train_dataset.GSORenderGeometryN5K1,
+            *(entry.dataset for entry in cfg.val_datasets.values()),
+        ):
+            self.assertFalse(
+                dataset.sampling_policy.enforce_focal_compatibility
+            )
+            self.assertEqual(
+                dataset.virtual_camera_rectification.zoom_policy, "safe_fill"
+            )
+            self.assertEqual(
+                list(
+                    dataset.virtual_camera_rectification.safe_fill_fraction_range
+                ),
+                [0.8, 1.0],
+            )
+            self.assertEqual(
+                dataset.virtual_camera_rectification.eval_safe_fill_fraction,
+                0.9,
+            )
+
+        # Baseline composition still has neither module nor relaxed policy.
+        with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
+            baseline = compose(
+                config_name="default",
+                overrides=[
+                    "train=train_megapose_gso_geometry_pi3_finetune_ray_metric_virtual_rtxpro6000_70gb_336x252",
+                    "data=megapose_gso_geometry_n5_k1_masked_metric_virtual_query",
+                ],
+            )
+        self.assertFalse(baseline.model.use_metric_depth_conditioning)
+        self.assertNotIn(
+            "enforce_focal_compatibility",
+            baseline.train_dataset.GSOSceneGeometryN5K1.sampling_policy,
+        )
+
+    def test_metric_query_depth_profile_is_isolated_and_conditions_all_views(self):
+        with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
+            cfg = compose(
+                config_name="default",
+                overrides=[
+                    "train=train_megapose_gso_geometry_pi3_finetune_ray_metric_depth_query_safe_fill_rtxpro6000_70gb_336x252",
+                    "data=megapose_gso_geometry_n5_k1_masked_metric_safe_fill_depth",
+                ],
+            )
+        self.assertTrue(cfg.model.use_metric_depth_conditioning)
+        self.assertEqual(cfg.model.metric_depth_reference_probability, 0.9)
+        self.assertEqual(cfg.model.metric_depth_query_probability, 0.9)
+        self.assertEqual(cfg.model.metric_depth_eval_reference_probability, 1.0)
+        self.assertEqual(cfg.model.metric_depth_eval_query_probability, 1.0)
+        self.assertEqual(cfg.model.metric_depth_dropout_granularity, "sample")
+
+        # The parent profile remains the reference-depth-only baseline.
+        with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
+            reference_only = compose(
+                config_name="default",
+                overrides=[
+                    "train=train_megapose_gso_geometry_pi3_finetune_ray_metric_depth_safe_fill_rtxpro6000_70gb_336x252",
+                    "data=megapose_gso_geometry_n5_k1_masked_metric_safe_fill_depth",
+                ],
+            )
+        self.assertEqual(
+            reference_only.model.metric_depth_query_probability, 0.0
+        )
+        self.assertEqual(
+            reference_only.model.metric_depth_eval_query_probability, 0.0
+        )
+
     def test_mesh_free_cross_scene_profile_composes(self):
         with initialize_config_dir(version_base="1.2", config_dir=str(CONFIG_DIR)):
             cfg = compose(

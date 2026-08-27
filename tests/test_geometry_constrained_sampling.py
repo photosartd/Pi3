@@ -165,6 +165,50 @@ def _geometry_fixture(root):
 
 
 class GeometryConstrainedSamplingTest(unittest.TestCase):
+    def test_relaxed_policy_keeps_pose_constraint_without_query_focal_filter(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            geometry, plan, _ = _geometry_fixture(Path(temporary))
+            connection = sqlite3.connect(geometry)
+            try:
+                connection.execute(
+                    "UPDATE frame_features SET crop_feasible=0, fx=400, fy=400, "
+                    "base_norm_fx=3.333, base_norm_fy=4.444 "
+                    "WHERE scene_id=2"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            common = dict(
+                geometry_plan_path=plan,
+                reference_geometry_index_path=geometry,
+                query_geometry_index_path=geometry,
+                scene_source="scene",
+                require_different_scene=True,
+                num_reference_range=(5, 5),
+                num_query_range=(1, 1),
+            )
+            matched = GeometryConstrainedScenePairPolicy(**common)
+            relaxed = GeometryConstrainedScenePairPolicy(
+                **common, enforce_focal_compatibility=False
+            )
+            query_record = _GeometryMemorySource().records_for_group(
+                _GeometryMemorySource().groups[1]
+            )[0]
+            feature = relaxed.query_geometry.feature_for_record(query_record)
+            plans = relaxed.geometry_plans.plans_for_object(1)
+            self.assertEqual(
+                matched._candidate_plans(
+                    feature, plans, different_scene=True
+                ),
+                [],
+            )
+            candidates = relaxed._candidate_plans(
+                feature, plans, different_scene=True
+            )
+            self.assertEqual(len(candidates), 1)
+            self.assertLessEqual(candidates[0][3], 10.0)
+
     def test_plan_catalogue_paths_are_portable_and_legacy_paths_relocate(self):
         with tempfile.TemporaryDirectory() as temporary:
             geometry, plan, _ = _geometry_fixture(Path(temporary))

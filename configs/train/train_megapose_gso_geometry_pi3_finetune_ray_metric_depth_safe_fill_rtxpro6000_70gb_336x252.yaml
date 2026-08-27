@@ -1,0 +1,49 @@
+# @package _global_
+
+# Full Pi3 metric-scale experiment with calibrated safe-fill queries and a
+# lightweight reference-depth adapter. This is isolated from the completed
+# metric-virtual run so its checkpoint/config contract remains reproducible.
+defaults:
+  - train_megapose_gso_geometry_pi3_finetune_ray_metric_virtual_rtxpro6000_70gb_336x252
+  - _self_
+
+model:
+  use_metric_depth_conditioning: true
+  metric_depth_conditioning_alpha: 1.0
+  metric_depth_scale_hidden_dim: 128
+  metric_depth_scale_statistic: mean
+  metric_depth_min_valid_pixels: 64
+  metric_depth_unit_m: 1.0
+  # In 90% of train samples all eligible references receive metric depth; the
+  # other 10% retain an unconditioned path. Query depth is deliberately hidden
+  # because it is not assumed to exist at deployment/evaluation time.
+  metric_depth_reference_probability: 0.9
+  metric_depth_query_probability: 0.0
+  metric_depth_eval_reference_probability: 1.0
+  metric_depth_eval_query_probability: 0.0
+  metric_depth_dropout_granularity: sample
+
+train:
+  optimizer:
+    # Both ray and depth adapters are zero-initialized new branches. Use the
+    # already validated 1e-5 modality LR while historical Pi3 weights remain
+    # on the conservative 5e-6 fine-tuning LR.
+    metric_depth_lr: 1e-5
+
+metrics:
+  items:
+    metric_depth:
+      _target_: pi3.metrics.metric_depth.MetricDepthConditioningMetric
+      eps: 1e-6
+
+visuals:
+  items:
+    metric_depth_panel:
+      _target_: pi3.visualizations.depth_panel.DepthPanelVisualizer
+      include_reference: true
+      include_query: true
+      # Metric scale is the hypothesis: never hide its error with per-view
+      # median alignment in this diagnostic.
+      align_scale: false
+      show_conditioning_status: true
+      visualizer_name: metric_depth_condition

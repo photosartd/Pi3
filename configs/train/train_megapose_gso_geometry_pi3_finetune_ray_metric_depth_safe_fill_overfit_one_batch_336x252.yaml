@@ -1,0 +1,45 @@
+# @package _global_
+
+# Fixed-batch learnability test for the complete full-Pi3 depth/safe-fill path.
+defaults:
+  - train_megapose_gso_geometry_pi3_finetune_ray_metric_depth_safe_fill_rtxpro6000_70gb_336x252
+  - _self_
+
+model:
+  # Remove condition dropout from a deterministic memorization test.
+  metric_depth_reference_probability: 1.0
+
+train:
+  image_num_range: [6, 6]
+  max_img_per_gpu: 6
+  num_workers: 0
+  persistent_workers: false
+  num_epoch: 200
+  iters_per_epoch: 1
+  val_every_n_epochs: 10
+  print_freq: 1
+  optimizer:
+    # One fixed sample supports a larger memorization LR than held-out
+    # fine-tuning; the encoder stays frozen.
+    lr: 2e-5
+    encoder_lr: 0.0
+    ray_lr: 1e-4
+    metric_depth_lr: 1e-4
+  lr_scheduler:
+    pct_start: 0.05
+
+test:
+  image_num_range: [6, 6]
+  max_img_per_gpu: 6
+  num_workers: 0
+  persistent_workers: false
+  iters_per_test: 1
+  print_freq: 1
+
+metrics:
+  train_every_n_steps: 5
+
+visuals:
+  train_enabled: true
+  train_every_n_steps: 20
+  val_every_n_epochs: 10

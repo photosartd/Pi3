@@ -375,6 +375,36 @@ class Pi3InputAdapterTest(unittest.TestCase):
         )
         self.assertTrue(bool(adapted.role_masks["reference"].all()))
 
+    def test_metric_depth_conditioning_preserves_depth_validity_and_roles(self):
+        reference = _role_view()
+        query = _role_view()
+        query["is_reference"] = torch.zeros(1, dtype=torch.bool)
+        query["is_query"] = torch.ones(1, dtype=torch.bool)
+        query["depthmap"] = torch.full((1, 28, 28), 2.0)
+        query["valid_mask"][:, :4] = False
+        adapted = Pi3BatchAdapter(
+            use_metric_depth_conditioning=True
+        ).adapt([reference, query])
+
+        self.assertEqual(
+            tuple(adapted.kwargs["metric_depth"].shape), (1, 2, 28, 28)
+        )
+        self.assertEqual(
+            tuple(adapted.kwargs["metric_depth_valid"].shape),
+            (1, 2, 28, 28),
+        )
+        self.assertEqual(
+            adapted.kwargs["metric_depth_is_reference"].tolist(),
+            [[True, False]],
+        )
+        self.assertEqual(
+            adapted.kwargs["metric_depth_is_query"].tolist(),
+            [[False, True]],
+        )
+        self.assertAlmostEqual(
+            float(adapted.kwargs["metric_depth"][:, 1].mean()), 2.0
+        )
+
     def test_pi3_trainer_routes_core_only_batch_through_adapter(self):
         trainer = object.__new__(Pi3Trainer)
         trainer.cfg = OmegaConf.create(

@@ -37,6 +37,7 @@ _LOCAL_OPTIMIZER_KEYS = {
     "encoder_lr",
     "ray_lr",
     "visibility_mask_lr",
+    "metric_depth_lr",
     "foreach",
 }
 

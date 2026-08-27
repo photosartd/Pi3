@@ -36,6 +36,21 @@ model:
     # checkpoints/configs keep their original model structure and behavior.
     use_visibility_mask_conditioning: false
     visibility_mask_conditioning_alpha: 1.0
+    # Optional lightweight metric-depth adapter. It factors each supplied
+    # target-object depth map into normalized spatial depth plus one metric
+    # scale scalar and adds zero-initialized patch tokens. Disabled means the
+    # historical model structure and forward path are unchanged.
+    use_metric_depth_conditioning: false
+    metric_depth_conditioning_alpha: 1.0
+    metric_depth_scale_hidden_dim: 128
+    metric_depth_scale_statistic: mean
+    metric_depth_min_valid_pixels: 64
+    metric_depth_unit_m: 1.0
+    metric_depth_reference_probability: 1.0
+    metric_depth_query_probability: 0.0
+    metric_depth_eval_reference_probability: 1.0
+    metric_depth_eval_query_probability: 0.0
+    metric_depth_dropout_granularity: view
     ckpt: null # <path-to-your-pretrain-checkpoint>
 
 loss:

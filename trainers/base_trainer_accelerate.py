@@ -657,6 +657,13 @@ class BaseTrainer:
             metric_logger.add_meter(
                 "visibility_mask_lr", SmoothedValue(window_size=1, fmt="{value:.6f}")
             )
+        if any(
+            group.get("group_name") == "metric_depth"
+            for group in self.optimizer.param_groups
+        ):
+            metric_logger.add_meter(
+                "metric_depth_lr", SmoothedValue(window_size=1, fmt="{value:.6f}")
+            )
         # metric_logger.add_meter(
         #     "dataloader", SmoothedValue(window_size=1, fmt="{value:.6f}")
         # )
@@ -835,6 +842,14 @@ class BaseTrainer:
                     metric_logger.update(visibility_mask_lr=named_lrs["visibility_mask"])
                     self.accelerator.log(
                         {"visibility_mask_lr": named_lrs["visibility_mask"]},
+                        step=start_steps,
+                    )
+                if "metric_depth" in named_lrs:
+                    metric_logger.update(
+                        metric_depth_lr=named_lrs["metric_depth"]
+                    )
+                    self.accelerator.log(
+                        {"metric_depth_lr": named_lrs["metric_depth"]},
                         step=start_steps,
                     )
 

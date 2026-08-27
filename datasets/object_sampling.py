@@ -326,6 +326,7 @@ class _GeometryConstrainedReferencePolicy(_ReferenceQueryPolicy):
         plan_selection="random",
         random_focal_target=True,
         per_view_focal_targets=False,
+        enforce_focal_compatibility=True,
         max_query_attempts=64,
         enumerate_query_groups=False,
         max_query_groups_per_object=None,
@@ -362,6 +363,7 @@ class _GeometryConstrainedReferencePolicy(_ReferenceQueryPolicy):
         self.plan_selection = str(plan_selection)
         self.random_focal_target = bool(random_focal_target)
         self.per_view_focal_targets = bool(per_view_focal_targets)
+        self.enforce_focal_compatibility = bool(enforce_focal_compatibility)
         self.max_query_attempts = int(max_query_attempts)
         self.enumerate_query_groups = bool(enumerate_query_groups)
         self.max_query_groups_per_object = (
@@ -431,7 +433,10 @@ class _GeometryConstrainedReferencePolicy(_ReferenceQueryPolicy):
         return values
 
     def _candidate_plans(self, query_feature, plans, *, different_scene):
-        if not plans or not int(query_feature["crop_feasible"]):
+        if not plans or (
+            self.enforce_focal_compatibility
+            and not int(query_feature["crop_feasible"])
+        ):
             return []
         direction = np.asarray(
             [
@@ -468,23 +473,33 @@ class _GeometryConstrainedReferencePolicy(_ReferenceQueryPolicy):
             shape_highs,
             directions,
         ) = arrays
-        query_low = normalized_focal_scalar(query_feature)
-        query_high = min(
-            normalized_focal_scalar(query_feature, maximum=True),
-            query_low * (1.0 + self.focal_relative_tolerance),
-        )
-        lows = np.maximum(query_low, focal_lows)
-        highs = np.minimum(query_high, focal_highs)
-        shape = normalized_focal_shape(query_feature)
         similarities = np.einsum("pnc,c->pn", directions, direction)
         positive_indices = np.argmax(similarities, axis=1)
         best = similarities[np.arange(len(plans)), positive_indices]
-        valid = (
-            (lows <= highs + 1e-12)
-            & (shape_lows <= shape)
-            & (shape <= shape_highs)
-            & (best + 1e-7 >= cosine)
-        )
+        if self.enforce_focal_compatibility:
+            query_low = normalized_focal_scalar(query_feature)
+            query_high = min(
+                normalized_focal_scalar(query_feature, maximum=True),
+                query_low * (1.0 + self.focal_relative_tolerance),
+            )
+            lows = np.maximum(query_low, focal_lows)
+            highs = np.minimum(query_high, focal_highs)
+            shape = normalized_focal_shape(query_feature)
+            valid = (
+                (lows <= highs + 1e-12)
+                & (shape_lows <= shape)
+                & (shape <= shape_highs)
+                & (best + 1e-7 >= cosine)
+            )
+        else:
+            # Metric supervision and per-view calibrated ray conditioning make
+            # a shared focal target unnecessary. Keep the plan catalogue's
+            # coverage/visibility constraints and positive-view requirement,
+            # but choose a crop feasible for the reference set independently
+            # of the query camera.
+            lows = focal_lows
+            highs = focal_highs
+            valid = best + 1e-7 >= cosine
         if different_scene:
             valid &= scene_ids != int(query_feature["scene_id"])
         output = []
@@ -619,7 +634,13 @@ class _GeometryConstrainedReferencePolicy(_ReferenceQueryPolicy):
             chosen = candidates[0]
         reference_plan, interval, positive_index, positive_angle = chosen
         low, high = interval
-        target_count = expected if self.per_view_focal_targets else 1
+        target_count = (
+            expected
+            if self.enforce_focal_compatibility and self.per_view_focal_targets
+            else self.geometry_plans.reference_count
+            if self.per_view_focal_targets
+            else 1
+        )
         targets = [
             (
                 float(rng.uniform(low, high))
@@ -629,7 +650,11 @@ class _GeometryConstrainedReferencePolicy(_ReferenceQueryPolicy):
             for _ in range(target_count)
         ]
         reference_targets = targets[: self.geometry_plans.reference_count]
-        query_target = targets[-1]
+        query_target = (
+            targets[-1]
+            if self.enforce_focal_compatibility
+            else float(normalized_focal_scalar(query_feature))
+        )
         if not self.per_view_focal_targets:
             reference_targets = targets * self.geometry_plans.reference_count
         reference_records = self._reference_records(
@@ -652,14 +677,15 @@ class _GeometryConstrainedReferencePolicy(_ReferenceQueryPolicy):
                 rng=rng,
             )
             cropped_references.append(item)
-        query_record["planned_object_crop"] = object_preserving_crop_spec(
-            query_feature,
-            target_normalized_focal=query_target,
-            aspect=self.crop_aspect,
-            margin_fraction=self.crop_margin_fraction,
-            center_jitter=self.crop_center_jitter,
-            rng=rng,
-        )
+        if self.enforce_focal_compatibility:
+            query_record["planned_object_crop"] = object_preserving_crop_spec(
+                query_feature,
+                target_normalized_focal=query_target,
+                aspect=self.crop_aspect,
+                margin_fraction=self.crop_margin_fraction,
+                center_jitter=self.crop_center_jitter,
+                rng=rng,
+            )
         references = self._tag_reference_records(cropped_references)
         queries = _tag_records(
             [query_record], self._query_source(sources).source_name, "query_scene"
@@ -685,6 +711,7 @@ class _GeometryConstrainedReferencePolicy(_ReferenceQueryPolicy):
                 "reference_union_coverage": reference_plan.union_coverage,
                 "positive_reference_index": positive_index,
                 "positive_angle_degrees": positive_angle,
+                "focal_compatibility_enforced": self.enforce_focal_compatibility,
                 "target_normalized_focal": query_target,
                 "per_view_target_normalized_focal": tuple(
                     reference_targets + [query_target]

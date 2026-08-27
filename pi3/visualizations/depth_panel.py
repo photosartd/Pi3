@@ -20,14 +20,25 @@ from .utils import (
 
 
 class DepthPanelVisualizer(BaseVisualizer):
-    """Show RGB, GT depth, scale-aligned predicted depth, and depth error."""
+    """Show RGB, GT depth, predicted depth, and depth error."""
 
     name = "depth_panel"
     required_capabilities = frozenset({"key_query"})
 
-    def __init__(self, *, include_reference: bool = True, include_query: bool = True):
+    def __init__(
+        self,
+        *,
+        include_reference: bool = True,
+        include_query: bool = True,
+        align_scale: bool = True,
+        show_conditioning_status: bool = False,
+        visualizer_name: str | None = None,
+    ):
         self.include_reference = bool(include_reference)
         self.include_query = bool(include_query)
+        self.align_scale = bool(align_scale)
+        self.show_conditioning_status = bool(show_conditioning_status)
+        self.name = str(visualizer_name or type(self).name)
 
     def render(
         self,
@@ -46,6 +57,26 @@ class DepthPanelVisualizer(BaseVisualizer):
         valid_masks = stack_view_tensor(batch, "valid_mask").astype(bool)
         ref_mask = view_bool_mask(batch, "is_reference")
         query_mask = view_bool_mask(batch, "is_query")
+        conditioning_known = (
+            pred.get("metric_depth_conditioning_known").detach().cpu().numpy()
+            if self.show_conditioning_status
+            and pred.get("metric_depth_conditioning_known") is not None
+            else None
+        )
+        conditioning_scale = (
+            pred.get("metric_depth_conditioning_scale_m").detach().cpu().numpy()
+            if self.show_conditioning_status
+            and pred.get("metric_depth_conditioning_scale_m") is not None
+            else None
+        )
+
+        def title(role: str, view_idx: int) -> str:
+            value = f"b{batch_idx} {role} {view_idx}"
+            if conditioning_known is not None:
+                value += " conditioned" if conditioning_known[batch_idx, view_idx] else " unconditioned"
+            if conditioning_scale is not None:
+                value += f" input-scale={conditioning_scale[batch_idx, view_idx]:.3f}m"
+            return value
 
         outputs: dict[str, Image.Image] = {}
         batch_idx = int(batch_idx)
@@ -57,7 +88,7 @@ class DepthPanelVisualizer(BaseVisualizer):
                     gt_depths[batch_idx, ref_indices[0]],
                     pred_depths[batch_idx, ref_indices[0]],
                     valid_masks[batch_idx, ref_indices[0]],
-                    title=f"b{batch_idx} reference {int(ref_indices[0])}",
+                    title=title("reference", int(ref_indices[0])),
                 )
 
         if self.include_query:
@@ -68,7 +99,7 @@ class DepthPanelVisualizer(BaseVisualizer):
                     gt_depths[batch_idx, query_indices[0]],
                     pred_depths[batch_idx, query_indices[0]],
                     valid_masks[batch_idx, query_indices[0]],
-                    title=f"b{batch_idx} query {int(query_indices[0])}",
+                    title=title("query", int(query_indices[0])),
                 )
 
         return outputs
@@ -84,8 +115,8 @@ class DepthPanelVisualizer(BaseVisualizer):
     ) -> Image.Image:
         rgb = tensor_image_to_uint8(image)
         valid = valid_mask & mask_from_depth(gt_depth) & np.isfinite(pred_depth) & (pred_depth > 1e-8)
-        pred_aligned = np.zeros_like(pred_depth, dtype=np.float32)
-        if np.any(valid):
+        pred_aligned = pred_depth.astype(np.float32, copy=True)
+        if self.align_scale and np.any(valid):
             ratios = gt_depth[valid] / np.maximum(pred_depth[valid], 1e-8)
             scale = float(np.median(ratios[np.isfinite(ratios)])) if np.isfinite(ratios).any() else 1.0
             pred_aligned = pred_depth * scale
@@ -104,7 +135,14 @@ class DepthPanelVisualizer(BaseVisualizer):
         panels = [
             add_title(pil_from_array(rgb), f"{title} RGB"),
             add_title(pil_from_array(colorize_values(gt_depth, mask=depth_valid, vmin=vmin, vmax=vmax)), "GT depth"),
-            add_title(pil_from_array(colorize_values(pred_aligned, mask=depth_valid, vmin=vmin, vmax=vmax)), "pred depth aligned"),
+            add_title(
+                pil_from_array(
+                    colorize_values(
+                        pred_aligned, mask=depth_valid, vmin=vmin, vmax=vmax
+                    )
+                ),
+                "pred depth aligned" if self.align_scale else "pred depth metric",
+            ),
             add_title(pil_from_array(colorize_values(error, mask=error_mask, vmin=0.0, vmax=error_vmax)), "abs depth error"),
             add_title(pil_from_array((valid_mask.astype(np.uint8) * 255)), "object valid mask"),
         ]

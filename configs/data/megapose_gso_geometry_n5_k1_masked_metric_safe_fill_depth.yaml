@@ -1,0 +1,59 @@
+# @package _global_
+
+# Metric, calibrated safe-fill successor to the isolated 1-5x virtual-query
+# experiment. Existing geometry indexes/plans remain reusable: they still
+# enforce reference coverage, visibility, one <=10-degree viewing direction,
+# and same-reference-scene coherence. Only query/reference focal compatibility
+# is skipped; reference crops use a focal target feasible for their own plan.
+defaults:
+  - megapose_gso_geometry_n5_k1_masked_metric_virtual_query
+  - _self_
+
+train_dataset:
+  GSOSceneGeometryN5K1:
+    protocol_name: geometry_scene_n5_k1_metric_safe_fill_depth
+    sampling_policy:
+      enforce_focal_compatibility: false
+    virtual_camera_rectification: &safe_fill_query
+      roles: [query]
+      bbox_key: bbox_obj
+      zoom_policy: safe_fill
+      # Fraction of the largest calibrated zoom that keeps the expanded amodal
+      # object bbox in frame. This is an extent/safety target, not literal bbox
+      # area (a thin object cannot occupy 80% of the 2-D image area).
+      safe_fill_fraction_range: [0.8, 1.0]
+      eval_safe_fill_fraction: 0.9
+      zoom_range: [1.0, 5.0]  # retained but unused by safe_fill policy
+      eval_zoom: 3.0          # retained but unused by safe_fill policy
+      zoom_sampling: log_uniform
+      principal_point: image_center
+      bbox_margin_fraction: 0.05
+      safe_zoom: true
+      replace_planned_crop: true
+      depth_interpolation: nearest
+      min_valid_depth_pixels: 64
+  GSORenderGeometryN5K1:
+    protocol_name: geometry_render_n5_k1_metric_safe_fill_depth
+    sampling_policy:
+      enforce_focal_compatibility: false
+    virtual_camera_rectification: *safe_fill_query
+
+test_dataset:
+  protocol_name: geometry_val_scene_n5_k1_metric_safe_fill_depth
+  sampling_policy:
+    enforce_focal_compatibility: false
+  virtual_camera_rectification: *safe_fill_query
+
+val_datasets:
+  gso_geometry_val_scene_n5_k1:
+    dataset:
+      protocol_name: geometry_val_scene_n5_k1_metric_safe_fill_depth
+      sampling_policy:
+        enforce_focal_compatibility: false
+      virtual_camera_rectification: *safe_fill_query
+  gso_geometry_val_render_n5_k1:
+    dataset:
+      protocol_name: geometry_val_render_n5_k1_metric_safe_fill_depth
+      sampling_policy:
+        enforce_focal_compatibility: false
+      virtual_camera_rectification: *safe_fill_query

@@ -1,0 +1,16 @@
+# @package _global_
+
+# Query-depth counterpart of the reference-depth safe-fill experiment. Metric
+# depth is available for every model view in conditioned samples. Keeping this
+# as an inherited profile preserves the reference-only experiment exactly.
+defaults:
+  - train_megapose_gso_geometry_pi3_finetune_ray_metric_depth_safe_fill_rtxpro6000_70gb_336x252
+  - _self_
+
+model:
+  # With sample-level dropout and equal role probabilities, a training sample
+  # exposes all reference/query depths together 90% of the time and exposes no
+  # depth 10% of the time. Evaluation deterministically exposes every view.
+  metric_depth_query_probability: 0.9
+  metric_depth_eval_query_probability: 1.0
+
